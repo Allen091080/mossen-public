@@ -242,18 +242,23 @@ describe('runtime.agent', () => {
     ])
   })
 
-  test('rejects remote isolation instead of silently running locally', async () => {
-    let calls = 0
-    const { rt } = harness(async () => {
-      calls++
-      return { value: 'live', tokens: 1, ok: true }
+  test('delegates remote isolation to the injected agent runner', async () => {
+    let seenIsolation: unknown
+    const { rt, events } = harness(async (_prompt, opts) => {
+      seenIsolation = opts.isolation
+      return { value: 'remote-live', tokens: 1, ok: true }
     })
     const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
 
-    await expect(agent('task', { isolation: 'remote' })).rejects.toThrow(
-      "agent({isolation:'remote'}) is not available in this build",
+    await expect(agent('task', { isolation: 'remote' })).resolves.toBe(
+      'remote-live',
     )
-    expect(calls).toBe(0)
+    expect(seenIsolation).toBe('remote')
+    expect(events.map(e => e.kind)).toEqual([
+      'agent_queued',
+      'agent_start',
+      'agent_end',
+    ])
   })
 
   test('retries the same agent when the runner reports retry_requested', async () => {

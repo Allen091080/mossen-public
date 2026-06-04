@@ -294,9 +294,6 @@ export function createWorkflowRuntime(
       ...(effectiveModel ? { model: effectiveModel } : {}),
     }
     const hash = hashCall(prompt, effectiveOpts)
-    if (opts.isolation === 'remote') {
-      throw new Error("agent({isolation:'remote'}) is not available in this build")
-    }
 
     const startedHit = journal?.startedHit(index, hash)
 

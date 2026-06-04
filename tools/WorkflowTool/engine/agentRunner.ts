@@ -24,6 +24,7 @@ import { createAgentId } from '../../../utils/uuid.js'
 import { getQuerySourceForAgent } from '../../../utils/promptCategory.js'
 import { runWithCwdOverride } from '../../../utils/cwd.js'
 import { logForDebugging } from '../../../utils/debug.js'
+import { getRemoteSessionUrl } from '../../../constants/product.js'
 import {
   createAgentWorktree,
   hasWorktreeChanges,
@@ -42,6 +43,7 @@ import {
   SYNTHETIC_OUTPUT_TOOL_NAME,
 } from '../../SyntheticOutputTool/SyntheticOutputTool.js'
 import {
+  extractJson,
   formatIssues,
   stripLiteralThinking,
   validateAgainstSchema,
@@ -55,6 +57,8 @@ import type { RunOneAgent } from './runtime.js'
 
 /** How many times to re-prompt an agent whose output fails schema validation. */
 export const MAX_SCHEMA_RETRIES = 2
+export const DEFAULT_REMOTE_AGENT_TIMEOUT_MS = 30 * 60 * 1000
+export const DEFAULT_REMOTE_AGENT_POLL_INTERVAL_MS = 5 * 1000
 
 export class WorkflowSchemaError extends Error {
   constructor(label: string, detail: string) {
@@ -64,6 +68,48 @@ export class WorkflowSchemaError extends Error {
 }
 
 type WorkflowAgentWorktreeInfo = Awaited<ReturnType<typeof createAgentWorktree>>
+
+type RemoteSessionStatus = 'idle' | 'running' | 'requires_action' | 'archived'
+
+type RemoteSdkMessage = Record<string, unknown>
+
+type RemotePollResult = {
+  newEvents: RemoteSdkMessage[]
+  lastEventId: string | null
+  sessionStatus?: RemoteSessionStatus
+}
+
+type RemoteLaunchResult = {
+  id: string
+  title?: string
+} | null
+
+export type WorkflowRemoteAgentRunner = (
+  prompt: string,
+  opts: AgentCallOptions,
+  meta: { agentNumber: number; phase: string | null; label: string },
+  signal?: AbortSignal,
+) => Promise<AgentRunResult>
+
+export type WorkflowRemoteAgentRunnerDeps = {
+  launch?: (options: {
+    initialMessage: string
+    description: string
+    title: string
+    model?: string
+    signal: AbortSignal
+  }) => Promise<RemoteLaunchResult>
+  poll?: (
+    sessionId: string,
+    afterId: string | null,
+  ) => Promise<RemotePollResult>
+  archive?: (sessionId: string) => Promise<void>
+  getSessionUrl?: (sessionId: string) => string
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
+  now?: () => number
+  timeoutMs?: number
+  pollIntervalMs?: number
+}
 
 export type WorkflowAgentRunnerDeps = {
   toolUseContext: ToolUseContext
@@ -81,6 +127,7 @@ export type WorkflowAgentRunnerDeps = {
     agentNumber: number,
     controller: AbortController,
   ) => () => void
+  remoteAgentRunner?: WorkflowRemoteAgentRunner
 }
 
 function resolveAgentDefinition(
@@ -107,6 +154,264 @@ function buildSchemaInstruction(schema: Record<string, unknown>): string {
     'the structured result as prose or raw JSON text.\n\n' +
     `JSON Schema:\n${JSON.stringify(schema, null, 2)}`
   )
+}
+
+function buildRemoteSchemaInstruction(schema: Record<string, unknown>): string {
+  return (
+    '\n\nIMPORTANT: Complete this remote workflow agent task by returning ' +
+    'only JSON conforming to this JSON Schema. Do not wrap the JSON in prose.\n\n' +
+    `JSON Schema:\n${JSON.stringify(schema, null, 2)}`
+  )
+}
+
+export function buildRemoteWorkflowAgentPrompt(
+  prompt: string,
+  opts: AgentCallOptions,
+  meta: { agentNumber: number; phase: string | null; label: string },
+): string {
+  const header = [
+    'You are running as a remote workflow agent.',
+    `Workflow agent: #${meta.agentNumber} ${meta.label}`,
+    meta.phase ? `Workflow phase: ${meta.phase}` : null,
+    opts.agentType ? `Requested agent type: ${opts.agentType}` : null,
+  ].filter((line): line is string => line !== null)
+  return `${header.join('\n')}\n\n${prompt}${
+    opts.schema ? buildRemoteSchemaInstruction(opts.schema) : ''
+  }`
+}
+
+function remoteMessageType(message: RemoteSdkMessage): string | null {
+  return typeof message.type === 'string' ? message.type : null
+}
+
+function extractTextFromContent(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map(block => {
+      if (
+        block &&
+        typeof block === 'object' &&
+        (block as { type?: unknown }).type === 'text' &&
+        typeof (block as { text?: unknown }).text === 'string'
+      ) {
+        return (block as { text: string }).text
+      }
+      return ''
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+function extractRemoteAssistantText(messages: readonly RemoteSdkMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!
+    if (remoteMessageType(message) !== 'assistant') continue
+    const text = extractTextFromContent(
+      (message as { message?: { content?: unknown } }).message?.content,
+    ).trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function remoteResultError(message: RemoteSdkMessage): string | null {
+  if (remoteMessageType(message) !== 'result') return null
+  const subtype = (message as { subtype?: unknown }).subtype
+  if (subtype === 'success') return null
+  const errors = (message as { errors?: unknown }).errors
+  if (Array.isArray(errors)) {
+    const text = errors.filter((err): err is string => typeof err === 'string')
+    if (text.length > 0) return text.join(', ')
+  }
+  const result = (message as { result?: unknown }).result
+  return typeof result === 'string' && result.trim()
+    ? result
+    : `remote session ended with subtype '${String(subtype)}'`
+}
+
+function extractRemoteResultText(messages: readonly RemoteSdkMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!
+    if (remoteMessageType(message) !== 'result') continue
+    const result = (message as { result?: unknown }).result
+    if (
+      (message as { subtype?: unknown }).subtype === 'success' &&
+      typeof result === 'string' &&
+      result.trim()
+    ) {
+      return result.trim()
+    }
+  }
+  return extractRemoteAssistantText(messages)
+}
+
+export function coerceRemoteWorkflowAgentResult(
+  messages: readonly RemoteSdkMessage[],
+  opts: AgentCallOptions,
+  label: string,
+): AgentRunResult {
+  for (const message of messages) {
+    const error = remoteResultError(message)
+    if (error) {
+      throw new Error(`remote session returned an error: ${error}`)
+    }
+  }
+
+  const text = extractRemoteResultText(messages)
+  if (!opts.schema) {
+    return { value: stripLiteralThinking(text), tokens: 0, toolCalls: 0, ok: true }
+  }
+
+  let value: unknown
+  try {
+    value = extractJson(text)
+  } catch (err) {
+    throw new WorkflowSchemaError(
+      label,
+      `the remote agent did not return JSON: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    )
+  }
+  const validation = validateAgainstSchema(value, opts.schema)
+  if (!validation.ok) {
+    throw new WorkflowSchemaError(label, formatIssues(validation.errors))
+  }
+  return {
+    value: validation.value,
+    tokens: 0,
+    toolCalls: 0,
+    ok: true,
+  }
+}
+
+async function defaultRemoteLaunch(options: {
+  initialMessage: string
+  description: string
+  title: string
+  model?: string
+  signal: AbortSignal
+}): Promise<RemoteLaunchResult> {
+  const { teleportToRemote } = await import('../../../utils/teleport.js')
+  return teleportToRemote({
+    initialMessage: options.initialMessage,
+    description: options.description,
+    title: options.title,
+    ...(options.model ? { model: options.model } : {}),
+    permissionMode: 'acceptEdits',
+    signal: options.signal,
+  })
+}
+
+async function defaultRemotePoll(
+  sessionId: string,
+  afterId: string | null,
+): Promise<RemotePollResult> {
+  const { pollRemoteSessionEvents } = await import('../../../utils/teleport.js')
+  return pollRemoteSessionEvents(sessionId, afterId) as Promise<RemotePollResult>
+}
+
+async function defaultRemoteArchive(sessionId: string): Promise<void> {
+  const { archiveRemoteSession } = await import('../../../utils/teleport.js')
+  await archiveRemoteSession(sessionId)
+}
+
+function defaultRemoteSessionUrl(sessionId: string): string {
+  return getRemoteSessionUrl(sessionId)
+}
+
+function deriveRemoteLabel(prompt: string): string {
+  const firstLine = prompt.trim().split('\n')[0] ?? ''
+  const trimmed = firstLine.slice(0, 48)
+  return trimmed.length < firstLine.length ? `${trimmed}…` : trimmed || 'agent'
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new Error('Workflow aborted.'))
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      reject(new Error('Workflow aborted.'))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+export async function runHostedRemoteWorkflowAgent(
+  prompt: string,
+  opts: AgentCallOptions,
+  meta: { agentNumber: number; phase: string | null; label: string },
+  signal?: AbortSignal,
+  deps: WorkflowRemoteAgentRunnerDeps = {},
+): Promise<AgentRunResult> {
+  const controller = signal ? null : new AbortController()
+  const effectiveSignal = signal ?? controller!.signal
+  const launch = deps.launch ?? defaultRemoteLaunch
+  const poll = deps.poll ?? defaultRemotePoll
+  const archive = deps.archive ?? defaultRemoteArchive
+  const sleep = deps.sleep ?? delay
+  const now = deps.now ?? (() => Date.now())
+  const timeoutMs = deps.timeoutMs ?? DEFAULT_REMOTE_AGENT_TIMEOUT_MS
+  const pollIntervalMs =
+    deps.pollIntervalMs ?? DEFAULT_REMOTE_AGENT_POLL_INTERVAL_MS
+  const sessionUrlFor = deps.getSessionUrl ?? defaultRemoteSessionUrl
+  const initialMessage = buildRemoteWorkflowAgentPrompt(prompt, opts, meta)
+  const label = meta.label || deriveRemoteLabel(prompt)
+  const launched = await launch({
+    initialMessage,
+    description: `Remote workflow agent: ${label}`,
+    title: `workflow-remote-agent: ${label}`,
+    ...(typeof opts.model === 'string' ? { model: opts.model } : {}),
+    signal: effectiveSignal,
+  })
+  if (!launched?.id) {
+    throw new Error('Failed to create remote workflow agent session.')
+  }
+
+  const events: RemoteSdkMessage[] = []
+  let afterId: string | null = null
+  const deadline = now() + timeoutMs
+  try {
+    while (now() <= deadline) {
+      if (effectiveSignal.aborted) throw new Error('Workflow aborted.')
+      const page = await poll(launched.id, afterId)
+      events.push(...page.newEvents)
+      afterId = page.lastEventId ?? afterId
+
+      const resultEvent = events.findLast(
+        event => remoteMessageType(event) === 'result',
+      )
+      if (resultEvent) {
+        return coerceRemoteWorkflowAgentResult(events, opts, label)
+      }
+
+      if (page.sessionStatus === 'idle') {
+        const text = extractRemoteResultText(events)
+        if (text.trim()) {
+          return coerceRemoteWorkflowAgentResult(events, opts, label)
+        }
+      }
+
+      if (page.sessionStatus === 'archived') {
+        throw new Error(
+          `remote session returned an error: archived before producing output (${sessionUrlFor(launched.id)})`,
+        )
+      }
+
+      await sleep(pollIntervalMs, effectiveSignal)
+    }
+  } catch (err) {
+    if (effectiveSignal.aborted) {
+      await archive(launched.id)
+    }
+    throw err
+  }
+
+  await archive(launched.id)
+  throw new Error(`remote session exceeded 30 minutes: ${sessionUrlFor(launched.id)}`)
 }
 
 export function withStructuredOutputTool(
@@ -198,6 +503,7 @@ export function createWorkflowAgentRunner(
     runId,
     abortController,
     registerAgentController,
+    remoteAgentRunner = runHostedRemoteWorkflowAgent,
   } = deps
 
   /** Run a single agent turn to completion; return its final text + tokens. */
@@ -273,13 +579,54 @@ export function createWorkflowAgentRunner(
     opts: AgentCallOptions,
     meta: { agentNumber: number; phase: string | null; label: string },
   ): Promise<AgentRunResult> {
-    const agentDefinition = resolveAgentDefinition(toolUseContext, opts.agentType)
     const agentAbortController = abortController
       ? createChildAbortController(abortController)
       : undefined
     const unregisterAgentController = agentAbortController
       ? registerAgentController?.(meta.agentNumber, agentAbortController)
       : undefined
+    if (opts.isolation === 'remote') {
+      try {
+        return await remoteAgentRunner(
+          prompt,
+          opts,
+          meta,
+          agentAbortController?.signal,
+        )
+      } catch (err) {
+        if (agentAbortController?.signal.aborted) {
+          if (
+            agentAbortController.signal.reason ===
+            WORKFLOW_AGENT_SKIP_ABORT_REASON
+          ) {
+            return {
+              value: null,
+              tokens: 0,
+              toolCalls: 0,
+              ok: false,
+              status: 'skipped',
+            }
+          }
+          if (
+            agentAbortController.signal.reason ===
+            WORKFLOW_AGENT_RETRY_ABORT_REASON
+          ) {
+            return {
+              value: null,
+              tokens: 0,
+              toolCalls: 0,
+              ok: false,
+              status: 'retry_requested',
+            }
+          }
+        }
+        throw err
+      } finally {
+        unregisterAgentController?.()
+      }
+    }
+
+    const agentDefinition = resolveAgentDefinition(toolUseContext, opts.agentType)
     const worktreeInfo =
       opts.isolation === 'worktree'
         ? await createAgentWorktree(
