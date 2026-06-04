@@ -21,6 +21,13 @@ import { assembleToolPool } from '../../../tools.js'
 import { createUserMessage, extractTextContent } from '../../../utils/messages.js'
 import { createAgentId } from '../../../utils/uuid.js'
 import { getQuerySourceForAgent } from '../../../utils/promptCategory.js'
+import { runWithCwdOverride } from '../../../utils/cwd.js'
+import { logForDebugging } from '../../../utils/debug.js'
+import {
+  createAgentWorktree,
+  hasWorktreeChanges,
+  removeAgentWorktree,
+} from '../../../utils/worktree.js'
 import { runAgent } from '../../AgentTool/runAgent.js'
 import { finalizeAgentTool } from '../../AgentTool/agentToolUtils.js'
 import {
@@ -47,6 +54,8 @@ export class WorkflowSchemaError extends Error {
     this.name = 'WorkflowSchemaError'
   }
 }
+
+type WorkflowAgentWorktreeInfo = Awaited<ReturnType<typeof createAgentWorktree>>
 
 export type WorkflowAgentRunnerDeps = {
   toolUseContext: ToolUseContext
@@ -87,6 +96,38 @@ function buildSchemaInstruction(schema: Record<string, unknown>): string {
   )
 }
 
+function workflowAgentWorktreeSlug(runId: string, agentNumber: number): string {
+  const safeRunId =
+    runId
+      .replace(/[^A-Za-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'wf'
+  return `${safeRunId}-${agentNumber}`
+}
+
+async function cleanupWorkflowAgentWorktree(
+  worktreeInfo: WorkflowAgentWorktreeInfo | null,
+): Promise<void> {
+  if (!worktreeInfo) return
+  const { worktreePath, worktreeBranch, headCommit, gitRoot, hookBased } =
+    worktreeInfo
+
+  if (hookBased) {
+    logForDebugging(`Hook-based workflow agent worktree kept at: ${worktreePath}`)
+    return
+  }
+
+  if (headCommit) {
+    const changed = await hasWorktreeChanges(worktreePath, headCommit)
+    if (!changed) {
+      await removeAgentWorktree(worktreePath, worktreeBranch, gitRoot)
+      return
+    }
+  }
+
+  logForDebugging(`Workflow agent worktree has changes, keeping: ${worktreePath}`)
+}
+
 /** Create the engine's RunOneAgent backed by the real subagent runtime. */
 export function createWorkflowAgentRunner(
   deps: WorkflowAgentRunnerDeps,
@@ -100,31 +141,36 @@ export function createWorkflowAgentRunner(
     promptText: string,
     model: ModelAlias | undefined,
     label: string,
+    worktreePath: string | undefined,
   ): Promise<{ text: string; tokens: number }> {
     const startTime = Date.now()
     const agentId = createAgentId()
     const promptMessages: Message[] = [createUserMessage({ content: promptText })]
     const messages: Message[] = []
-    for await (const message of runAgent({
-      agentDefinition,
-      promptMessages,
-      toolUseContext,
-      canUseTool,
-      isAsync: false,
-      availableTools,
-      querySource: getQuerySourceForAgent(
-        agentDefinition.agentType,
-        isBuiltInAgent(agentDefinition),
-      ),
-      model,
-      description: label,
-      // Thread the (optionally unlinked) abort controller so background runs'
-      // subagents survive the originating tool call returning.
-      override: abortController
-        ? { agentId, abortController }
-        : { agentId },
-      transcriptSubdir: `workflows/${runId}`,
-    })) {
+    const run = () =>
+      runAgent({
+        agentDefinition,
+        promptMessages,
+        toolUseContext,
+        canUseTool,
+        isAsync: false,
+        availableTools,
+        querySource: getQuerySourceForAgent(
+          agentDefinition.agentType,
+          isBuiltInAgent(agentDefinition),
+        ),
+        model,
+        description: label,
+        worktreePath,
+        // Thread the (optionally unlinked) abort controller so background runs'
+        // subagents survive the originating tool call returning.
+        override: abortController ? { agentId, abortController } : { agentId },
+        transcriptSubdir: `workflows/${runId}`,
+      })
+    const stream = worktreePath
+      ? runWithCwdOverride(worktreePath, run)
+      : run()
+    for await (const message of stream) {
       messages.push(message)
     }
     const result = finalizeAgentTool(messages, agentId, {
@@ -151,6 +197,12 @@ export function createWorkflowAgentRunner(
     meta: { agentNumber: number; phase: string | null; label: string },
   ): Promise<AgentRunResult> {
     const agentDefinition = resolveAgentDefinition(toolUseContext, opts.agentType)
+    const worktreeInfo =
+      opts.isolation === 'worktree'
+        ? await createAgentWorktree(
+            workflowAgentWorktreeSlug(runId, meta.agentNumber),
+          )
+        : null
     const appState = toolUseContext.getAppState()
     const workerPermissionContext = {
       ...appState.toolPermissionContext,
@@ -162,50 +214,56 @@ export function createWorkflowAgentRunner(
     )
     const model = opts.model as ModelAlias | undefined
 
-    // No schema → return the agent's final text verbatim.
-    if (!opts.schema) {
-      const { text, tokens } = await runOnce(
-        agentDefinition,
-        availableTools,
-        prompt,
-        model,
-        meta.label,
-      )
-      return { value: text, tokens, ok: true }
-    }
-
-    // Schema → instruct for JSON, then parse+validate with re-prompt on failure.
-    // promptText carries the schema instruction (and, on retry, the rejection
-    // feedback) — runOnce must receive promptText, not the bare prompt.
-    let promptText = prompt + buildSchemaInstruction(opts.schema)
-    let totalTokens = 0
-    let lastDetail = ''
-    for (let attempt = 0; attempt <= MAX_SCHEMA_RETRIES; attempt++) {
-      const { text, tokens } = await runOnce(
-        agentDefinition,
-        availableTools,
-        promptText,
-        model,
-        meta.label,
-      )
-      totalTokens += tokens
-      try {
-        const parsed = extractJson(text)
-        const validation = validateAgainstSchema(parsed, opts.schema)
-        if (validation.ok) {
-          return { value: validation.value, tokens: totalTokens, ok: true }
-        }
-        lastDetail = formatIssues(validation.errors)
-      } catch (err) {
-        lastDetail = (err as Error).message
+    try {
+      // No schema → return the agent's final text verbatim.
+      if (!opts.schema) {
+        const { text, tokens } = await runOnce(
+          agentDefinition,
+          availableTools,
+          prompt,
+          model,
+          meta.label,
+          worktreeInfo?.worktreePath,
+        )
+        return { value: text, tokens, ok: true }
       }
-      // Re-prompt with the specific failure so the model can correct itself.
-      promptText =
-        prompt +
-        buildSchemaInstruction(opts.schema) +
-        `\n\nYour previous response was rejected:\n${lastDetail}\n` +
-        'Return corrected JSON only.'
+
+      // Schema → instruct for JSON, then parse+validate with re-prompt on failure.
+      // promptText carries the schema instruction (and, on retry, the rejection
+      // feedback) — runOnce must receive promptText, not the bare prompt.
+      let promptText = prompt + buildSchemaInstruction(opts.schema)
+      let totalTokens = 0
+      let lastDetail = ''
+      for (let attempt = 0; attempt <= MAX_SCHEMA_RETRIES; attempt++) {
+        const { text, tokens } = await runOnce(
+          agentDefinition,
+          availableTools,
+          promptText,
+          model,
+          meta.label,
+          worktreeInfo?.worktreePath,
+        )
+        totalTokens += tokens
+        try {
+          const parsed = extractJson(text)
+          const validation = validateAgainstSchema(parsed, opts.schema)
+          if (validation.ok) {
+            return { value: validation.value, tokens: totalTokens, ok: true }
+          }
+          lastDetail = formatIssues(validation.errors)
+        } catch (err) {
+          lastDetail = (err as Error).message
+        }
+        // Re-prompt with the specific failure so the model can correct itself.
+        promptText =
+          prompt +
+          buildSchemaInstruction(opts.schema) +
+          `\n\nYour previous response was rejected:\n${lastDetail}\n` +
+          'Return corrected JSON only.'
+      }
+      throw new WorkflowSchemaError(meta.label, lastDetail)
+    } finally {
+      await cleanupWorkflowAgentWorktree(worktreeInfo)
     }
-    throw new WorkflowSchemaError(meta.label, lastDetail)
   }
 }

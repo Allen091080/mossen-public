@@ -1,6 +1,7 @@
 import { feature } from 'bun:bundle'
 import { t } from '../../utils/i18n/index.js'
 import type { Command } from '../../commands.js'
+import { isWorkflowRuntimeEnabled } from '../../utils/workflowAvailability.js'
 
 /**
  * `/workflows` — monitor workflow runs from this session and save a run as a
@@ -12,7 +13,7 @@ const workflows: Command = {
   name: 'workflows',
   description: t('cmd.workflows.description'),
   argumentHint: '[<runId> | save <runId> [name] [--user]]',
-  isEnabled: () => (feature('WORKFLOW_SCRIPTS') ? true : false),
+  isEnabled: () => (feature('WORKFLOW_SCRIPTS') ? isWorkflowRuntimeEnabled() : false),
   load: () => import('./workflows.js'),
 }
 

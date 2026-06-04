@@ -15,6 +15,16 @@ import { runSandbox } from '../sandbox.js'
 import { extractMeta } from '../meta.js'
 import type { WorkflowProgressEvent } from '../types.js'
 
+type DemoWorkflowResult = {
+  found: unknown[]
+  verified: unknown[]
+  summary: unknown
+  spent: unknown
+}
+
+type PhaseEvent = Extract<WorkflowProgressEvent, { kind: 'phase' }>
+type AgentStartEvent = Extract<WorkflowProgressEvent, { kind: 'agent_start' }>
+
 function runWorkflow(
   source: string,
   runOneAgent: RunOneAgent,
@@ -73,7 +83,7 @@ const summary = await agent('summarize', {
 return { found, verified, summary, spent: budget.spent() }
 `
     const { result, events, runtime } = await runWorkflow(source, fakeAgent)
-    const r = result as any
+    const r = result as DemoWorkflowResult
     expect(r.found).toEqual(['ran:find alpha', 'ran:find beta'])
     expect(r.verified).toEqual([
       'ran:verify ran:find alpha',
@@ -84,12 +94,16 @@ return { found, verified, summary, spent: budget.spent() }
     expect(runtime.agentCount()).toBe(5) // 2 find + 2 verify + 1 summary
 
     // Phases were emitted in order; agent events carried their phase.
-    const phases = events.filter(e => e.kind === 'phase').map(e => (e as any).title)
+    const phases = events
+      .filter((e): e is PhaseEvent => e.kind === 'phase')
+      .map(e => e.title)
     expect(phases).toEqual(['Find', 'Verify'])
     const summaryStart = events.find(
-      e => e.kind === 'agent_start' && (e as any).label === 'summarize',
-    ) as any
-    expect(summaryStart.phase).toBe('Verify')
+      (e): e is AgentStartEvent =>
+        e.kind === 'agent_start' && e.label === 'summarize',
+    )
+    expect(summaryStart).toBeDefined()
+    expect(summaryStart!.phase).toBe('Verify')
   })
 
   test('passes args through to the script', async () => {

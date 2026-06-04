@@ -103,18 +103,17 @@ function makeSafeDate(): DateConstructor {
         'determinism). Pass timestamps via args, or stamp results after the run.',
     )
   }
-  // Typed as `any` locally so the static-member + prototype assignments below
-  // don't trip DateConstructor's read-only `prototype`; cast on return.
-  const SafeDate: any = function (this: unknown, ...args: unknown[]) {
+  const SafeDate = function (this: unknown, ...args: unknown[]): Date {
     if (args.length === 0) denied()
-    // @ts-expect-error -- forwarding to the real Date with explicit args
-    return new Date(...args)
-  }
+    return Reflect.construct(Date, args) as Date
+  } as unknown as DateConstructor
   // Copy static members, then override now().
-  SafeDate.parse = Date.parse
-  SafeDate.UTC = Date.UTC
-  SafeDate.now = denied
-  SafeDate.prototype = Date.prototype
+  Object.defineProperties(SafeDate, {
+    parse: { value: Date.parse },
+    UTC: { value: Date.UTC },
+    now: { value: denied },
+    prototype: { value: Date.prototype },
+  })
   return SafeDate as DateConstructor
 }
 
@@ -228,7 +227,6 @@ export async function runSandbox(options: RunSandboxOptions): Promise<unknown> {
 
   let fn: (...args: unknown[]) => Promise<unknown>
   try {
-    // eslint-disable-next-line no-new-func -- controlled evaluation; see file header
     const AsyncFunction = Object.getPrototypeOf(async function () {})
       .constructor as new (...a: string[]) => (...args: unknown[]) => Promise<unknown>
     fn = new AsyncFunction(...paramNames, `"use strict";\n${body}`)

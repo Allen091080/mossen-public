@@ -7,12 +7,22 @@ import {
   deriveLabel,
   WorkflowAgentCapError,
   type RunOneAgent,
+  type RunNestedWorkflow,
 } from '../runtime.js'
 import type { WorkflowProgressEvent } from '../types.js'
 
+type AgentStartEvent = Extract<WorkflowProgressEvent, { kind: 'agent_start' }>
+type AgentEndEvent = Extract<WorkflowProgressEvent, { kind: 'agent_end' }>
+
 function harness(
   runOneAgent: RunOneAgent,
-  opts: { total?: number | null; journal?: ReturnType<typeof createJournal>; maxAgents?: number; args?: unknown } = {},
+  opts: {
+    total?: number | null
+    journal?: ReturnType<typeof createJournal>
+    maxAgents?: number
+    args?: unknown
+    runNestedWorkflow?: RunNestedWorkflow
+  } = {},
 ) {
   const events: WorkflowProgressEvent[] = []
   const budget = createBudget(opts.total ?? null)
@@ -24,6 +34,7 @@ function harness(
     runOneAgent,
     journal: opts.journal,
     maxAgents: opts.maxAgents,
+    runNestedWorkflow: opts.runNestedWorkflow,
   })
   return { rt, events, budget }
 }
@@ -48,10 +59,10 @@ describe('runtime.agent', () => {
     await agent('task', { label: 'my-label', phase: 'Scan' })
     const kinds = events.map(e => e.kind)
     expect(kinds).toEqual(['agent_start', 'agent_end'])
-    expect((events[0] as any).label).toBe('my-label')
-    expect((events[0] as any).phase).toBe('Scan')
-    expect((events[1] as any).ok).toBe(true)
-    expect((events[1] as any).tokens).toBe(10)
+    expect((events[0] as AgentStartEvent).label).toBe('my-label')
+    expect((events[0] as AgentStartEvent).phase).toBe('Scan')
+    expect((events[1] as AgentEndEvent).ok).toBe(true)
+    expect((events[1] as AgentEndEvent).tokens).toBe(10)
   })
 
   test('returns null when the agent result is not ok', async () => {
@@ -108,7 +119,7 @@ describe('runtime.phase / log', () => {
     phase('Build')
     await agent('compile')
     expect(events[0]).toEqual({ kind: 'phase', title: 'Build' })
-    expect((events[1] as any).phase).toBe('Build')
+    expect((events[1] as AgentStartEvent).phase).toBe('Build')
   })
 
   test('log emits a log event', () => {
@@ -124,6 +135,24 @@ describe('runtime.workflow', () => {
     const { rt } = harness(okAgent())
     const workflow = rt.scope.workflow as (n: string) => Promise<unknown>
     await expect(workflow('child')).rejects.toThrow(/nesting/)
+  })
+
+  test('delegates nested workflow calls when provided', async () => {
+    const calls: Array<{ nameOrRef: unknown; args: unknown }> = []
+    const { rt } = harness(okAgent(), {
+      runNestedWorkflow: async (nameOrRef, args) => {
+        calls.push({ nameOrRef, args })
+        return { ok: true }
+      },
+    })
+    const workflow = rt.scope.workflow as (
+      n: string,
+      args?: unknown,
+    ) => Promise<unknown>
+    await expect(workflow('child', { topic: 'x' })).resolves.toEqual({
+      ok: true,
+    })
+    expect(calls).toEqual([{ nameOrRef: 'child', args: { topic: 'x' } }])
   })
 })
 

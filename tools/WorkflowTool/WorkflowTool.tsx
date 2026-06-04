@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod/v4'
 import { buildTool } from 'src/Tool.js'
+import { getProjectRoot } from '../../bootstrap/state.js'
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import { WORKFLOW_TOOL_NAME } from './constants.js'
 import { WORKFLOW_TOOL_PROMPT } from './prompt.js'
@@ -23,9 +24,15 @@ import { createWorkflowRuntime } from './engine/runtime.js'
 import { createWorkflowAgentRunner } from './engine/agentRunner.js'
 import { runSandbox } from './engine/sandbox.js'
 import type { WorkflowProgressEvent } from './engine/types.js'
+import {
+  loadSavedWorkflowsFrom,
+  resolveSavedWorkflow,
+} from './savedWorkflows.js'
+import type { WorkflowRuntime } from './engine/runtime.js'
 
 /** Default wall-clock ceiling for a whole workflow run (30 minutes). */
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
+const MAX_NESTED_WORKFLOW_DEPTH = 1
 
 const inputSchema = z.object({
   script: z
@@ -95,6 +102,52 @@ function readSource(input: WorkflowInput): string {
     }
   }
   throw new Error('Workflow requires either `script` or `scriptPath`.')
+}
+
+function readSourceFile(scriptPath: string): string {
+  try {
+    return readFileSync(scriptPath, 'utf8')
+  } catch (err) {
+    throw new Error(
+      `Could not read workflow scriptPath "${scriptPath}": ${(err as Error).message}`,
+    )
+  }
+}
+
+function resolveNestedWorkflowSource(
+  nameOrRef: string | { scriptPath: string },
+): { source: string; label: string } {
+  if (typeof nameOrRef === 'string') {
+    const name = nameOrRef.trim()
+    if (!name) {
+      throw new Error('workflow(name) requires a non-empty workflow name.')
+    }
+    const root = getProjectRoot()
+    const saved = resolveSavedWorkflow(root, name)
+    if (!saved) {
+      const available = loadSavedWorkflowsFrom(root).map(wf => wf.name)
+      throw new Error(
+        `workflow("${name}"): no workflow with that name. Available: ${
+          available.length ? available.join(', ') : '(none)'
+        }`,
+      )
+    }
+    return {
+      source: readSourceFile(saved.scriptPath),
+      label: saved.name,
+    }
+  }
+
+  const scriptPath = nameOrRef?.scriptPath?.trim()
+  if (!scriptPath) {
+    throw new Error(
+      "workflow() expects a workflow name (string) or { scriptPath: string }.",
+    )
+  }
+  return {
+    source: readSourceFile(scriptPath),
+    label: scriptPath,
+  }
 }
 
 /** Render an engine progress event as a one-line log entry. */
@@ -209,14 +262,49 @@ export const WorkflowTool = buildTool({
       runId,
       ...(background ? { abortController: runAbort } : {}),
     })
-    const runtime = createWorkflowRuntime({
-      limiter,
-      budget,
-      progress,
-      args: input.args,
-      runOneAgent,
-      journal,
-    })
+    const runtimes: WorkflowRuntime[] = []
+    const createRuntimeFor = (
+      workflowArgs: unknown,
+      depth: number,
+      useJournal: boolean,
+    ): WorkflowRuntime => {
+      let runtime: WorkflowRuntime
+      runtime = createWorkflowRuntime({
+        limiter,
+        budget,
+        progress,
+        args: workflowArgs,
+        runOneAgent,
+        journal: useJournal ? journal : undefined,
+        runNestedWorkflow:
+          depth >= MAX_NESTED_WORKFLOW_DEPTH
+            ? undefined
+            : async (nameOrRef, nestedArgs) => {
+                const nested = resolveNestedWorkflowSource(nameOrRef)
+                const { meta: nestedMeta } = extractMeta(nested.source)
+                progress({
+                  kind: 'log',
+                  message: `workflow: ${nestedMeta.name || nested.label}`,
+                })
+                const nestedRuntime = createRuntimeFor(
+                  nestedArgs,
+                  depth + 1,
+                  false,
+                )
+                return runSandbox({
+                  source: nested.source,
+                  scope: nestedRuntime.scope,
+                  timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+                  signal: runAbort.signal,
+                })
+              },
+      })
+      runtimes.push(runtime)
+      return runtime
+    }
+    const runtime = createRuntimeFor(input.args, 0, true)
+    const agentCount = () =>
+      runtimes.reduce((total, current) => total + current.agentCount(), 0)
 
     const execute = () =>
       runSandbox({
@@ -235,7 +323,7 @@ export const WorkflowTool = buildTool({
           saveRunLog(runId, log)
           finalizeRunMeta(runId, {
             status: 'completed',
-            agentCount: runtime.agentCount(),
+            agentCount: agentCount(),
             tokensSpent: budget.spent(),
           })
           enqueueSdkEvent({
@@ -245,10 +333,10 @@ export const WorkflowTool = buildTool({
             tool_use_id: toolUseContext.toolUseId,
             status: 'completed',
             output_file: runLogPath(runId),
-            summary: `Workflow "${meta.name}" completed — ${runtime.agentCount()} agent(s), ~${budget.spent()} tokens.`,
+            summary: `Workflow "${meta.name}" completed — ${agentCount()} agent(s), ~${budget.spent()} tokens.`,
             usage: {
               total_tokens: budget.spent(),
-              tool_uses: runtime.agentCount(),
+              tool_uses: agentCount(),
               duration_ms: 0,
             },
           })
@@ -257,7 +345,7 @@ export const WorkflowTool = buildTool({
           saveRunLog(runId, log)
           finalizeRunMeta(runId, {
             status: 'failed',
-            agentCount: runtime.agentCount(),
+            agentCount: agentCount(),
             tokensSpent: budget.spent(),
           })
           enqueueSdkEvent({
@@ -268,7 +356,7 @@ export const WorkflowTool = buildTool({
             status: 'failed',
             output_file: runLogPath(runId),
             summary: `Workflow "${meta.name}" failed: ${(err as Error).message}`,
-            usage: { total_tokens: budget.spent(), tool_uses: runtime.agentCount(), duration_ms: 0 },
+            usage: { total_tokens: budget.spent(), tool_uses: agentCount(), duration_ms: 0 },
           })
         })
 
@@ -289,14 +377,14 @@ export const WorkflowTool = buildTool({
         runId,
         workflowName: meta.name,
         result,
-        agentCount: runtime.agentCount(),
+        agentCount: agentCount(),
         tokensSpent: budget.spent(),
         log,
       }
       saveRunLog(runId, log)
       finalizeRunMeta(runId, {
         status: 'completed',
-        agentCount: runtime.agentCount(),
+        agentCount: agentCount(),
         tokensSpent: budget.spent(),
       })
       return { data }
@@ -304,7 +392,7 @@ export const WorkflowTool = buildTool({
       saveRunLog(runId, log)
       finalizeRunMeta(runId, {
         status: 'failed',
-        agentCount: runtime.agentCount(),
+        agentCount: agentCount(),
         tokensSpent: budget.spent(),
       })
       throw err

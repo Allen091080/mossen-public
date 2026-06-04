@@ -91,7 +91,9 @@ const numberRangeSetting = (min: number, max: number): AllowedSettingSpec => ({
 
 const ALLOWED_CONFIG_CHANGE_KEYS = {
   alwaysThinkingEnabled: booleanSetting(),
-  effortLevel: enumSetting(['low', 'medium', 'high']),
+  disableWorkflows: booleanSetting(),
+  effortLevel: enumSetting(['low', 'medium', 'high', 'xhigh']),
+  enableWorkflows: booleanSetting(),
   feedbackSurveyRate: numberRangeSetting(0, 1),
   includeCoAuthoredBy: booleanSetting(),
   includeGitInstructions: booleanSetting(),
@@ -100,6 +102,7 @@ const ALLOWED_CONFIG_CHANGE_KEYS = {
   spinnerTipsEnabled: booleanSetting(),
   syntaxHighlightingDisabled: booleanSetting(),
   terminalTitleFromRename: booleanSetting(),
+  workflowKeywordTriggerEnabled: booleanSetting(),
 } as const satisfies Record<string, AllowedSettingSpec>
 
 const SECRET_KEY_PATTERN =

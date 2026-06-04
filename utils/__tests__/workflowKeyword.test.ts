@@ -48,6 +48,13 @@ describe('workflowKeyword', () => {
       expect(hasWorkflowKeyword('run a workflow.')).toBe(true)
       expect(hasWorkflowKeyword('(workflows)')).toBe(true)
     })
+
+    test('detects all workflow trigger variants', () => {
+      expect(hasAnyWorkflowTrigger('use ultrawork')).toBe(true)
+      expect(hasUltraworkKeyword('use ultrawork')).toBe(true)
+      expect(hasUltracodeKeyword('turn on ultracode')).toBe(true)
+      expect(hasAnyWorkflowTrigger('ordinary prompt')).toBe(false)
+    })
   })
 
   describe('findWorkflowTriggerPositions', () => {

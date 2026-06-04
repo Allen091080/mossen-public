@@ -6,6 +6,7 @@ import {
   getProjectWorkflowsDir,
   isSavedWorkflowsEnabled,
   loadWorkflowCommandsFrom,
+  resolveSavedWorkflow,
   getWorkflowCommands,
   PROJECT_WORKFLOWS_SUBDIR,
 } from '../savedWorkflows.js'
@@ -45,6 +46,13 @@ describe('savedWorkflows loader (S3)', () => {
     expect(cmd!.description).toBe('Review the PR')
     expect((cmd as { loadedFrom?: string }).loadedFrom).toBe('managed')
     expect((cmd as { kind?: string }).kind).toBe('workflow')
+  })
+
+  test('resolveSavedWorkflow finds a saved workflow by meta name', () => {
+    writeFileSync(join(wfDir, 'child.js'), META('child-flow', 'Child flow'))
+    const resolved = resolveSavedWorkflow(root, 'child-flow')
+    expect(resolved?.name).toBe('child-flow')
+    expect(resolved?.scriptPath).toBe(join(wfDir, 'child.js'))
   })
 
   test('getPromptForCommand references the script by path + forwards args', async () => {

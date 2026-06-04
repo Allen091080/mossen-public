@@ -54,10 +54,13 @@ export type Stage<In, Out> = (
  */
 export async function pipeline(
   items: unknown[],
-  ...stages: Array<Stage<any, any>>
-): Promise<Array<any | null>> {
-  const runItem = async (item: unknown, index: number): Promise<any | null> => {
-    let value: any = item
+  ...stages: Array<Stage<unknown, unknown>>
+): Promise<Array<unknown | null>> {
+  const runItem = async (
+    item: unknown,
+    index: number,
+  ): Promise<unknown | null> => {
+    let value: unknown = item
     for (const stage of stages) {
       try {
         value = await stage(value, item, index)

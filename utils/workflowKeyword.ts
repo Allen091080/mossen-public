@@ -14,11 +14,12 @@
 import { feature } from 'bun:bundle'
 import { isUltracodeActive, setUltracodeActive } from '../bootstrap/state.js'
 import { t } from './i18n/index.js'
+import { isWorkflowKeywordTriggerEnabled } from './workflowAvailability.js'
 
 export function isWorkflowKeywordEnabled(): boolean {
   // feature() from bun:bundle must appear directly in an if/ternary condition
   // (it is a build-time define target), so it cannot be returned directly.
-  return feature('WORKFLOW_SCRIPTS') ? true : false
+  return feature('WORKFLOW_SCRIPTS') ? isWorkflowKeywordTriggerEnabled() : false
 }
 
 // Word-boundary, case-insensitive. `workflowy`, `reflow`, `ultraworking`,

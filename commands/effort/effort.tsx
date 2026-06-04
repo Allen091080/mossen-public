@@ -4,6 +4,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from '../../services/analytics/index.js'
 import { logMossenEvent } from '../../services/analytics/mossenEventLogger.js'
+import { setUltracodeActive } from '../../bootstrap/state.js'
 import { useAppState, useSetAppState } from '../../state/AppState.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import {
@@ -12,10 +13,12 @@ import {
   getEffortEnvOverride,
   getEffortValueDescription,
   isEffortLevel,
+  isUltracodeEffortValue,
   toPersistableEffort,
 } from '../../utils/effort.js'
 import { updateSettingsForSource } from '../../utils/settings/settings.js'
 import { getLocalizedText } from '../../utils/uiLanguage.js'
+import { isWorkflowRuntimeEnabled } from '../../utils/workflowAvailability.js'
 import { EffortPicker } from './EffortPicker.js'
 
 const COMMON_HELP_ARGS = ['help', '-h', '--help']
@@ -156,11 +159,24 @@ export function executeEffort(args: string): EffortCommandResult {
     return unsetEffortLevel()
   }
 
+  if (isUltracodeEffortValue(normalized)) {
+    if (!isWorkflowRuntimeEnabled()) {
+      return {
+        message: getLocalizedText({
+          en: 'Cannot enable ultracode: Workflow orchestration is disabled for this session.',
+          zh: '无法开启 ultracode：当前会话已禁用 Workflow 编排。',
+        }),
+      }
+    }
+    setUltracodeActive(true)
+    return setEffortValue(normalized)
+  }
+
   if (!isEffortLevel(normalized)) {
     return {
       message: getLocalizedText({
-        en: `Invalid argument: ${args}. Valid options are: low, medium, high, max, auto`,
-        zh: `无效参数：${args}。可用选项为：low、medium、high、max、auto`,
+        en: `Invalid argument: ${args}. Valid options are: low, medium, high, xhigh, max, ultracode, auto`,
+        zh: `无效参数：${args}。可用选项为：low、medium、high、xhigh、max、ultracode、auto`,
       }),
     }
   }
@@ -214,20 +230,24 @@ export async function call(
     onDone(
       getLocalizedText({
         en:
-          'Usage: /effort [low|medium|high|max|auto]\n\n' +
+          'Usage: /effort [low|medium|high|xhigh|max|ultracode|auto]\n\n' +
           'Effort levels:\n' +
           '- low: Quick, straightforward implementation\n' +
           '- medium: Balanced approach with standard testing\n' +
           '- high: Comprehensive implementation with extensive testing\n' +
+          '- xhigh: Extra-high reasoning for hard tasks\n' +
           '- max: Maximum capability with deepest reasoning (requires current backend/model support)\n' +
+          '- ultracode: xhigh effort plus standing Workflow orchestration for this session\n' +
           '- auto: Use the default effort level for your model',
         zh:
-          '用法：/effort [low|medium|high|max|auto]\n\n' +
+          '用法：/effort [low|medium|high|xhigh|max|ultracode|auto]\n\n' +
           'Effort 级别：\n' +
           '- low：快速、直接的实现\n' +
           '- medium：带标准测试的平衡实现\n' +
           '- high：带广泛测试的完整实现\n' +
+          '- xhigh：面向困难任务的超高 reasoning\n' +
           '- max：最强能力与最深推理（需要当前 backend/model 支持）\n' +
+          '- ultracode：xhigh effort + 当前会话常驻 Workflow 编排\n' +
           '- auto：使用当前模型的默认 effort 级别',
       }),
     )

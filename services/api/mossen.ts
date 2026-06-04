@@ -366,8 +366,8 @@ function configureEffortParams(
   if (effortValue === undefined) {
     betas.push(EFFORT_BETA_HEADER)
   } else if (typeof effortValue === 'string') {
-    // Send string effort level as is
-    outputConfig.effort = effortValue
+    // ultracode is a session-mode alias; only API effort levels are sent.
+    outputConfig.effort = effortValue === 'ultracode' ? 'xhigh' : effortValue
     betas.push(EFFORT_BETA_HEADER)
   } else if (getUserType() === 'internal') {
     // Numeric effort override - Mossen-internal only.

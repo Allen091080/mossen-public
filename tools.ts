@@ -132,6 +132,7 @@ const ListPeersTool = feature('UDS_INBOX')
   : null
 const WorkflowTool = feature('WORKFLOW_SCRIPTS')
   ? (() => {
+      if (!isWorkflowRuntimeEnabled()) return null
       require('./tools/WorkflowTool/bundled/index.js').initBundledWorkflows()
       return require('./tools/WorkflowTool/WorkflowTool.js').WorkflowTool
     })()
@@ -145,6 +146,7 @@ import { isLspToolEnabled } from './services/lsp/settings.js'
 import { isPowerShellToolEnabled } from './utils/shell/shellToolUtils.js'
 import { isAgentSwarmsEnabled } from './utils/agentSwarmsEnabled.js'
 import { isWorktreeModeEnabled } from './utils/worktreeModeEnabled.js'
+import { isWorkflowRuntimeEnabled } from './utils/workflowAvailability.js'
 import {
   REPL_TOOL_NAME,
   REPL_ONLY_TOOLS,

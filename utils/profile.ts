@@ -62,7 +62,9 @@ export function effortValueToReasoningProfile(
 ): ReasoningProfile {
   if (value === 'low') return 'fast'
   if (value === 'medium') return 'standard'
-  if (value === 'high' || value === 'max') return 'deep'
+  if (value === 'high' || value === 'xhigh' || value === 'max' || value === 'ultracode') {
+    return 'deep'
+  }
   if (typeof value === 'number') {
     if (value <= 50) return 'fast'
     if (value <= 85) return 'standard'

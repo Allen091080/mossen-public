@@ -9,16 +9,18 @@ import { getInternalModelOverrideConfig, resolveInternalModel } from './model/in
 import { isEnvTruthy } from './envUtils.js'
 import { isInternalOperatorMode } from './internalUserMode.js'
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'max'
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type UltracodeEffortValue = 'ultracode'
 
 export const EFFORT_LEVELS = [
   'low',
   'medium',
   'high',
+  'xhigh',
   'max',
 ] as const satisfies readonly EffortLevel[]
 
-export type EffortValue = EffortLevel | number
+export type EffortValue = EffortLevel | UltracodeEffortValue | number
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
 export function modelSupportsEffort(model: string): boolean {
@@ -70,6 +72,12 @@ export function isEffortLevel(value: string): value is EffortLevel {
   return (EFFORT_LEVELS as readonly string[]).includes(value)
 }
 
+export function isUltracodeEffortValue(
+  value: string,
+): value is UltracodeEffortValue {
+  return value === 'ultracode'
+}
+
 export function parseEffortValue(value: unknown): EffortValue | undefined {
   if (value === undefined || value === null || value === '') {
     return undefined
@@ -91,13 +99,19 @@ export function parseEffortValue(value: unknown): EffortValue | undefined {
 /**
  * Numeric values are model-default only and not persisted.
  * 'max' is session-scoped for external users (internal users can persist it).
+ * 'ultracode' is always session-scoped: it also toggles Workflow standing mode.
  * Write sites call this before saving to settings so the Zod schema
  * (which only accepts string levels) never rejects a write.
  */
 export function toPersistableEffort(
   value: EffortValue | undefined,
 ): EffortLevel | undefined {
-  if (value === 'low' || value === 'medium' || value === 'high') {
+  if (
+    value === 'low' ||
+    value === 'medium' ||
+    value === 'high' ||
+    value === 'xhigh'
+  ) {
     return value
   }
   if (value === 'max' && isInternalOperatorMode()) {
@@ -175,11 +189,15 @@ export function resolveAppliedEffort(
   }
   const resolved =
     envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
-  // Provider API rejects 'max' on non-Frontier-4.6 models, so downgrade to 'high'.
-  if (resolved === 'max' && !modelSupportsMaxEffort(model)) {
+  const normalized = resolved === 'ultracode' ? 'xhigh' : resolved
+  // Provider API rejects deep effort on unsupported models, so downgrade to 'high'.
+  if (
+    (normalized === 'max' || normalized === 'xhigh') &&
+    !modelSupportsMaxEffort(model)
+  ) {
     return 'high'
   }
-  return resolved
+  return normalized
 }
 
 /**
@@ -217,6 +235,7 @@ export function isValidNumericEffort(value: number): boolean {
 
 export function convertEffortValueToLevel(value: EffortValue): EffortLevel {
   if (typeof value === 'string') {
+    if (value === 'ultracode') return 'xhigh'
     // Runtime guard: value may come from dynamic config where
     // TypeScript types can't help us. Coerce unknown strings to 'high'
     // rather than passing them through unchecked.
@@ -245,6 +264,8 @@ export function getEffortLevelDescription(level: EffortLevel): string {
       return 'Balanced approach with standard implementation and testing'
     case 'high':
       return 'Comprehensive implementation with extensive testing and documentation'
+    case 'xhigh':
+      return 'Extra-high reasoning for hard tasks and workflow orchestration'
     case 'max':
       return 'Maximum capability with deepest reasoning (requires current backend/model support)'
   }
@@ -262,6 +283,9 @@ export function getEffortValueDescription(value: EffortValue): string {
   }
 
   if (typeof value === 'string') {
+    if (value === 'ultracode') {
+      return 'Extra-high effort plus standing Workflow orchestration (this session only)'
+    }
     return getEffortLevelDescription(value)
   }
   return 'Balanced approach with standard implementation and testing'

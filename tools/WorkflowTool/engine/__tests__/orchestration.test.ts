@@ -47,10 +47,11 @@ describe('createLimiter', () => {
 
   test('synchronous throw inside thunk is contained', async () => {
     const limiter = createLimiter(2)
+    const syncThrow: () => Promise<never> = () => {
+      throw new Error('sync')
+    }
     await expect(
-      limiter.run((() => {
-        throw new Error('sync')
-      }) as any),
+      limiter.run(syncThrow),
     ).rejects.toThrow('sync')
     expect(limiter.active()).toBe(0)
   })
@@ -84,11 +85,12 @@ describe('parallel (barrier)', () => {
   })
 
   test('a synchronously-throwing thunk also becomes null', async () => {
+    const syncThrow: () => Promise<number> = () => {
+      throw new Error('sync')
+    }
     const out = await parallel([
       async () => 1,
-      (() => {
-        throw new Error('sync')
-      }) as any,
+      syncThrow,
     ])
     expect(out).toEqual([1, null])
   })

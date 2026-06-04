@@ -748,12 +748,30 @@ export const SettingsSchema = lazySchema(() =>
       effortLevel: z
         .enum(
           isInternalOperatorMode()
-            ? ['low', 'medium', 'high', 'max']
-            : ['low', 'medium', 'high'],
+            ? ['low', 'medium', 'high', 'xhigh', 'max']
+            : ['low', 'medium', 'high', 'xhigh'],
         )
         .optional()
         .catch(undefined)
         .describe('Persisted effort level for supported models.'),
+      disableWorkflows: z
+        .boolean()
+        .optional()
+        .describe(
+          'Disable the Workflow feature for this settings scope. Env MOSSEN_CODE_DISABLE_WORKFLOWS has highest precedence.',
+        ),
+      enableWorkflows: z
+        .boolean()
+        .optional()
+        .describe(
+          'Enable or disable the Workflow feature for this settings scope. Env MOSSEN_CODE_WORKFLOWS overrides this setting.',
+        ),
+      workflowKeywordTriggerEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'When false, workflow/ultrawork/ultracode prompt keywords do not trigger Workflow reminders. Defaults to true.',
+        ),
       reasoningProfile: z
         .enum(['fast', 'standard', 'deep'])
         .optional()

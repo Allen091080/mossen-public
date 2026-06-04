@@ -19,6 +19,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { feature } from 'bun:bundle'
 import type { Command } from '../../commands.js'
+import { isWorkflowRuntimeEnabled } from '../../utils/workflowAvailability.js'
 import { extractMeta } from './engine/meta.js'
 
 /** Project-scoped saved workflows live here (relative to the project root). */
@@ -32,7 +33,7 @@ export function getProjectWorkflowsDir(projectRoot: string): string {
 }
 
 export function isSavedWorkflowsEnabled(): boolean {
-  return feature('WORKFLOW_SCRIPTS') ? true : false
+  return feature('WORKFLOW_SCRIPTS') ? isWorkflowRuntimeEnabled() : false
 }
 
 type SavedWorkflow = {
@@ -41,6 +42,8 @@ type SavedWorkflow = {
   scriptPath: string
   scope: 'project' | 'user'
 }
+
+export type SavedWorkflowRef = SavedWorkflow
 
 /** Read + meta-parse every `*.js` in a dir. Bad files are skipped, not fatal. */
 function readWorkflowDir(
@@ -121,12 +124,25 @@ function toCommand(wf: SavedWorkflow): Command {
  * disk-read + meta-parse path regardless of the build-time feature flag.
  */
 export function loadWorkflowCommandsFrom(projectRoot: string): Command[] {
+  return loadSavedWorkflowsFrom(projectRoot).map(toCommand)
+}
+
+export function loadSavedWorkflowsFrom(projectRoot: string): SavedWorkflowRef[] {
   const project = readWorkflowDir(
     getProjectWorkflowsDir(projectRoot),
     'project',
   )
   const user = readWorkflowDir(getUserWorkflowsDir(), 'user')
-  return [...project, ...user].map(toCommand)
+  return [...project, ...user]
+}
+
+export function resolveSavedWorkflow(
+  projectRoot: string,
+  name: string,
+): SavedWorkflowRef | null {
+  const wanted = name.trim()
+  if (!wanted) return null
+  return loadSavedWorkflowsFrom(projectRoot).find(wf => wf.name === wanted) ?? null
 }
 
 /**
