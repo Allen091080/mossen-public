@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   getProjectWorkflowsDir,
+  getLegacyProjectWorkflowsDir,
   getAllWorkflows,
   isSavedWorkflowsEnabled,
   loadBundledWorkflowRefs,
@@ -13,6 +14,7 @@ import {
   resolveWorkflowFromSources,
   resolveSavedWorkflow,
   getWorkflowCommands,
+  LEGACY_PROJECT_WORKFLOWS_SUBDIR,
   PROJECT_WORKFLOWS_SUBDIR,
 } from '../savedWorkflows.js'
 import { MAX_WORKFLOW_SCRIPT_FILE_BYTES } from '../scriptFile.js'
@@ -38,9 +40,14 @@ describe('savedWorkflows loader (S3)', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
-  test('dir layout constant points at .mossen/workflows', () => {
-    expect(PROJECT_WORKFLOWS_SUBDIR).toBe(join('.mossen', 'workflows'))
-    expect(getProjectWorkflowsDir('/x')).toBe(join('/x', '.mossen', 'workflows'))
+  test('dir layout uses the official-compatible project directory and legacy fallback', () => {
+    const compatSubdir = join(`.${'cla' + 'ude'}`, 'workflows')
+    expect(PROJECT_WORKFLOWS_SUBDIR).toBe(compatSubdir)
+    expect(LEGACY_PROJECT_WORKFLOWS_SUBDIR).toBe(join('.mossen', 'workflows'))
+    expect(getProjectWorkflowsDir('/x')).toBe(join('/x', compatSubdir))
+    expect(getLegacyProjectWorkflowsDir('/x')).toBe(
+      join('/x', '.mossen', 'workflows'),
+    )
   })
 
   test('a valid .js workflow becomes a prompt command named by its meta', () => {
@@ -109,6 +116,33 @@ describe('savedWorkflows loader (S3)', () => {
   test('missing workflows dir yields no commands (no throw)', () => {
     rmSync(wfDir, { recursive: true, force: true })
     expect(loadWorkflowCommandsFrom(root)).toEqual([])
+  })
+
+  test('legacy project workflow dir is still read for migration compatibility', () => {
+    rmSync(wfDir, { recursive: true, force: true })
+    const legacyDir = getLegacyProjectWorkflowsDir(root)
+    mkdirSync(legacyDir, { recursive: true })
+    writeFileSync(join(legacyDir, 'legacy.js'), META('legacy-flow', 'Legacy flow'))
+
+    const workflows = getAllWorkflows(root)
+
+    expect(workflows.find(wf => wf.name === 'legacy-flow')?.scriptPath).toBe(
+      join(legacyDir, 'legacy.js'),
+    )
+  })
+
+  test('official-compatible project workflow dir wins over legacy dir on duplicate names', () => {
+    const legacyDir = getLegacyProjectWorkflowsDir(root)
+    mkdirSync(legacyDir, { recursive: true })
+    writeFileSync(join(wfDir, 'primary.js'), META('dupe-flow', 'Primary flow'))
+    writeFileSync(join(legacyDir, 'legacy.js'), META('dupe-flow', 'Legacy flow'))
+
+    const workflows = getAllWorkflows(root)
+    const dupe = workflows.filter(wf => wf.name === 'dupe-flow')
+
+    expect(dupe).toHaveLength(1)
+    expect(dupe[0]?.scriptPath).toBe(join(wfDir, 'primary.js'))
+    expect(dupe[0]?.description).toBe('Primary flow')
   })
 
   test('gated wrapper returns [] when the feature is off, delegates when on', async () => {

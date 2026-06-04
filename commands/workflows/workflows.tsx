@@ -105,9 +105,9 @@ function renderRunDetail(runId: string): string {
 
 /**
  * Save a run's script as a reusable named workflow (S5 "Save as").
- * `save <runId> [name] [--user]` — default scope is project (.mossen/workflows),
- * `--user` writes to ~/.mossen/workflows. The saved file becomes a /<name>
- * command on next command load.
+ * `save <runId> [name] [--user]` — default scope is the project workflow
+ * directory, `--user` writes to ~/.mossen/workflows. The saved file becomes a
+ * /<name> command on next command load.
  */
 function saveRun(args: string[]): string {
   const useUser = args.includes('--user')

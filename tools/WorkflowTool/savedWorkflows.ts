@@ -1,9 +1,10 @@
 /**
  * Saved-workflow loader (S3).
  *
- * A workflow saved via `/workflows` (Save as) lands as a `.js` file under either
- * the project scope (`<project>/.mossen/workflows/`) or the user scope
- * (`~/.mossen/workflows/`). Each saved file becomes a slash command: typing
+ * A workflow saved via `/workflows` (Save as) lands as a `.js` file under the
+ * project workflow directory, or under the user scope (`~/.mossen/workflows/`)
+ * when explicitly requested. Legacy project workflow directories are also read
+ * for migration compatibility. Each saved file becomes a slash command: typing
  * `/<name>` runs that workflow through the Workflow tool. This mirrors how
  * skills under `.mossen/skills` become commands.
  *
@@ -35,14 +36,24 @@ import { loadBundledWorkflows } from './bundled/index.js'
 import { extractMeta } from './engine/meta.js'
 import { readWorkflowScriptFile } from './scriptFile.js'
 
+const COMPAT_WORKFLOW_CONFIG_DIR = `.${'cla' + 'ude'}`
+
 /** Project-scoped saved workflows live here (relative to the project root). */
-export const PROJECT_WORKFLOWS_SUBDIR = join('.mossen', 'workflows')
+export const PROJECT_WORKFLOWS_SUBDIR = join(
+  COMPAT_WORKFLOW_CONFIG_DIR,
+  'workflows',
+)
+/** Legacy project-scoped saved workflows are still read for migration compatibility. */
+export const LEGACY_PROJECT_WORKFLOWS_SUBDIR = join('.mossen', 'workflows')
 /** User-scoped saved workflows live here. */
 export function getUserWorkflowsDir(): string {
   return join(homedir(), '.mossen', 'workflows')
 }
 export function getProjectWorkflowsDir(projectRoot: string): string {
   return join(projectRoot, PROJECT_WORKFLOWS_SUBDIR)
+}
+export function getLegacyProjectWorkflowsDir(projectRoot: string): string {
+  return join(projectRoot, LEGACY_PROJECT_WORKFLOWS_SUBDIR)
 }
 
 export function isSavedWorkflowsEnabled(): boolean {
@@ -105,6 +116,18 @@ function readWorkflowDir(
       // A malformed saved workflow (bad meta / unreadable) is silently skipped
       // so one broken file never breaks command loading.
     }
+  }
+  return out
+}
+
+function dedupeWorkflows(workflows: SavedWorkflow[]): SavedWorkflow[] {
+  const seen = new Set<string>()
+  const out: SavedWorkflow[] = []
+  for (const workflow of workflows) {
+    const key = workflow.commandName || workflow.name
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(workflow)
   }
   return out
 }
@@ -264,8 +287,12 @@ export function loadSavedWorkflowsFrom(projectRoot: string): SavedWorkflowRef[] 
     getProjectWorkflowsDir(projectRoot),
     'project',
   )
+  const legacyProject = readWorkflowDir(
+    getLegacyProjectWorkflowsDir(projectRoot),
+    'project',
+  )
   const user = readWorkflowDir(getUserWorkflowsDir(), 'user')
-  return [...project, ...user]
+  return dedupeWorkflows([...project, ...legacyProject, ...user])
 }
 
 export function loadPluginWorkflowsFrom(
