@@ -3,6 +3,7 @@ import {
   getSettingsForSource,
   updateSettingsForSource,
 } from '../../utils/settings/settings.js'
+import type { SettingSource } from '../../utils/settings/constants.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 
 const WORKFLOW_USAGE_CONSENT_PREFIX = 'wf_sha256:'
@@ -58,14 +59,15 @@ export function workflowNeedsUsageConsentPrompt(
 
 export function recordWorkflowUsageConsent(
   consentHash: string | null | undefined,
+  destination: Extract<SettingSource, 'userSettings' | 'localSettings'> = 'localSettings',
 ): boolean {
   if (!isWorkflowUsageConsentHash(consentHash)) return false
-  const current = settingsConsentHashes(getSettingsForSource('localSettings'))
+  const current = settingsConsentHashes(getSettingsForSource(destination))
   const next = current.includes(consentHash)
     ? current
     : [...current, consentHash]
   return (
-    updateSettingsForSource('localSettings', {
+    updateSettingsForSource(destination, {
       workflowUsageConsentHashes: next,
     }).error === null
   )

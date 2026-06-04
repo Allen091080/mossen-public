@@ -14,6 +14,7 @@ import {
   getSessionId,
   getSessionProjectDir,
   getTurnOutputTokens,
+  isUltracodeActive,
 } from '../../bootstrap/state.js'
 import {
   completeWorkflowTask,
@@ -63,8 +64,10 @@ import {
   buildNamedWorkflowPermissionUpdates,
   normalizeWorkflowPermissionRuleContent,
 } from './permissionRules.js'
+import { buildWorkflowPermissionReview } from './permissionReview.js'
 import { readWorkflowScriptFile } from './scriptFile.js'
 import { isWorkflowRuntimeEnabled } from '../../utils/workflowAvailability.js'
+import { hasRecordedWorkflowUsageConsent } from './usageConsent.js'
 import {
   registerRemoteAgentTask,
   startRemoteAgentTaskPolling,
@@ -510,6 +513,26 @@ export function appendWorkflowResultLogLine(
   }
 }
 
+function shouldSkipWorkflowLaunchPrompt(
+  permissionContext: ReturnType<ToolUseContext['getAppState']>['toolPermissionContext'],
+): boolean {
+  return (
+    permissionContext.shouldAvoidPermissionPrompts === true ||
+    permissionContext.mode === 'bypassPermissions' ||
+    (permissionContext.mode === 'plan' &&
+      permissionContext.isBypassPermissionsModeAvailable) ||
+    (permissionContext.mode === 'auto' && isUltracodeActive())
+  )
+}
+
+function getWorkflowLaunchConsentHash(input: WorkflowInput): string | null {
+  try {
+    return buildWorkflowPermissionReview(input).usageConsentHash
+  } catch {
+    return null
+  }
+}
+
 export const WorkflowTool = buildTool({
   name: WORKFLOW_TOOL_NAME,
   aliases: ['RunWorkflow'],
@@ -534,6 +557,9 @@ export const WorkflowTool = buildTool({
   },
   isConcurrencySafe() {
     return false
+  },
+  requiresUserInteraction() {
+    return true
   },
   toAutoClassifierInput(input) {
     return input.script ?? input.name ?? ''
@@ -621,6 +647,20 @@ export const WorkflowTool = buildTool({
           },
         }
       }
+    }
+
+    if (shouldSkipWorkflowLaunchPrompt(permissionContext)) {
+      return {
+        behavior: 'allow',
+        updatedInput: input,
+        decisionReason: {
+          type: 'mode',
+          mode: permissionContext.mode,
+        },
+      }
+    }
+
+    if (workflowName) {
 
       const askRule = getRuleByContentsForToolName(
         permissionContext,
@@ -654,6 +694,20 @@ export const WorkflowTool = buildTool({
             rule: allowRule,
           },
         }
+      }
+    }
+
+    if (
+      permissionContext.mode === 'auto' &&
+      hasRecordedWorkflowUsageConsent(getWorkflowLaunchConsentHash(input))
+    ) {
+      return {
+        behavior: 'allow',
+        updatedInput: input,
+        decisionReason: {
+          type: 'mode',
+          mode: 'auto',
+        },
       }
     }
 

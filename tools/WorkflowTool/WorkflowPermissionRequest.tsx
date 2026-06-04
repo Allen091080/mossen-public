@@ -7,6 +7,7 @@ import { toIDEDisplayName } from '../../utils/ide.js'
 import { editPromptInEditor } from '../../utils/promptEditor.js'
 import { updateSettingsForSource } from '../../utils/settings/settings.js'
 import { getLocalizedText } from '../../utils/uiLanguage.js'
+import { useAppState } from '../../state/AppState.js'
 import { type UnaryEvent, usePermissionRequestLogging } from '../../components/permissions/hooks.js'
 import { PermissionDialog } from '../../components/permissions/PermissionDialog.js'
 import {
@@ -239,6 +240,7 @@ export function WorkflowPermissionRequest({
   const [editedScript, setEditedScript] = useState<string | null>(null)
   const [showRawScript, setShowRawScript] = useState(false)
   const [editorStatus, setEditorStatus] = useState<string | null>(null)
+  const permissionMode = useAppState(state => state.toolPermissionContext.mode)
   useEffect(() => {
     setEditedScript(null)
     setShowRawScript(false)
@@ -286,7 +288,7 @@ export function WorkflowPermissionRequest({
 
   const options: PermissionPromptOption<WorkflowOptionValue>[] = [
     {
-      label: getLocalizedText({ en: 'Yes', zh: '是' }),
+      label: getLocalizedText({ en: 'Yes, run it', zh: '是，运行' }),
       value: 'yes',
       feedbackConfig: { type: 'accept' },
     },
@@ -346,15 +348,23 @@ export function WorkflowPermissionRequest({
     isMcp: toolUseConfirm.tool.isMcp ?? false,
   }
 
+  const recordAutoLaunchConsent = () => {
+    if (permissionMode === 'auto') {
+      recordWorkflowUsageConsent(review.usageConsentHash, 'userSettings')
+    }
+  }
+
   const handleSelect = (value: WorkflowOptionValue, feedback?: string) => {
     switch (value) {
       case 'yes':
         logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept')
+        recordAutoLaunchConsent()
         toolUseConfirm.onAllow(effectiveInput, [], feedback)
         onDone()
         break
       case 'yes-always':
         logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept')
+        recordAutoLaunchConsent()
         toolUseConfirm.onAllow(
           effectiveInput,
           namedWorkflowPermissionUpdates,
@@ -364,12 +374,14 @@ export function WorkflowPermissionRequest({
         break
       case 'yes-record-consent':
         logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept')
+        recordAutoLaunchConsent()
         recordWorkflowUsageConsent(review.usageConsentHash)
         toolUseConfirm.onAllow(effectiveInput, [], feedback)
         onDone()
         break
       case 'yes-skip-warning': {
         logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept')
+        recordAutoLaunchConsent()
         updateSettingsForSource('localSettings', {
           skipWorkflowUsageWarning: true,
         })

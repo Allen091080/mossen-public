@@ -1,4 +1,5 @@
 import type { PermissionUpdate } from '../../utils/permissions/PermissionUpdateSchema.js'
+import type { PermissionUpdateDestination } from '../../types/permissions.js'
 import { WORKFLOW_TOOL_NAME } from './constants.js'
 
 export function normalizeWorkflowPermissionRuleContent(
@@ -11,6 +12,7 @@ export function normalizeWorkflowPermissionRuleContent(
 
 export function buildNamedWorkflowPermissionUpdates(
   workflowName: unknown,
+  destination: PermissionUpdateDestination = 'localSettings',
 ): PermissionUpdate[] {
   const ruleContent = normalizeWorkflowPermissionRuleContent(workflowName)
   if (!ruleContent) return []
@@ -19,7 +21,7 @@ export function buildNamedWorkflowPermissionUpdates(
       type: 'addRules',
       rules: [{ toolName: WORKFLOW_TOOL_NAME, ruleContent }],
       behavior: 'allow',
-      destination: 'localSettings',
+      destination,
     },
   ]
 }

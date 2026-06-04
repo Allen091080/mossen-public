@@ -25,6 +25,17 @@ describe('workflow permission rules', () => {
     ])
   })
 
+  test('can build user-scoped allow updates for auto-mode workflow consent', () => {
+    expect(buildNamedWorkflowPermissionUpdates('ship-check', 'userSettings')).toEqual([
+      {
+        type: 'addRules',
+        rules: [{ toolName: WORKFLOW_TOOL_NAME, ruleContent: 'ship-check' }],
+        behavior: 'allow',
+        destination: 'userSettings',
+      },
+    ])
+  })
+
   test('does not build allow updates without a workflow name', () => {
     expect(buildNamedWorkflowPermissionUpdates('')).toEqual([])
     expect(buildNamedWorkflowPermissionUpdates(null)).toEqual([])

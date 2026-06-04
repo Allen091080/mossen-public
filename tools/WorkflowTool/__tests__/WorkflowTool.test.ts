@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -11,7 +12,10 @@ import { join, resolve } from 'node:path'
 import { isValidElement } from 'react'
 import {
   getProjectRoot,
+  getOriginalCwd,
   setProjectRoot,
+  setOriginalCwd,
+  setUltracodeActive,
   snapshotOutputTokensForTurn,
 } from '../../../bootstrap/state.js'
 import type { AppState } from '../../../state/AppState.js'
@@ -29,15 +33,26 @@ import { WORKFLOW_TOOL_NAME } from '../constants.js'
 import { loadRunLog, loadRunMeta } from '../engine/journalStore.js'
 import { getProjectWorkflowsDir } from '../savedWorkflows.js'
 import { killWorkflowTask } from '../../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { resetSettingsCache } from '../../../utils/settings/settingsCache.js'
+import {
+  recordWorkflowUsageConsent,
+  workflowUsageConsentHash,
+} from '../usageConsent.js'
 
 function toolUseContextWithWorkflowRules({
   allow = [],
   ask = [],
   deny = [],
+  mode = 'default',
+  isBypassPermissionsModeAvailable = false,
+  shouldAvoidPermissionPrompts = false,
 }: {
   allow?: string[]
   ask?: string[]
   deny?: string[]
+  mode?: AppState['toolPermissionContext']['mode']
+  isBypassPermissionsModeAvailable?: boolean
+  shouldAvoidPermissionPrompts?: boolean
 } = {}): ToolUseContext {
   const base = getEmptyToolPermissionContext()
   return {
@@ -45,9 +60,12 @@ function toolUseContextWithWorkflowRules({
     getAppState: () => ({
       toolPermissionContext: {
         ...base,
+        mode,
         alwaysAllowRules: allow.length ? { localSettings: allow } : {},
         alwaysAskRules: ask.length ? { localSettings: ask } : {},
         alwaysDenyRules: deny.length ? { localSettings: deny } : {},
+        isBypassPermissionsModeAvailable,
+        shouldAvoidPermissionPrompts,
       },
     }),
   } as unknown as ToolUseContext
@@ -364,6 +382,11 @@ return agent('inspect remotely')
 })
 
 describe('WorkflowTool named workflow permissions', () => {
+  const AUTO_CONSENT_WORKFLOW = `
+export const meta = { name: 'auto-flow', description: 'Auto consent flow' }
+return 'ok'
+`
+
   it('asks by default for dynamic workflows and suggests a named workflow allow rule', async () => {
     const decision = await WorkflowTool.checkPermissions(
       { name: ' ship-check ' },
@@ -453,6 +476,101 @@ return 'ok'
     }
     expect(decision.message).toBe('Run dynamic workflow')
     expect(decision.suggestions).toBeUndefined()
+  })
+
+  it('requires an interactive launch decision so auto mode does not use the classifier', () => {
+    expect(WorkflowTool.requiresUserInteraction?.()).toBe(true)
+  })
+
+  it('asks on first auto-mode launch, then allows after user-scoped workflow consent', async () => {
+    const priorCwd = getOriginalCwd()
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mossen-workflow-auto-consent-'))
+    const configRoot = join(tempRoot, 'config')
+    try {
+      setOriginalCwd(tempRoot)
+      process.env.MOSSEN_CONFIG_DIR = configRoot
+      resetSettingsCache()
+
+      const firstDecision = await WorkflowTool.checkPermissions(
+        { script: AUTO_CONSENT_WORKFLOW },
+        toolUseContextWithWorkflowRules({ mode: 'auto' }),
+      )
+
+      expect(firstDecision.behavior).toBe('ask')
+      expect(recordWorkflowUsageConsent(
+        workflowUsageConsentHash(AUTO_CONSENT_WORKFLOW),
+        'userSettings',
+      )).toBe(true)
+
+      const secondDecision = await WorkflowTool.checkPermissions(
+        { script: AUTO_CONSENT_WORKFLOW },
+        toolUseContextWithWorkflowRules({ mode: 'auto' }),
+      )
+
+      expect(secondDecision.behavior).toBe('allow')
+      expect(secondDecision.decisionReason).toEqual({
+        type: 'mode',
+        mode: 'auto',
+      })
+      const userSettings = JSON.parse(
+        readFileSync(join(configRoot, 'settings.json'), 'utf8'),
+      )
+      expect(userSettings.workflowUsageConsentHashes).toEqual([
+        workflowUsageConsentHash(AUTO_CONSENT_WORKFLOW),
+      ])
+    } finally {
+      setOriginalCwd(priorCwd)
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
+      resetSettingsCache()
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('skips the launch prompt for auto-mode ultracode, bypass mode, and headless contexts', async () => {
+    try {
+      setUltracodeActive(true)
+      const ultracodeDecision = await WorkflowTool.checkPermissions(
+        { script: AUTO_CONSENT_WORKFLOW },
+        toolUseContextWithWorkflowRules({ mode: 'auto' }),
+      )
+      expect(ultracodeDecision.behavior).toBe('allow')
+      expect(ultracodeDecision.decisionReason).toEqual({
+        type: 'mode',
+        mode: 'auto',
+      })
+    } finally {
+      setUltracodeActive(false)
+    }
+
+    const bypassDecision = await WorkflowTool.checkPermissions(
+      { name: 'ship-check' },
+      toolUseContextWithWorkflowRules({
+        ask: [`${WORKFLOW_TOOL_NAME}(ship-check)`],
+        mode: 'bypassPermissions',
+      }),
+    )
+    expect(bypassDecision.behavior).toBe('allow')
+    expect(bypassDecision.decisionReason).toEqual({
+      type: 'mode',
+      mode: 'bypassPermissions',
+    })
+
+    const headlessDecision = await WorkflowTool.checkPermissions(
+      { name: 'ship-check' },
+      toolUseContextWithWorkflowRules({
+        shouldAvoidPermissionPrompts: true,
+      }),
+    )
+    expect(headlessDecision.behavior).toBe('allow')
+    expect(headlessDecision.decisionReason).toEqual({
+      type: 'mode',
+      mode: 'default',
+    })
   })
 })
 
