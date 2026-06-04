@@ -16,6 +16,13 @@ import {
   registerTask,
   updateTaskState,
 } from '../../utils/task/framework.js'
+import {
+  deleteRemoteAgentMetadata,
+  listRemoteAgentMetadata,
+  type RemoteAgentMetadata,
+  writeRemoteAgentMetadata,
+} from '../../utils/sessionStorage.js'
+import { logForDebugging } from '../../utils/debug.js'
 
 type RemoteSdkMessage = Record<string, unknown>
 
@@ -44,10 +51,31 @@ export type RemoteAgentTaskPollingDeps = {
     afterId: string | null,
   ) => Promise<RemotePollResult>
   archive?: (sessionId: string) => Promise<void>
+  writeMetadata?: (
+    taskId: string,
+    metadata: RemoteAgentMetadata,
+  ) => Promise<void>
+  deleteMetadata?: (taskId: string) => Promise<void>
+  listMetadata?: () => Promise<RemoteAgentMetadata[]>
   pollIntervalMs?: number
   setTimeoutFn?: typeof setTimeout
   clearTimeoutFn?: typeof clearTimeout
 }
+
+export type RestoreRemoteAgentTasksResult = {
+  restored: number
+  skipped: number
+  cleanups: Array<() => void>
+}
+
+type RemoteAgentTaskStateInput = Omit<
+  RegisterRemoteAgentTaskInput,
+  'setAppState'
+> & {
+  spawnedAt?: number
+}
+
+const pendingMetadataWrites = new Map<string, Promise<void>>()
 
 async function defaultPollRemoteSession(
   sessionId: string,
@@ -115,6 +143,16 @@ function enqueueRemoteTaskNotification(
 
 export function registerRemoteAgentTask(
   input: RegisterRemoteAgentTaskInput,
+  deps: RemoteAgentTaskPollingDeps = {},
+): RemoteAgentTaskState {
+  const task = createRemoteAgentTaskState(input)
+  registerTask(task, input.setAppState)
+  persistRemoteAgentMetadata(task, deps)
+  return task
+}
+
+function createRemoteAgentTaskState(
+  input: RemoteAgentTaskStateInput,
 ): RemoteAgentTaskState {
   const task: RemoteAgentTaskState = {
     ...createTaskStateBase(
@@ -135,8 +173,62 @@ export function registerRemoteAgentTask(
     remoteTaskMetadata: input.remoteTaskMetadata,
     isBackgrounded: true,
   }
-  registerTask(task, input.setAppState)
+  if (typeof input.spawnedAt === 'number') {
+    task.startTime = input.spawnedAt
+  }
   return task
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined
+  }
+  return value as Record<string, unknown>
+}
+
+function persistRemoteAgentMetadata(
+  task: RemoteAgentTaskState,
+  deps: RemoteAgentTaskPollingDeps,
+): void {
+  if (!task.sessionId || !task.remoteTaskType) return
+  const writeMetadata = deps.writeMetadata ?? writeRemoteAgentMetadata
+  const metadata: RemoteAgentMetadata = {
+    taskId: task.id,
+    remoteTaskType: task.remoteTaskType,
+    sessionId: task.sessionId,
+    title: task.title,
+    command: task.command ?? task.description,
+    spawnedAt: task.startTime,
+    toolUseId: task.toolUseId,
+    remoteTaskMetadata: asRecord(task.remoteTaskMetadata),
+  }
+  const writePromise = writeMetadata(task.id, metadata).catch(err => {
+    logForDebugging(
+      `persistRemoteAgentMetadata failed for ${task.id}: ${String(err)}`,
+    )
+  })
+  pendingMetadataWrites.set(task.id, writePromise)
+  void writePromise.finally(() => {
+    if (pendingMetadataWrites.get(task.id) === writePromise) {
+      pendingMetadataWrites.delete(task.id)
+    }
+  })
+}
+
+function removeRemoteAgentMetadata(
+  taskId: string,
+  deps: RemoteAgentTaskPollingDeps,
+): void {
+  const deleteMetadata = deps.deleteMetadata ?? deleteRemoteAgentMetadata
+  const pendingWrite = pendingMetadataWrites.get(taskId)
+  const deletePromise = (
+    pendingWrite ? pendingWrite.then(() => deleteMetadata(taskId)) : deleteMetadata(taskId)
+  ).catch(err => {
+    logForDebugging(
+      `removeRemoteAgentMetadata failed for ${taskId}: ${String(err)}`,
+    )
+  })
+  void deletePromise
 }
 
 export function finishRemoteAgentTask(
@@ -144,6 +236,7 @@ export function finishRemoteAgentTask(
   status: 'completed' | 'failed' | 'killed',
   setAppState: SetAppState,
   summary?: string,
+  deps: RemoteAgentTaskPollingDeps = {},
 ): void {
   let finishedTask: RemoteAgentTaskState | null = null
   updateTaskState<RemoteAgentTaskState>(taskId, setAppState, task => {
@@ -168,6 +261,7 @@ export function finishRemoteAgentTask(
       summary: finalSummary,
     },
   )
+  removeRemoteAgentMetadata(taskId, deps)
 }
 
 export function startRemoteAgentTaskPolling(
@@ -216,13 +310,21 @@ export function startRemoteAgentTaskPolling(
           params.taskId,
           subtype === 'success' ? 'completed' : 'failed',
           params.setAppState,
+          undefined,
+          deps,
         )
         active = false
         return
       }
 
       if (page.sessionStatus === 'archived') {
-        finishRemoteAgentTask(params.taskId, 'completed', params.setAppState)
+        finishRemoteAgentTask(
+          params.taskId,
+          'completed',
+          params.setAppState,
+          undefined,
+          deps,
+        )
         active = false
         return
       }
@@ -239,6 +341,68 @@ export function startRemoteAgentTaskPolling(
     active = false
     if (timer) clearTimeoutFn(timer)
   }
+}
+
+function isRestorableRemoteAgentMetadata(
+  metadata: RemoteAgentMetadata,
+): metadata is RemoteAgentMetadata {
+  return (
+    typeof metadata.taskId === 'string' &&
+    metadata.taskId.length > 0 &&
+    typeof metadata.sessionId === 'string' &&
+    metadata.sessionId.length > 0 &&
+    typeof metadata.remoteTaskType === 'string' &&
+    metadata.remoteTaskType.length > 0
+  )
+}
+
+export async function restoreRemoteAgentTasks(
+  setAppState: SetAppState,
+  deps: RemoteAgentTaskPollingDeps = {},
+): Promise<RestoreRemoteAgentTasksResult> {
+  const listMetadata = deps.listMetadata ?? listRemoteAgentMetadata
+  let metadataList: RemoteAgentMetadata[]
+  try {
+    metadataList = await listMetadata()
+  } catch (err) {
+    logForDebugging(`restoreRemoteAgentTasks failed: ${String(err)}`)
+    return { restored: 0, skipped: 0, cleanups: [] }
+  }
+
+  let restored = 0
+  let skipped = 0
+  const cleanups: Array<() => void> = []
+  for (const metadata of metadataList) {
+    if (!isRestorableRemoteAgentMetadata(metadata)) {
+      skipped += 1
+      continue
+    }
+    const title = metadata.title || `remote session ${metadata.sessionId}`
+    const task = createRemoteAgentTaskState({
+      taskId: metadata.taskId,
+      sessionId: metadata.sessionId,
+      title,
+      description: metadata.command || title,
+      remoteTaskType: metadata.remoteTaskType,
+      command: metadata.command,
+      toolUseId: metadata.toolUseId,
+      remoteTaskMetadata: metadata.remoteTaskMetadata,
+      spawnedAt: metadata.spawnedAt,
+    })
+    registerTask(task, setAppState)
+    cleanups.push(
+      startRemoteAgentTaskPolling(
+        {
+          taskId: metadata.taskId,
+          sessionId: metadata.sessionId,
+          setAppState,
+        },
+        deps,
+      ),
+    )
+    restored += 1
+  }
+  return { restored, skipped, cleanups }
 }
 
 export const RemoteAgentTask: Task = {

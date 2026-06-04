@@ -47,6 +47,7 @@ import { getTeamName, getAgentName } from '../utils/teammate.js';
 import { WorkerPendingPermission } from '../components/permissions/WorkerPendingPermission.js';
 import { injectUserMessageToTeammate, getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
 import { pendingWorkflowCount as getPendingWorkflowCount } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js';
+import { restoreRemoteAgentTasks } from '../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import { isLocalAgentTask, queuePendingMessage, appendMessageToLocalAgent, type LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js';
 import { isLocalShellTask } from '../tasks/LocalShellTask/guards.js';
 import { registerLeaderToolUseConfirmQueue, unregisterLeaderToolUseConfirmQueue, registerLeaderSetToolPermissionContext, unregisterLeaderSetToolPermissionContext } from '../utils/swarm/leaderPermissionBridge.js';
@@ -695,6 +696,32 @@ export function REPL({
   const elicitation = useAppState(s => s.elicitation);
   const viewingAgentTaskId = useAppState(s => s.viewingAgentTaskId);
   const setAppState = useSetAppState();
+  const restoredRemoteAgentPollingCleanupsRef = useRef<Array<() => void>>([]);
+  const remoteAgentRestoreGenerationRef = useRef(0);
+  const stopRestoredRemoteAgentPolling = useCallback(() => {
+    remoteAgentRestoreGenerationRef.current += 1;
+    for (const cleanup of restoredRemoteAgentPollingCleanupsRef.current) {
+      cleanup();
+    }
+    restoredRemoteAgentPollingCleanupsRef.current = [];
+  }, []);
+  const restoreRemoteAgentTasksForCurrentSession = useCallback(() => {
+    if (isRemoteSession) return;
+    stopRestoredRemoteAgentPolling();
+    const generation = remoteAgentRestoreGenerationRef.current;
+    void restoreRemoteAgentTasks(setAppState).then(result => {
+      if (generation !== remoteAgentRestoreGenerationRef.current) {
+        for (const cleanup of result.cleanups) cleanup();
+        return;
+      }
+      restoredRemoteAgentPollingCleanupsRef.current = result.cleanups;
+      if (result.restored > 0 || result.skipped > 0) {
+        logForDebugging(`restoreRemoteAgentTasks: restored=${result.restored} skipped=${result.skipped}`);
+      }
+    }).catch(err => {
+      logForDebugging(`restoreRemoteAgentTasks failed: ${errorMessage(err)}`);
+    });
+  }, [isRemoteSession, setAppState, stopRestoredRemoteAgentPolling]);
 
   // Bootstrap: retained local_agent that hasn't loaded disk yet → read
   // sidechain JSONL and UUID-merge with whatever stream has appended so far.
@@ -1998,6 +2025,7 @@ export function REPL({
 
       // Clear input to ensure no residual state
       setInputValue('');
+      restoreRemoteAgentTasksForCurrentSession();
       logMossenEvent('mossen.session.resumed', {
         entrypoint: entrypoint as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         success: true,
@@ -2010,7 +2038,7 @@ export function REPL({
       });
       throw error;
     }
-  }, [resetLoadingState, setAppState]);
+  }, [resetLoadingState, restoreRemoteAgentTasksForCurrentSession, setAppState]);
 
   // Lazy init: useRef(createX()) would call createX on every render and
   // discard the result. LRUCache construction inside FileStateCache is
@@ -4154,9 +4182,11 @@ export function REPL({
   // Initial load
   useEffect(() => {
     void onInit();
+    restoreRemoteAgentTasksForCurrentSession();
 
     // Cleanup on unmount
     return () => {
+      stopRestoredRemoteAgentPolling();
       void diagnosticTracker.shutdown();
     };
     // TODO: fix this
