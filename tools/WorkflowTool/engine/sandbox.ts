@@ -44,6 +44,8 @@ export class WorkflowTimeoutError extends Error {
   }
 }
 
+const DEFAULT_SYNC_TIMEOUT_MS = 1000
+
 /** Global names shadowed to `undefined` inside every workflow body. */
 const SHADOWED_GLOBALS = [
   'globalThis',
@@ -92,6 +94,8 @@ export type RunSandboxOptions = {
   scope: SandboxScope
   /** Hard wall-clock ceiling for the whole script. */
   timeoutMs: number
+  /** First-frame synchronous VM ceiling. Defaults lower than the whole run. */
+  syncTimeoutMs?: number
   /** Optional external cancellation. */
   signal?: AbortSignal
 }
@@ -257,8 +261,17 @@ function createContext(scope: SandboxScope, timeoutMs: number): vm.Context {
  */
 export async function runSandbox(options: RunSandboxOptions): Promise<unknown> {
   const { source, scope, timeoutMs, signal } = options
+  const syncTimeoutMs = Math.max(
+    1,
+    Math.floor(
+      Math.min(
+        timeoutMs,
+        options.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS,
+      ),
+    ),
+  )
   const script = compileWorkflowScript(source)
-  const context = createContext(scope, timeoutMs)
+  const context = createContext(scope, syncTimeoutMs)
 
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
@@ -278,9 +291,9 @@ export async function runSandbox(options: RunSandboxOptions): Promise<unknown> {
   try {
     let value: unknown
     try {
-      value = script.runInContext(context, { timeout: timeoutMs })
+      value = script.runInContext(context, { timeout: syncTimeoutMs })
     } catch (err) {
-      if (isVmTimeout(err)) throw new WorkflowTimeoutError(timeoutMs)
+      if (isVmTimeout(err)) throw new WorkflowTimeoutError(syncTimeoutMs)
       normalizeExecutionError(err)
     }
     const execution = Promise.resolve(value).catch(normalizeExecutionError)

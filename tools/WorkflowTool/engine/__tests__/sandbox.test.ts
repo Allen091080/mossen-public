@@ -173,6 +173,17 @@ describe('runSandbox — limits', () => {
     ).rejects.toThrow(WorkflowTimeoutError)
   })
 
+  test('synchronous first-frame timeout is separate from the whole run timeout', async () => {
+    await expect(
+      runSandbox({
+        ...base,
+        timeoutMs: 5000,
+        syncTimeoutMs: 25,
+        source: `while (true) {}`,
+      }),
+    ).rejects.toThrow('Workflow script exceeded its 25ms time budget.')
+  })
+
   test('an awaiting script that never resolves hits the timeout', async () => {
     await expect(
       runSandbox({
