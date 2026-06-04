@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { z } from 'zod/v4'
 import { buildTool } from 'src/Tool.js'
+import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import { getRuleByContentsForToolName } from '../../utils/permissions/permissions.js'
 import {
   getOriginalCwd,
   getProjectRoot,
@@ -47,6 +49,10 @@ import {
 import type { WorkflowRuntime } from './engine/runtime.js'
 import { getProjectDir } from '../../utils/sessionStorage.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import {
+  buildNamedWorkflowPermissionUpdates,
+  normalizeWorkflowPermissionRuleContent,
+} from './permissionRules.js'
 
 /** Default wall-clock ceiling for a whole workflow run (30 minutes). */
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
@@ -232,6 +238,10 @@ function workflowTranscriptDir(runId: string): string {
   return join(projectDir, getSessionId(), 'subagents', 'workflows', runId)
 }
 
+function workflowPermissionMessage(workflowName: string | null): string {
+  return workflowName ? `Run workflow: ${workflowName}` : 'Run dynamic workflow'
+}
+
 async function resolveNestedWorkflowSource(
   nameOrRef: string | { scriptPath: string },
 ): Promise<{ source: string; label: string }> {
@@ -314,6 +324,72 @@ export const WorkflowTool = buildTool({
   },
   isConcurrencySafe() {
     return false
+  },
+  async checkPermissions(input, context): Promise<PermissionDecision> {
+    const workflowName = normalizeWorkflowPermissionRuleContent(input.name)
+    const permissionContext = context.getAppState().toolPermissionContext
+    const suggestions = workflowName
+      ? buildNamedWorkflowPermissionUpdates(workflowName)
+      : undefined
+
+    if (workflowName) {
+      const denyRule = getRuleByContentsForToolName(
+        permissionContext,
+        WORKFLOW_TOOL_NAME,
+        'deny',
+      ).get(workflowName)
+      if (denyRule) {
+        return {
+          behavior: 'deny',
+          message: `Workflow execution blocked by permission rules: ${workflowName}`,
+          decisionReason: {
+            type: 'rule',
+            rule: denyRule,
+          },
+        }
+      }
+
+      const askRule = getRuleByContentsForToolName(
+        permissionContext,
+        WORKFLOW_TOOL_NAME,
+        'ask',
+      ).get(workflowName)
+      if (askRule) {
+        return {
+          behavior: 'ask',
+          message: workflowPermissionMessage(workflowName),
+          decisionReason: {
+            type: 'rule',
+            rule: askRule,
+          },
+          suggestions,
+          updatedInput: input,
+        }
+      }
+
+      const allowRule = getRuleByContentsForToolName(
+        permissionContext,
+        WORKFLOW_TOOL_NAME,
+        'allow',
+      ).get(workflowName)
+      if (allowRule) {
+        return {
+          behavior: 'allow',
+          updatedInput: input,
+          decisionReason: {
+            type: 'rule',
+            rule: allowRule,
+          },
+        }
+      }
+    }
+
+    return {
+      behavior: 'ask',
+      message: workflowPermissionMessage(workflowName),
+      suggestions,
+      updatedInput: input,
+    }
   },
   userFacingName() {
     return WORKFLOW_TOOL_NAME

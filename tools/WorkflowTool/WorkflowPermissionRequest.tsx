@@ -17,6 +17,7 @@ import {
   buildWorkflowPermissionReview,
   type WorkflowPermissionReview,
 } from './permissionReview.js'
+import { buildNamedWorkflowPermissionUpdates } from './permissionRules.js'
 import type {
   WorkflowStaticPhase,
   WorkflowStaticPhaseKind,
@@ -28,6 +29,7 @@ import {
 
 type WorkflowOptionValue =
   | 'yes'
+  | 'yes-always'
   | 'yes-record-consent'
   | 'yes-skip-warning'
   | 'no'
@@ -236,6 +238,10 @@ export function WorkflowPermissionRequest({
     [],
   )
   usePermissionRequestLogging(toolUseConfirm, unaryEvent)
+  const namedWorkflowPermissionUpdates =
+    review.sourceKind === 'named' && !review.metaError
+      ? buildNamedWorkflowPermissionUpdates(review.sourceLabel)
+      : []
 
   const options: PermissionPromptOption<WorkflowOptionValue>[] = [
     {
@@ -244,6 +250,16 @@ export function WorkflowPermissionRequest({
       feedbackConfig: { type: 'accept' },
     },
   ]
+  if (namedWorkflowPermissionUpdates.length > 0) {
+    options.push({
+      label: getLocalizedText({
+        en: `Yes, and don't ask again for ${review.sourceLabel} in this project`,
+        zh: `是，并且在此项目中不再询问 ${review.sourceLabel}`,
+      }),
+      value: 'yes-always',
+      feedbackConfig: { type: 'accept' },
+    })
+  }
   if (review.showUsageWarning && review.usageConsentHash) {
     options.push({
       label: getLocalizedText({
@@ -280,6 +296,15 @@ export function WorkflowPermissionRequest({
       case 'yes':
         logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept')
         toolUseConfirm.onAllow(toolUseConfirm.input, [], feedback)
+        onDone()
+        break
+      case 'yes-always':
+        logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept')
+        toolUseConfirm.onAllow(
+          toolUseConfirm.input,
+          namedWorkflowPermissionUpdates,
+          feedback,
+        )
         onDone()
         break
       case 'yes-record-consent':

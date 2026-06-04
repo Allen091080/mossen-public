@@ -11,11 +11,39 @@ import { join } from 'node:path'
 import { isValidElement } from 'react'
 import { getProjectRoot, setProjectRoot } from '../../../bootstrap/state.js'
 import {
+  getEmptyToolPermissionContext,
+  type ToolUseContext,
+} from '../../../Tool.js'
+import {
   appendWorkflowResultLogLine,
   MAX_WORKFLOW_RESULT_LOG_LINES,
   WorkflowTool,
 } from '../WorkflowTool.js'
+import { WORKFLOW_TOOL_NAME } from '../constants.js'
 import { getProjectWorkflowsDir } from '../savedWorkflows.js'
+
+function toolUseContextWithWorkflowRules({
+  allow = [],
+  ask = [],
+  deny = [],
+}: {
+  allow?: string[]
+  ask?: string[]
+  deny?: string[]
+} = {}): ToolUseContext {
+  const base = getEmptyToolPermissionContext()
+  return {
+    abortController: new AbortController(),
+    getAppState: () => ({
+      toolPermissionContext: {
+        ...base,
+        alwaysAllowRules: allow.length ? { localSettings: allow } : {},
+        alwaysAskRules: ask.length ? { localSettings: ask } : {},
+        alwaysDenyRules: deny.length ? { localSettings: deny } : {},
+      },
+    }),
+  } as unknown as ToolUseContext
+}
 
 // Regression for the Ink crash seen in real use: renderToolResultMessage used
 // to return a bare string, which crashes the entire render tree with
@@ -63,6 +91,99 @@ describe('WorkflowTool captured run log', () => {
     expect(log[MAX_WORKFLOW_RESULT_LOG_LINES - 1]).toBe(
       `line-${MAX_WORKFLOW_RESULT_LOG_LINES - 1}`,
     )
+  })
+})
+
+describe('WorkflowTool named workflow permissions', () => {
+  it('asks by default for dynamic workflows and suggests a named workflow allow rule', async () => {
+    const decision = await WorkflowTool.checkPermissions(
+      { name: ' ship-check ' },
+      toolUseContextWithWorkflowRules(),
+    )
+
+    expect(decision.behavior).toBe('ask')
+    if (decision.behavior !== 'ask') {
+      throw new Error(`Expected ask, got ${decision.behavior}`)
+    }
+    expect(decision.message).toBe('Run workflow: ship-check')
+    expect(decision.updatedInput).toEqual({ name: ' ship-check ' })
+    expect(decision.suggestions).toEqual([
+      {
+        type: 'addRules',
+        rules: [{ toolName: WORKFLOW_TOOL_NAME, ruleContent: 'ship-check' }],
+        behavior: 'allow',
+        destination: 'localSettings',
+      },
+    ])
+  })
+
+  it('allows a workflow when an exact named workflow rule exists', async () => {
+    const decision = await WorkflowTool.checkPermissions(
+      { name: 'ship-check' },
+      toolUseContextWithWorkflowRules({
+        allow: [`${WORKFLOW_TOOL_NAME}(ship-check)`],
+      }),
+    )
+
+    expect(decision.behavior).toBe('allow')
+    expect(decision.decisionReason?.type).toBe('rule')
+    if (decision.decisionReason?.type === 'rule') {
+      expect(decision.decisionReason.rule.ruleValue).toEqual({
+        toolName: WORKFLOW_TOOL_NAME,
+        ruleContent: 'ship-check',
+      })
+    }
+  })
+
+  it('respects exact named workflow ask and deny rules', async () => {
+    const askDecision = await WorkflowTool.checkPermissions(
+      { name: 'ship-check' },
+      toolUseContextWithWorkflowRules({
+        ask: [`${WORKFLOW_TOOL_NAME}(ship-check)`],
+      }),
+    )
+
+    expect(askDecision.behavior).toBe('ask')
+    if (askDecision.behavior !== 'ask') {
+      throw new Error(`Expected ask, got ${askDecision.behavior}`)
+    }
+    expect(askDecision.decisionReason?.type).toBe('rule')
+    if (askDecision.decisionReason?.type === 'rule') {
+      expect(askDecision.decisionReason.rule.ruleBehavior).toBe('ask')
+    }
+
+    const denyDecision = await WorkflowTool.checkPermissions(
+      { name: 'ship-check' },
+      toolUseContextWithWorkflowRules({
+        allow: [`${WORKFLOW_TOOL_NAME}(ship-check)`],
+        deny: [`${WORKFLOW_TOOL_NAME}(ship-check)`],
+      }),
+    )
+
+    expect(denyDecision.behavior).toBe('deny')
+    if (denyDecision.behavior !== 'deny') {
+      throw new Error(`Expected deny, got ${denyDecision.behavior}`)
+    }
+    expect(denyDecision.message).toContain('ship-check')
+  })
+
+  it('does not suggest a reusable rule for inline dynamic workflow scripts', async () => {
+    const decision = await WorkflowTool.checkPermissions(
+      {
+        script: `
+export const meta = { name: 'inline-flow', description: 'Inline flow' }
+return 'ok'
+`,
+      },
+      toolUseContextWithWorkflowRules(),
+    )
+
+    expect(decision.behavior).toBe('ask')
+    if (decision.behavior !== 'ask') {
+      throw new Error(`Expected ask, got ${decision.behavior}`)
+    }
+    expect(decision.message).toBe('Run dynamic workflow')
+    expect(decision.suggestions).toBeUndefined()
   })
 })
 
