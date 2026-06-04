@@ -147,6 +147,84 @@ describe('workflow agent structured output helpers', () => {
 })
 
 describe('workflow local agent resolution', () => {
+  test('reports live local tool progress from the subagent stream', async () => {
+    const updates: Array<{
+      tokens?: number
+      toolCalls?: number
+      lastToolName?: string
+      lastToolSummary?: string
+      resultPreview?: string
+    }> = []
+    const runAgentImpl: NonNullable<
+      WorkflowAgentRunnerDeps['runAgentImpl']
+    > = async function* () {
+      yield {
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_1',
+              name: 'Read',
+              input: { file_path: 'src/index.ts' },
+            },
+          ],
+          usage: {
+            input_tokens: 5,
+            output_tokens: 7,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      } as never
+      yield {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'finished inspection' }],
+          usage: {
+            input_tokens: 8,
+            output_tokens: 9,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      } as never
+    }
+    const runner = createWorkflowAgentRunner({
+      toolUseContext: workflowRunnerContext({
+        agents: [testAgent('general-purpose')],
+      }),
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      runId: 'wf-test',
+      runAgentImpl,
+    })
+
+    const result = await runner('inspect the repo', {}, {
+      agentNumber: 1,
+      phase: null,
+      label: 'inspect',
+      onProgress: update => updates.push(update),
+    })
+
+    expect(updates[0]).toMatchObject({
+      tokens: 12,
+      toolCalls: 1,
+      lastToolName: 'Read',
+      lastToolSummary: 'src/index.ts',
+    })
+    expect(updates.at(-1)).toMatchObject({
+      tokens: 17,
+      toolCalls: 1,
+      resultPreview: 'finished inspection',
+    })
+    expect(result).toMatchObject({
+      value: 'finished inspection',
+      tokens: 17,
+      toolCalls: 1,
+      ok: true,
+    })
+  })
+
   test('reports denied agentType with the official workflow error shape', async () => {
     const runner = createWorkflowAgentRunner({
       toolUseContext: workflowRunnerContext({

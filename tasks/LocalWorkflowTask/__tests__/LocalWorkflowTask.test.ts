@@ -233,36 +233,59 @@ describe('LocalWorkflowTask pause/resume controls', () => {
       },
       setAppState,
     )
-    updateWorkflowTaskProgress(
-      runId,
-      {
-        kind: 'agent_end',
-        agentNumber: 1,
-        label: 'Inspect',
-        phase: 'Plan',
-        ok: true,
-        status: 'completed',
-        tokens: 25,
-        toolCalls: 2,
-        durationMs: 190,
-        queuedAt: 1000,
-        startedAt: 1010,
-        lastProgressAt: 1200,
-        promptPreview: 'inspect the repo',
-        agentType: 'reviewer',
-        model: 'model-a',
-        isolation: 'worktree',
-      },
-      setAppState,
-    )
+      updateWorkflowTaskProgress(
+        runId,
+        {
+          kind: 'agent_progress',
+          agentNumber: 1,
+          label: 'Inspect',
+          phase: 'Plan',
+          tokens: 12,
+          toolCalls: 1,
+          queuedAt: 1000,
+          startedAt: 1010,
+          lastProgressAt: 1100,
+          promptPreview: 'inspect the repo',
+          agentType: 'reviewer',
+          model: 'model-a',
+          isolation: 'worktree',
+          lastToolName: 'Read',
+          lastToolSummary: 'src/index.ts',
+        },
+        setAppState,
+      )
+      updateWorkflowTaskProgress(
+        runId,
+        {
+          kind: 'agent_end',
+          agentNumber: 1,
+          label: 'Inspect',
+          phase: 'Plan',
+          ok: true,
+          status: 'completed',
+          tokens: 25,
+          toolCalls: 2,
+          durationMs: 190,
+          queuedAt: 1000,
+          startedAt: 1010,
+          lastProgressAt: 1200,
+          promptPreview: 'inspect the repo',
+          agentType: 'reviewer',
+          model: 'model-a',
+          isolation: 'worktree',
+          resultPreview: 'inspection finished',
+        },
+        setAppState,
+      )
 
     const events = drainSdkEvents()
-    expect(events.map(event => event.subtype)).toEqual([
-      'task_progress',
-      'task_progress',
-      'task_progress',
-      'task_progress',
-    ])
+      expect(events.map(event => event.subtype)).toEqual([
+        'task_progress',
+        'task_progress',
+        'task_progress',
+        'task_progress',
+        'task_progress',
+      ])
     const progressEvents = events.filter(
       (
         event,
@@ -310,8 +333,26 @@ describe('LocalWorkflowTask pause/resume controls', () => {
         isolation: 'worktree',
       },
     ])
-    expect(progressEvents[3]?.workflow_progress).toEqual([
-      {
+      const progressUpdate = {
+        type: 'workflow_agent',
+        index: 1,
+        label: 'Inspect',
+        phaseTitle: 'Plan',
+        phaseIndex: 1,
+        state: 'progress',
+        tokens: 12,
+        toolCalls: 1,
+        queuedAt: 1000,
+        startedAt: 1010,
+        lastProgressAt: 1100,
+        promptPreview: 'inspect the repo',
+        agentType: 'reviewer',
+        model: 'model-a',
+        isolation: 'worktree',
+        lastToolName: 'Read',
+        lastToolSummary: 'src/index.ts',
+      }
+      const doneUpdate = {
         type: 'workflow_agent',
         index: 1,
         label: 'Inspect',
@@ -328,36 +369,40 @@ describe('LocalWorkflowTask pause/resume controls', () => {
         agentType: 'reviewer',
         model: 'model-a',
         isolation: 'worktree',
-      },
-    ])
-    expect(progressEvents[3]?.usage.total_tokens).toBe(25)
-    expect(progressEvents[3]?.usage.tool_uses).toBe(2)
-    const task = state.tasks[runId] as LocalWorkflowTaskState
-    expect(task.workflowProgress).toEqual([
-      {
-        type: 'workflow_phase',
+        resultPreview: 'inspection finished',
+      }
+      expect(progressEvents[3]?.workflow_progress).toEqual([progressUpdate])
+      expect(progressEvents[3]?.usage.total_tokens).toBe(0)
+      expect(progressEvents[3]?.usage.tool_uses).toBe(0)
+      expect(progressEvents[4]?.workflow_progress).toEqual([doneUpdate])
+      expect(progressEvents[4]?.usage.total_tokens).toBe(25)
+      expect(progressEvents[4]?.usage.tool_uses).toBe(2)
+      const task = state.tasks[runId] as LocalWorkflowTaskState
+      expect(task.workflowProgress).toEqual([
+        {
+          type: 'workflow_phase',
         index: 1,
         title: 'Plan',
         state: 'start',
       },
-      {
-        type: 'workflow_agent',
-        index: 1,
+        {
+          type: 'workflow_agent',
+          index: 1,
         label: 'Inspect',
         phaseTitle: 'Plan',
         phaseIndex: 1,
         state: 'start',
         queuedAt: 1000,
         lastProgressAt: 1000,
-        promptPreview: 'inspect the repo',
-        agentType: 'reviewer',
-        model: 'model-a',
-        isolation: 'worktree',
-      },
-      {
-        type: 'workflow_agent',
-        index: 1,
-        label: 'Inspect',
+          promptPreview: 'inspect the repo',
+          agentType: 'reviewer',
+          model: 'model-a',
+          isolation: 'worktree',
+        },
+        {
+          type: 'workflow_agent',
+          index: 1,
+          label: 'Inspect',
         phaseTitle: 'Plan',
         phaseIndex: 1,
         state: 'start',
@@ -366,37 +411,24 @@ describe('LocalWorkflowTask pause/resume controls', () => {
         lastProgressAt: 1010,
         promptPreview: 'inspect the repo',
         agentType: 'reviewer',
-        model: 'model-a',
-        isolation: 'worktree',
-      },
-      {
-        type: 'workflow_agent',
-        index: 1,
-        label: 'Inspect',
-        phaseTitle: 'Plan',
-        phaseIndex: 1,
-        state: 'done',
-        tokens: 25,
-        toolCalls: 2,
-        durationMs: 190,
-        queuedAt: 1000,
-        startedAt: 1010,
-        lastProgressAt: 1200,
-        promptPreview: 'inspect the repo',
+          model: 'model-a',
+          isolation: 'worktree',
+        },
+        progressUpdate,
+        doneUpdate,
+      ])
+      expect(task.progressVersion).toBe(5)
+      expect(task.totalToolCalls).toBe(2)
+      expect(task.agents[0]).toMatchObject({
+        status: 'completed',
         agentType: 'reviewer',
         model: 'model-a',
         isolation: 'worktree',
-      },
-    ])
-    expect(task.progressVersion).toBe(4)
-    expect(task.totalToolCalls).toBe(2)
-    expect(task.agents[0]).toMatchObject({
-      status: 'completed',
-      agentType: 'reviewer',
-      model: 'model-a',
-      isolation: 'worktree',
-      durationMs: 190,
-    })
+        lastToolName: 'Read',
+        lastToolSummary: 'src/index.ts',
+        resultPreview: 'inspection finished',
+        durationMs: 190,
+      })
     expect(task.logs).toEqual(task.log)
   })
 

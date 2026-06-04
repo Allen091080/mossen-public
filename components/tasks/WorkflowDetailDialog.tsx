@@ -64,15 +64,25 @@ function AgentRow({
       {agent.agentType ? <Text dimColor> · {agent.agentType}</Text> : null}
       {agent.model ? <Text dimColor> · {agent.model}</Text> : null}
       {agent.isolation ? <Text dimColor> · {agent.isolation}</Text> : null}
-      {agent.tokens > 0 ? (
-        <Text dimColor> · {formatNumber(agent.tokens)} tokens</Text>
-      ) : null}
-      {agent.toolCalls > 0 ? (
-        <Text dimColor> · {formatNumber(agent.toolCalls)} tools</Text>
-      ) : null}
-      {agent.durationMs !== undefined ? (
-        <Text dimColor> · {formatDuration(agent.durationMs)}</Text>
-      ) : null}
+        {agent.tokens > 0 ? (
+          <Text dimColor> · {formatNumber(agent.tokens)} tokens</Text>
+        ) : null}
+        {agent.toolCalls > 0 ? (
+          <Text dimColor> · {formatNumber(agent.toolCalls)} tools</Text>
+        ) : null}
+        {agent.lastToolName ? (
+          <Text dimColor>
+            {' '}
+            · {agent.lastToolName}
+            {agent.lastToolSummary ? ` ${agent.lastToolSummary}` : ''}
+          </Text>
+        ) : null}
+        {agent.resultPreview ? (
+          <Text dimColor> · {agent.resultPreview}</Text>
+        ) : null}
+        {agent.durationMs !== undefined ? (
+          <Text dimColor> · {formatDuration(agent.durationMs)}</Text>
+        ) : null}
       {agent.error ? <Text color="error"> · {agent.error}</Text> : null}
     </Text>
   )

@@ -53,6 +53,7 @@ export type WorkflowAgentTaskProgress = {
   lastAttemptReason?: string
   lastToolName?: string
   lastToolSummary?: string
+  resultPreview?: string
   error?: string
 }
 
@@ -208,6 +209,12 @@ function progressLine(event: WorkflowProgressEvent): string {
       return `agent #${event.agentNumber} queued: ${event.label}`
     case 'agent_start':
       return `agent #${event.agentNumber} started: ${event.label}`
+    case 'agent_progress': {
+      const detail = event.lastToolSummary ?? event.lastToolName
+      return detail
+        ? `agent #${event.agentNumber} progress: ${event.label} (${detail})`
+        : `agent #${event.agentNumber} progress: ${event.label}`
+    }
     case 'agent_end': {
       const status =
         event.status ?? (event.ok ? 'completed' : 'failed')
@@ -319,6 +326,22 @@ function workflowProgressForSdk(
           ...workflowAgentProgressMetadata(event),
         },
       ]
+    case 'agent_progress':
+      return [
+        {
+          type: 'workflow_agent',
+          index: event.agentNumber,
+          label: event.label,
+          phaseTitle: event.phase,
+          phaseIndex: phaseIndexFor(task, event.phase),
+          state: 'progress',
+          ...(typeof event.tokens === 'number' ? { tokens: event.tokens } : {}),
+          ...(typeof event.toolCalls === 'number'
+            ? { toolCalls: event.toolCalls }
+            : {}),
+          ...workflowAgentProgressMetadata(event),
+        },
+      ]
     case 'agent_end':
       return [
         {
@@ -343,9 +366,9 @@ function workflowProgressForSdk(
 function workflowAgentProgressMetadata(
   event: Extract<
     WorkflowProgressEvent,
-    { kind: 'agent_queued' | 'agent_start' | 'agent_end' }
+    { kind: 'agent_queued' | 'agent_start' | 'agent_progress' | 'agent_end' }
   >,
-): Record<string, unknown> {
+  ): Record<string, unknown> {
   return {
     ...(event.agentType ? { agentType: event.agentType } : {}),
     ...(event.model ? { model: event.model } : {}),
@@ -362,8 +385,9 @@ function workflowAgentProgressMetadata(
       : {}),
     ...(event.lastToolName ? { lastToolName: event.lastToolName } : {}),
     ...(event.lastToolSummary ? { lastToolSummary: event.lastToolSummary } : {}),
+    ...(event.resultPreview ? { resultPreview: event.resultPreview } : {}),
   }
-}
+  }
 
 function workflowAgentSdkState(
   event: Extract<WorkflowProgressEvent, { kind: 'agent_end' }>,
@@ -569,10 +593,10 @@ export function updateWorkflowTaskProgress(
         taskForSdkProgress = next
         return next
       }
-      case 'agent_queued': {
-        const progressed = applyWorkflowProgress({
-          ...task,
-          agentCount: Math.max(task.agentCount, event.agentNumber),
+        case 'agent_queued': {
+          const progressed = applyWorkflowProgress({
+            ...task,
+            agentCount: Math.max(task.agentCount, event.agentNumber),
           agents: setWorkflowAgent(task.agents, {
             agentNumber: event.agentNumber,
             label: event.label,
@@ -609,34 +633,59 @@ export function updateWorkflowTaskProgress(
         taskForSdkProgress = progressed.task
         return progressed.task
       }
-      case 'agent_end': {
-        const status =
-          event.status ?? (event.ok ? 'completed' : 'failed')
-        const toolCalls = event.toolCalls ?? 0
+      case 'agent_progress': {
+        const prior = task.agents.find(
+          agent => agent.agentNumber === event.agentNumber,
+        )
+        const tokens = event.tokens ?? prior?.tokens ?? 0
+        const toolCalls = event.toolCalls ?? prior?.toolCalls ?? 0
         const progressed = applyWorkflowProgress({
           ...task,
-          tokensSpent: task.tokensSpent + event.tokens,
-          totalToolCalls: task.totalToolCalls + toolCalls,
+          agentCount: Math.max(task.agentCount, event.agentNumber),
           agents: setWorkflowAgent(task.agents, {
             agentNumber: event.agentNumber,
             label: event.label,
             phase: event.phase,
-            status,
-            tokens: event.tokens,
+            status: 'running',
+            tokens,
             toolCalls,
             ...workflowAgentProgressMetadata(event),
-            ...(event.error ? { error: event.error } : {}),
-            ...(event.durationMs !== undefined
-              ? { durationMs: event.durationMs }
-              : {}),
           }),
-          summary: `${event.label} ${status}`,
+          summary: event.lastToolSummary ?? event.lastToolName ?? event.label,
           ...logState,
         }, event)
         workflowProgressForEvent = progressed.workflowProgress
         taskForSdkProgress = progressed.task
         return progressed.task
       }
+      case 'agent_end': {
+        const status =
+          event.status ?? (event.ok ? 'completed' : 'failed')
+        const toolCalls = event.toolCalls ?? 0
+        const progressed = applyWorkflowProgress({
+        ...task,
+        tokensSpent: task.tokensSpent + event.tokens,
+        totalToolCalls: task.totalToolCalls + toolCalls,
+        agents: setWorkflowAgent(task.agents, {
+          agentNumber: event.agentNumber,
+          label: event.label,
+          phase: event.phase,
+          status,
+          tokens: event.tokens,
+          toolCalls,
+          ...workflowAgentProgressMetadata(event),
+          ...(event.error ? { error: event.error } : {}),
+          ...(event.durationMs !== undefined
+            ? { durationMs: event.durationMs }
+            : {}),
+        }),
+        summary: `${event.label} ${status}`,
+        ...logState,
+      }, event)
+      workflowProgressForEvent = progressed.workflowProgress
+      taskForSdkProgress = progressed.task
+      return progressed.task
+    }
     }
   })
   if (taskForSdkProgress) {

@@ -53,7 +53,11 @@ import {
   stripLiteralThinking,
   validateAgainstSchema,
 } from './schemaValidate.js'
-import type { AgentCallOptions, AgentRunResult } from './types.js'
+import type {
+  AgentCallOptions,
+  AgentRunResult,
+  WorkflowAgentProgressUpdate,
+} from './types.js'
 import {
   WORKFLOW_AGENT_RETRY_ABORT_REASON,
   WORKFLOW_AGENT_SKIP_ABORT_REASON,
@@ -149,6 +153,146 @@ export type WorkflowAgentRunnerDeps = {
 type WorkflowAgentStallWatch = {
   reset(): void
   dispose(): void
+}
+
+type WorkflowRunOneAgentMeta = Parameters<RunOneAgent>[2]
+
+const TOOL_INPUT_SUMMARY_KEYS = [
+  'command',
+  'file_path',
+  'path',
+  'pattern',
+  'query',
+  'prompt',
+  'url',
+]
+
+function compactWorkflowText(value: unknown, maxLength = 160): string | undefined {
+  const raw =
+    typeof value === 'string'
+      ? value
+      : (() => {
+          try {
+            return JSON.stringify(value)
+          } catch {
+            return undefined
+          }
+        })()
+  const compact = raw?.replace(/\s+/g, ' ').trim()
+  if (!compact) return undefined
+  return compact.length > maxLength
+    ? `${compact.slice(0, Math.max(0, maxLength - 1))}…`
+    : compact
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function numericField(record: Record<string, unknown>, key: string): number {
+  const value = record[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function usageTokenCount(usage: unknown): number {
+  const record = asRecord(usage)
+  if (!record) return 0
+  return (
+    numericField(record, 'input_tokens') +
+    numericField(record, 'output_tokens') +
+    numericField(record, 'cache_creation_input_tokens') +
+    numericField(record, 'cache_read_input_tokens') +
+    numericField(record, 'inputTokens') +
+    numericField(record, 'outputTokens') +
+    numericField(record, 'cacheCreationInputTokens') +
+    numericField(record, 'cacheReadInputTokens')
+  )
+}
+
+function summarizeToolInput(input: unknown): string | undefined {
+  if (typeof input === 'string') {
+    const parsed = (() => {
+      try {
+        return JSON.parse(input) as unknown
+      } catch {
+        return input
+      }
+    })()
+    if (parsed !== input) return summarizeToolInput(parsed)
+    return compactWorkflowText(input, 80)
+  }
+
+  const record = asRecord(input)
+  if (!record) return compactWorkflowText(input, 80)
+  for (const key of TOOL_INPUT_SUMMARY_KEYS) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) {
+      return compactWorkflowText(value, 80)
+    }
+  }
+  for (const value of Object.values(record)) {
+    if (typeof value === 'string' && value.trim()) {
+      return compactWorkflowText(value, 80)
+    }
+  }
+  return compactWorkflowText(record, 80)
+}
+
+function messageContent(message: Message): unknown {
+  return (message as { message?: { content?: unknown } }).message?.content
+}
+
+function messageUsage(message: Message): unknown {
+  return (message as { message?: { usage?: unknown }; usage?: unknown }).message
+    ?.usage ?? (message as { usage?: unknown }).usage
+}
+
+function workflowProgressFromMessage(
+  message: Message,
+  prior: { tokens: number; toolCalls: number },
+): WorkflowAgentProgressUpdate | null {
+  if ((message as { type?: unknown }).type !== 'assistant') return null
+  const content = messageContent(message)
+  const usageTokens = usageTokenCount(messageUsage(message))
+  if (usageTokens > 0) prior.tokens = usageTokens
+
+  let lastToolName: string | undefined
+  let lastToolSummary: string | undefined
+  let toolUses = 0
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      const record = asRecord(block)
+      if (record?.type !== 'tool_use') continue
+      toolUses++
+      if (typeof record.name === 'string' && record.name.trim()) {
+        lastToolName = record.name
+      }
+      const summary = summarizeToolInput(record.input)
+      if (summary) lastToolSummary = summary
+    }
+  }
+  prior.toolCalls += toolUses
+
+  const resultPreview = stripLiteralThinking(
+    extractTextContent(content, '\n'),
+  ).trim()
+  if (
+    prior.tokens === 0 &&
+    prior.toolCalls === 0 &&
+    !lastToolName &&
+    !resultPreview
+  ) {
+    return null
+  }
+  return {
+    ...(prior.tokens > 0 ? { tokens: prior.tokens } : {}),
+    ...(prior.toolCalls > 0 ? { toolCalls: prior.toolCalls } : {}),
+    ...(lastToolName ? { lastToolName } : {}),
+    ...(lastToolSummary ? { lastToolSummary } : {}),
+    ...(resultPreview ? { resultPreview: compactWorkflowText(resultPreview) } : {}),
+  }
 }
 
 function resolveAgentDefinition(
@@ -781,11 +925,11 @@ export function createWorkflowAgentRunner(
       }, localAgentStallTimeoutMs)
     }
     reset()
-    return {
-      reset,
-      dispose,
+      return {
+        reset,
+        dispose,
+      }
     }
-  }
 
   /** Run a single agent turn to completion; return its final text + tokens. */
   async function runOnce(
@@ -796,6 +940,7 @@ export function createWorkflowAgentRunner(
     label: string,
     worktreePath: string | undefined,
     agentAbortController: AbortController | undefined,
+    onProgress: WorkflowRunOneAgentMeta['onProgress'],
   ): Promise<{
     text: string
     tokens: number
@@ -806,6 +951,7 @@ export function createWorkflowAgentRunner(
     const agentId = createAgentId()
     const promptMessages: Message[] = [createUserMessage({ content: promptText })]
     const messages: Message[] = []
+    const liveProgressTotals = { tokens: 0, toolCalls: 0 }
     const stallWatch = createStallWatch(agentAbortController)
     const run = () =>
       runAgentImpl({
@@ -836,6 +982,8 @@ export function createWorkflowAgentRunner(
     try {
       for await (const message of stream) {
         messages.push(message)
+        const update = workflowProgressFromMessage(message, liveProgressTotals)
+        if (update) onProgress?.(update)
       }
     } finally {
       stallWatch?.dispose()
@@ -864,7 +1012,7 @@ export function createWorkflowAgentRunner(
   return async function runOneAgent(
     prompt: string,
     opts: AgentCallOptions,
-    meta: { agentNumber: number; phase: string | null; label: string },
+    meta: WorkflowRunOneAgentMeta,
   ): Promise<AgentRunResult> {
     if (opts.schema) {
       assertWorkflowAgentSchema(opts.schema)
@@ -951,15 +1099,16 @@ export function createWorkflowAgentRunner(
     try {
       // No schema → return the agent's final text verbatim.
       if (!opts.schema) {
-        const { text, tokens, toolCalls } = await runOnce(
-          agentDefinition,
-          baseAvailableTools,
-          prompt,
-          model,
-          meta.label,
-          worktreeInfo?.worktreePath,
-          agentAbortController,
-        )
+          const { text, tokens, toolCalls } = await runOnce(
+            agentDefinition,
+            baseAvailableTools,
+            prompt,
+            model,
+            meta.label,
+            worktreeInfo?.worktreePath,
+            agentAbortController,
+            meta.onProgress,
+          )
         return { value: text, tokens, toolCalls, ok: true }
       }
 
@@ -976,15 +1125,16 @@ export function createWorkflowAgentRunner(
       let totalToolCalls = 0
       let lastDetail = ''
       for (let attempt = 0; attempt <= MAX_SCHEMA_RETRIES; attempt++) {
-        const { tokens, toolCalls, structuredOutput } = await runOnce(
-          schemaAgentDefinition,
-          schemaTools,
-          promptText,
-          model,
-          meta.label,
-          worktreeInfo?.worktreePath,
-          agentAbortController,
-        )
+          const { tokens, toolCalls, structuredOutput } = await runOnce(
+            schemaAgentDefinition,
+            schemaTools,
+            promptText,
+            model,
+            meta.label,
+            worktreeInfo?.worktreePath,
+            agentAbortController,
+            meta.onProgress,
+          )
         totalTokens += tokens
         totalToolCalls += toolCalls
         if (structuredOutput === undefined) {

@@ -13,7 +13,8 @@
  *  - token budget enforcement (assertBudget before each spawn; record after)
  *  - a hard ceiling on total agents per run (runaway-loop backstop)
  *  - resume journal lookup/record
- *  - progress events (phase / log / agent_queued / agent_start / agent_end)
+ *  - progress events (phase / log / agent_queued / agent_start /
+ *    agent_progress / agent_end)
  */
 
 import { assertBudget, type Budget } from './budget.js'
@@ -28,6 +29,7 @@ import {
 import type {
   AgentCallOptions,
   WorkflowAgentControlAction,
+  WorkflowAgentProgressUpdate,
   AgentRunResult,
   ProgressSink,
   WorkflowAgentProgressMeta,
@@ -86,7 +88,12 @@ export function formatWorkflowAgentAbandonedMessage(params: {
 export type RunOneAgent = (
   prompt: string,
   opts: AgentCallOptions,
-  meta: { agentNumber: number; phase: string | null; label: string },
+  meta: {
+    agentNumber: number
+    phase: string | null
+    label: string
+    onProgress?: (update: WorkflowAgentProgressUpdate) => void
+  },
 ) => Promise<AgentRunResult>
 
 export type RunNestedWorkflow = (
@@ -238,6 +245,14 @@ function formatFailureReason(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason)
 }
 
+function resultPreview(value: unknown): string | undefined {
+  const raw = typeof value === 'string' ? value : JSON.stringify(value)
+  if (raw === undefined) return undefined
+  const preview = raw.replace(/\s+/g, ' ').trim()
+  if (!preview) return undefined
+  return preview.length > 400 ? `${preview.slice(0, 400)}…` : preview
+}
+
 export function createWorkflowRuntime(
   config: WorkflowRuntimeConfig,
 ): WorkflowRuntime {
@@ -357,27 +372,28 @@ export function createWorkflowRuntime(
 
     // Resume: replay a cached result if this call matches the prior run.
     const cached = journal?.lookup(index, hash)
-    if (cached) {
-      agentCounter++
-      const agentNumber = agentCounter
-      const now = Date.now()
-      progress({
-        kind: 'agent_end',
-        label,
-        phase,
-        agentNumber,
-        ok: cached.ok,
-        status: cached.ok ? 'cached' : 'failed',
-        tokens: cached.tokens,
-        toolCalls: 0,
-        durationMs: cached.durationMs ?? 0,
-        ...baseProgressMeta({
-          queuedAt: now,
-          startedAt: now,
-          lastProgressAt: now,
-          remoteSessionId: cached.remoteSessionId,
-        }),
-      })
+      if (cached) {
+        agentCounter++
+        const agentNumber = agentCounter
+        const now = Date.now()
+        progress({
+          kind: 'agent_end',
+          label,
+          phase,
+          agentNumber,
+          ok: cached.ok,
+          status: cached.ok ? 'cached' : 'failed',
+          tokens: cached.tokens,
+          toolCalls: 0,
+          durationMs: cached.durationMs ?? 0,
+          ...baseProgressMeta({
+            queuedAt: now,
+            startedAt: now,
+            lastProgressAt: now,
+            remoteSessionId: cached.remoteSessionId,
+            ...(cached.ok ? { resultPreview: resultPreview(cached.value) } : {}),
+          }),
+        })
       return cached.ok ? cached.value : null
     }
 
@@ -439,17 +455,53 @@ export function createWorkflowRuntime(
           progress({
             kind: 'agent_start',
             label,
-            phase,
-            agentNumber,
-            ...baseProgressMeta({
-              queuedAt: attemptQueuedAt,
-              startedAt: attemptStartedAt,
+          phase,
+          agentNumber,
+          ...baseProgressMeta({
+            queuedAt: attemptQueuedAt,
+            startedAt: attemptStartedAt,
               lastProgressAt: attemptStartedAt,
             }),
           })
           // A queued retry request means "run it now"; a running retry request
           // is handled by the per-agent abort controller in agentRunner.
-          return runOneAgent(prompt, effectiveOpts, { agentNumber, phase, label })
+          return runOneAgent(prompt, effectiveOpts, {
+            agentNumber,
+            phase,
+            label,
+            onProgress: update => {
+              const now = Date.now()
+              progress({
+                kind: 'agent_progress',
+                label,
+                phase,
+                agentNumber,
+                ...(typeof update.tokens === 'number'
+                  ? { tokens: update.tokens }
+                  : {}),
+                ...(typeof update.toolCalls === 'number'
+                  ? { toolCalls: update.toolCalls }
+                  : {}),
+                ...baseProgressMeta({
+                  queuedAt: attemptQueuedAt,
+                  startedAt: attemptStartedAt,
+                  lastProgressAt: now,
+                  ...(lastAttempt
+                    ? { lastAttemptReason: retryableStatusReason(lastAttempt) }
+                    : {}),
+                  ...(update.lastToolName
+                    ? { lastToolName: update.lastToolName }
+                    : {}),
+                  ...(update.lastToolSummary
+                    ? { lastToolSummary: update.lastToolSummary }
+                    : {}),
+                  ...(update.resultPreview
+                    ? { resultPreview: update.resultPreview }
+                    : {}),
+                }),
+              })
+            },
+          })
         })
       } catch (err) {
         const now = Date.now()
@@ -501,6 +553,7 @@ export function createWorkflowRuntime(
               startedAt: attemptStartedAt,
               lastProgressAt: now,
               remoteSessionId: result.remoteSessionId,
+              ...(result.ok ? { resultPreview: resultPreview(result.value) } : {}),
             }),
           })
           throw new Error(error)
@@ -542,6 +595,7 @@ export function createWorkflowRuntime(
           startedAt: attemptStartedAt,
           lastProgressAt: now,
           remoteSessionId: result.remoteSessionId,
+          ...(result.ok ? { resultPreview: resultPreview(result.value) } : {}),
         }),
       })
       return result.ok ? result.value : null

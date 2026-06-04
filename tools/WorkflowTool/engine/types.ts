@@ -49,6 +49,15 @@ export type WorkflowAgentProgressMeta = {
   lastAttemptReason?: string
   lastToolName?: string
   lastToolSummary?: string
+  resultPreview?: string
+}
+
+export type WorkflowAgentProgressUpdate = {
+  tokens?: number
+  toolCalls?: number
+  lastToolName?: string
+  lastToolSummary?: string
+  resultPreview?: string
 }
 
 /** A progress event emitted by the engine while a workflow runs. */
@@ -66,6 +75,14 @@ export type WorkflowProgressEvent =
       label: string
       phase: string | null
       agentNumber: number
+    } & WorkflowAgentProgressMeta)
+  | ({
+      kind: 'agent_progress'
+      label: string
+      phase: string | null
+      agentNumber: number
+      tokens?: number
+      toolCalls?: number
     } & WorkflowAgentProgressMeta)
   | ({
       kind: 'agent_end'
