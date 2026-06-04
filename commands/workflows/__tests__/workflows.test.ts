@@ -33,11 +33,16 @@ function runningWorkflowTask(params: {
     workflowName: 'demo',
     scriptPath: `/tmp/workflows/${runId}/script.js`,
     summary: 'demo',
+    currentPhase: 'Scan',
     abortController,
     agentCount: 2,
-    totalToolCalls: 0,
-    tokensSpent: 0,
-    phases: ['Scan'],
+    totalToolCalls: 3,
+    tokensSpent: 55,
+    phases: ['Scan', 'Write'],
+    phaseDefinitions: [
+      { title: 'Scan', detail: 'Map the repo' },
+      { title: 'Write', detail: 'Prepare changes' },
+    ],
     workflowProgress: [],
     progressVersion: 0,
     agents: [
@@ -46,20 +51,26 @@ function runningWorkflowTask(params: {
         label: 'Scan routes',
         phase: 'Scan',
         status: 'running',
-        tokens: 0,
-        toolCalls: 0,
+        tokens: 25,
+        toolCalls: 1,
+        startedAt: Date.now() - 2000,
+        promptPreview: 'Inspect workflow routing and report the important files.',
+        lastToolName: 'Read',
+        lastToolSummary: 'commands/workflows/workflows.tsx',
+        resultPreview: 'Found the command detail renderer.',
       },
       {
         agentNumber: 2,
         label: 'Review findings',
-        phase: 'Scan',
-        status: 'queued',
-        tokens: 0,
-        toolCalls: 0,
+        phase: 'Write',
+        status: 'completed',
+        tokens: 30,
+        toolCalls: 2,
+        durationMs: 5000,
       },
     ],
-    log: [],
-    logs: [],
+    log: ['phase: Scan', 'agent #1 progress: Scan routes (Read workflows.tsx)'],
+    logs: ['phase: Scan', 'agent #1 progress: Scan routes (Read workflows.tsx)'],
     isBackgrounded: true,
     paused: false,
   }
@@ -103,6 +114,61 @@ describe('/workflows resume', () => {
     expect(message).toContain(runId)
     expect(state.tasks[taskId]?.status).toBe('paused')
     expect(abortController.signal.aborted).toBe(true)
+  })
+
+  test('run detail prefers live task progress with phase and agent summaries', async () => {
+    const taskId = 'wtaskcmd_detail'
+    const runId = 'wf_cmd_detail'
+    const state = {
+      tasks: {
+        [taskId]: runningWorkflowTask({ taskId, runId }),
+      },
+    }
+    let message = ''
+
+    await call(
+      nextMessage => {
+        message = nextMessage
+      },
+      workflowCommandContext(state) as never,
+      runId,
+    )
+
+    expect(message).toContain(`demo (${runId})`)
+    expect(message).toContain('Scan · 1 agent(s) · 1 running · 25 tok · 1 tools')
+    expect(message).toContain('Write · 1 agent(s) · 1 completed · 30 tok · 2 tools')
+    expect(message).toContain('#1 [Scan] Scan routes · running · 25 tok · 1 tools')
+    expect(message).toContain('Read commands/workflows/workflows.tsx')
+    expect(message).toContain(`/workflows pause ${runId}`)
+  })
+
+  test('agent detail drills into prompt, latest tool, and result preview', async () => {
+    const taskId = 'wtaskcmd_agent_detail'
+    const runId = 'wf_cmd_agent_detail'
+    const state = {
+      tasks: {
+        [taskId]: runningWorkflowTask({ taskId, runId }),
+      },
+    }
+    let message = ''
+
+    await call(
+      nextMessage => {
+        message = nextMessage
+      },
+      workflowCommandContext(state) as never,
+      `agent ${runId} 1`,
+    )
+
+    expect(message).toContain('#1 Scan routes')
+    expect(message).toContain('running')
+    expect(message).toContain('Scan')
+    expect(message).toContain(
+      'Prompt: Inspect workflow routing and report the important files.',
+    )
+    expect(message).toContain('Read commands/workflows/workflows.tsx')
+    expect(message).toContain('Found the command detail renderer.')
+    expect(message).toContain(`/workflows retry-agent ${runId} 1`)
   })
 
   test('stop resolves a workflow run id and kills the backing task', async () => {
