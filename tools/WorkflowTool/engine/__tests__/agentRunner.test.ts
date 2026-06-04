@@ -6,10 +6,12 @@ import {
 import type { AgentDefinition } from '../../../AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../../../SyntheticOutputTool/SyntheticOutputTool.js'
 import {
+  assertWorkflowAgentSchema,
   buildRemoteWorkflowAgentPrompt,
   coerceRemoteWorkflowAgentResult,
   createWorkflowAgentRunner,
   extractStructuredOutputFromMessages,
+  formatMissingStructuredOutputAfterNudges,
   runHostedRemoteWorkflowAgent,
   withStructuredOutputAllowed,
   withStructuredOutputTool,
@@ -72,12 +74,12 @@ function workflowRunnerContext(params: {
 
 describe('workflow agent structured output helpers', () => {
   test('adds a schema-specific StructuredOutput tool and de-duplicates prior copies', () => {
-    const first = withStructuredOutputTool([], OBJECT_SCHEMA, 'check')
+    const first = withStructuredOutputTool([], OBJECT_SCHEMA)
     expect(first).toHaveLength(1)
     expect(first[0]!.name).toBe(SYNTHETIC_OUTPUT_TOOL_NAME)
     expect(first[0]!.inputJSONSchema === OBJECT_SCHEMA).toBe(true)
 
-    const second = withStructuredOutputTool(first, OBJECT_SCHEMA, 'check')
+    const second = withStructuredOutputTool(first, OBJECT_SCHEMA)
     expect(second).toHaveLength(1)
     expect(second[0]!.name).toBe(SYNTHETIC_OUTPUT_TOOL_NAME)
   })
@@ -87,9 +89,17 @@ describe('workflow agent structured output helpers', () => {
       withStructuredOutputTool(
         [],
         { type: 'not-a-json-schema-type' },
-        'broken',
       ),
     ).toThrow(WorkflowSchemaError)
+    expect(() =>
+      assertWorkflowAgentSchema({ type: 'not-a-json-schema-type' }),
+    ).toThrow('agent({schema}) received an invalid JSON Schema:')
+  })
+
+  test('formats missing StructuredOutput exhaustion like the workflow contract', () => {
+    expect(formatMissingStructuredOutputAfterNudges()).toBe(
+      'agent({schema}): subagent completed without calling StructuredOutput (after 2 in-conversation nudges)',
+    )
   })
 
   test('adds StructuredOutput to explicit agent tool allowlists', () => {
@@ -332,5 +342,29 @@ describe('workflow remote agent helpers', () => {
 
     expect(seen[0]).toContain('do remote work')
     expect(result.value).toBe('remote done')
+  })
+
+  test('rejects invalid remote schemas before launching a remote agent', async () => {
+    let launched = false
+    const runner = createWorkflowAgentRunner({
+      toolUseContext: workflowRunnerContext({
+        agents: [testAgent('general-purpose')],
+      }),
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      runId: 'wf-test',
+      remoteAgentRunner: async () => {
+        launched = true
+        return { value: 'should not launch', tokens: 0, toolCalls: 0, ok: true }
+      },
+    })
+
+    await expect(
+      runner(
+        'do remote work',
+        { isolation: 'remote', schema: { type: 'not-a-json-schema-type' } },
+        { agentNumber: 1, phase: null, label: 'remote-schema' },
+      ),
+    ).rejects.toThrow('agent({schema}) received an invalid JSON Schema:')
+    expect(launched).toBe(false)
   })
 })

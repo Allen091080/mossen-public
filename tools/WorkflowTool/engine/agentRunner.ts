@@ -66,8 +66,14 @@ export const DEFAULT_REMOTE_AGENT_TIMEOUT_MS = 30 * 60 * 1000
 export const DEFAULT_REMOTE_AGENT_POLL_INTERVAL_MS = 5 * 1000
 
 export class WorkflowSchemaError extends Error {
-  constructor(label: string, detail: string) {
-    super(`agent "${label}" did not return schema-valid output: ${detail}`)
+  constructor(message: string)
+  constructor(label: string, detail: string)
+  constructor(labelOrMessage: string, detail?: string) {
+    super(
+      detail === undefined
+        ? labelOrMessage
+        : `agent "${labelOrMessage}" did not return schema-valid output: ${detail}`,
+    )
     this.name = 'WorkflowSchemaError'
   }
 }
@@ -586,16 +592,34 @@ export async function runHostedRemoteWorkflowAgent(
 export function withStructuredOutputTool(
   availableTools: Tools,
   schema: Record<string, unknown>,
-  label: string,
 ): Tools {
   const created = createSyntheticOutputTool(schema)
   if ('error' in created) {
-    throw new WorkflowSchemaError(label, `invalid schema: ${created.error}`)
+    throw invalidWorkflowAgentSchemaError(created.error)
   }
   return [
     ...availableTools.filter(tool => tool.name !== SYNTHETIC_OUTPUT_TOOL_NAME),
     created.tool,
   ]
+}
+
+function invalidWorkflowAgentSchemaError(detail: string): WorkflowSchemaError {
+  return new WorkflowSchemaError(
+    `agent({schema}) received an invalid JSON Schema: ${detail}`,
+  )
+}
+
+export function assertWorkflowAgentSchema(schema: Record<string, unknown>): void {
+  const created = createSyntheticOutputTool(schema)
+  if ('error' in created) {
+    throw invalidWorkflowAgentSchemaError(created.error)
+  }
+}
+
+export function formatMissingStructuredOutputAfterNudges(
+  nudges = MAX_SCHEMA_RETRIES,
+): string {
+  return `agent({schema}): subagent completed without calling ${SYNTHETIC_OUTPUT_TOOL_NAME} (after ${nudges} in-conversation nudges)`
 }
 
 export function withStructuredOutputAllowed(
@@ -748,6 +772,10 @@ export function createWorkflowAgentRunner(
     opts: AgentCallOptions,
     meta: { agentNumber: number; phase: string | null; label: string },
   ): Promise<AgentRunResult> {
+    if (opts.schema) {
+      assertWorkflowAgentSchema(opts.schema)
+    }
+
     const agentAbortController = abortController
       ? createChildAbortController(abortController)
       : undefined
@@ -835,7 +863,6 @@ export function createWorkflowAgentRunner(
       const schemaTools = withStructuredOutputTool(
         baseAvailableTools,
         opts.schema,
-        meta.label,
       )
       let promptText = prompt + buildSchemaInstruction(opts.schema)
       let totalTokens = 0
@@ -873,6 +900,12 @@ export function createWorkflowAgentRunner(
           buildSchemaInstruction(opts.schema) +
           `\n\nYour previous response was rejected:\n${lastDetail}\n` +
           `Call ${SYNTHETIC_OUTPUT_TOOL_NAME} with corrected data only.`
+      }
+      if (
+        lastDetail ===
+        `the agent never called the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool`
+      ) {
+        throw new WorkflowSchemaError(formatMissingStructuredOutputAfterNudges())
       }
       throw new WorkflowSchemaError(meta.label, lastDetail)
     } catch (err) {
