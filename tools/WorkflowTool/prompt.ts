@@ -3,7 +3,9 @@ import { WORKFLOW_TOOL_NAME } from './constants.js'
 /** The model-facing instructions for the Workflow tool. Brand-neutral. */
 export const WORKFLOW_TOOL_PROMPT = `Execute a workflow script that orchestrates multiple subagents deterministically.
 
-A workflow is a small JavaScript program that fans work out across many subagents and combines their results. Use it to be comprehensive (decompose and cover in parallel), to be confident (independent perspectives and adversarial checks), or to take on scale a single context can't hold (migrations, audits, broad sweeps).
+A workflow is a small JavaScript program that fans work out across many subagents and combines their results. Use it to be comprehensive (decompose and cover in parallel), to be confident (independent perspectives and adversarial checks), or to take on scale a single context can't hold (migrations, audits, broad sweeps). Workflows launch asynchronously: the tool returns immediately with taskId/runId/scriptPath, and a task-notification arrives when it completes. Use /workflows to watch live progress.
+
+ONLY call this tool when the user has explicitly opted into multi-agent orchestration. Workflows can spawn many agents and consume substantial tokens; the user must request that scale, not have it inferred. Explicit opt-in includes workflow/ultrawork/ultracode wording, or a direct request for broad multi-agent orchestration, comprehensive parallel review, multi-agent research, or similar scale.
 
 Provide the program inline via \`script\`. It must begin with an \`export const meta\` literal:
 
@@ -17,14 +19,15 @@ Provide the program inline via \`script\`. It must begin with an \`export const 
   const found = await agent('List likely bugs in the diff.', { schema: BUGS_SCHEMA })
   ...
 
-The \`meta\` object must be a PURE LITERAL (no variables, calls, or interpolation). Required: \`name\`, \`description\`. Optional: \`whenToUse\`, \`phases\`.
+The \`meta\` object must be the first statement and a PURE LITERAL (no variables, calls, spreads, computed keys, or interpolation). Required: \`name\`, \`description\`. Optional: \`title\`, \`whenToUse\`, \`model\`, \`phases\`. \`meta.model\` is the workflow default model in this build. \`phases\` entries may include \`{ title, detail?, model? }\`; a phase model applies to later agents in that phase unless an agent passes \`opts.model\`.
 
 Injected surface available to the script body:
 - agent(prompt, opts?): Promise<any> — run one subagent. Without a schema it returns the agent's final text. With \`opts.schema\` (a JSON Schema) it returns a validated object (the agent is re-prompted on mismatch). opts: { label?, phase?, schema?, model?, isolation?, agentType? }. Use \`isolation: 'worktree'\` for concurrent local edits; \`isolation: 'remote'\` is recognized but unavailable in this build.
 - parallel(thunks): Promise<any[]> — run thunks concurrently; BARRIER (awaits all). A thunk that throws becomes null — filter(Boolean) before use.
 - pipeline(items, ...stages): Promise<any[]> — run each item through all stages independently, NO barrier between stages. Each stage receives (prevResult, originalItem, index). A throwing stage drops that item to null.
-- phase(title): void — start a progress phase; later agents group under it.
+- phase(titleOrPhase): void — start a progress phase; accepts a title string or a \`{ title, detail?, model? }\` phase object. Later agents group under it and inherit the phase model when present.
 - log(message): void — emit a progress line.
+- timers: { wait(ms), sleep(ms), setTimeout(ms, value?) } — controlled Promise delays for polling/backoff. Global setTimeout/setInterval remain unavailable.
 - args: the value passed as the tool's \`args\` input, verbatim.
 - budget: { total, spent(), remaining() } — shared token budget; agent() throws once exhausted.
 - workflow(nameOrRef, args?): Promise<any> — run another workflow as a sub-step (one level of nesting only).

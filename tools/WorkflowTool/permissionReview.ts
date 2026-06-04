@@ -1,7 +1,16 @@
 import { readFileSync } from 'node:fs'
-import { loadRunScript } from './engine/journalStore.js'
+import { getProjectRoot } from '../../bootstrap/state.js'
 import { extractMeta } from './engine/meta.js'
+import {
+  analyzeWorkflowStaticSummary,
+  type WorkflowStaticSummary,
+} from './engine/staticSummary.js'
 import type { WorkflowMeta } from './engine/types.js'
+import {
+  getAllWorkflows,
+  resolveWorkflowFromSources,
+  type SavedWorkflowRef,
+} from './savedWorkflows.js'
 import { workflowUsageConsentHash } from './usageConsent.js'
 
 const MAX_PREVIEW_CHARS = 1200
@@ -9,24 +18,26 @@ const MAX_SCRIPT_LINES = 18
 
 export type WorkflowPermissionInput = {
   script?: unknown
+  name?: unknown
+  description?: unknown
+  title?: unknown
   scriptPath?: unknown
   args?: unknown
   timeoutMs?: unknown
   resumeFromRunId?: unknown
-  run_in_background?: unknown
 }
 
 export type WorkflowPermissionReview = {
-  sourceKind: 'inline' | 'file' | 'resume' | 'missing'
+  sourceKind: 'inline' | 'file' | 'named' | 'missing'
   sourceLabel: string
   meta: WorkflowMeta | null
   metaError: string | null
   argsPreview: string | null
   scriptPreview: string | null
+  staticSummary: WorkflowStaticSummary | null
   usageConsentHash: string | null
   timeoutMs: number | null
   resumeFromRunId: string | null
-  runInBackground: boolean
   showUsageWarning: boolean
 }
 
@@ -48,6 +59,24 @@ function previewUnknown(value: unknown): string | null {
 function scriptPreview(source: string): string {
   const lines = source.split(/\r?\n/).slice(0, MAX_SCRIPT_LINES)
   return truncatePreview(lines.join('\n'))
+}
+
+function sourceFromWorkflowRef(
+  ref: SavedWorkflowRef,
+  requestedName: string,
+): { source: string | null; readError: string | null } {
+  if (ref.source) return { source: ref.source, readError: null }
+  if (ref.scriptPath) {
+    try {
+      return { source: readFileSync(ref.scriptPath, 'utf8'), readError: null }
+    } catch (err) {
+      return { source: null, readError: (err as Error).message }
+    }
+  }
+  return {
+    source: null,
+    readError: `workflow("${requestedName}"): workflow has no source or scriptPath.`,
+  }
 }
 
 function resolveWorkflowSource(input: WorkflowPermissionInput): {
@@ -83,17 +112,27 @@ function resolveWorkflowSource(input: WorkflowPermissionInput): {
     }
   }
 
-  if (
-    typeof input.resumeFromRunId === 'string' &&
-    input.resumeFromRunId.trim()
-  ) {
-    const runId = input.resumeFromRunId.trim()
-    const persisted = loadRunScript(runId)
+  if (typeof input.name === 'string' && input.name.trim()) {
+    const name = input.name.trim()
+    const root = getProjectRoot()
+    const ref = resolveWorkflowFromSources(root, name)
+    if (!ref) {
+      const available = getAllWorkflows(root).map(wf => wf.commandName)
+      return {
+        sourceKind: 'named',
+        sourceLabel: name,
+        source: null,
+        readError: `Workflow "${name}" not found. Available: ${
+          available.length ? available.join(', ') : '(none)'
+        }`,
+      }
+    }
+    const resolved = sourceFromWorkflowRef(ref, name)
     return {
-      sourceKind: 'resume',
-      sourceLabel: runId,
-      source: persisted,
-      readError: persisted ? null : `No persisted script found for ${runId}.`,
+      sourceKind: 'named',
+      sourceLabel: name,
+      source: resolved.source,
+      readError: resolved.readError,
     }
   }
 
@@ -101,7 +140,7 @@ function resolveWorkflowSource(input: WorkflowPermissionInput): {
     sourceKind: 'missing',
     sourceLabel: 'missing script',
     source: null,
-    readError: 'Workflow requires either script, scriptPath, or resumeFromRunId.',
+    readError: 'Must provide script, name, or scriptPath',
   }
 }
 
@@ -112,9 +151,12 @@ export function buildWorkflowPermissionReview(
   const resolved = resolveWorkflowSource(input)
   let meta: WorkflowMeta | null = null
   let metaError = resolved.readError
+  let staticSummarySource = resolved.source
   if (resolved.source) {
     try {
-      meta = extractMeta(resolved.source).meta
+      const extracted = extractMeta(resolved.source)
+      meta = extracted.meta
+      staticSummarySource = extracted.scriptBody
       metaError = null
     } catch (err) {
       metaError = (err as Error).message
@@ -128,6 +170,9 @@ export function buildWorkflowPermissionReview(
     metaError,
     argsPreview: previewUnknown(input.args),
     scriptPreview: resolved.source ? scriptPreview(resolved.source) : null,
+    staticSummary: staticSummarySource
+      ? analyzeWorkflowStaticSummary(staticSummarySource)
+      : null,
     usageConsentHash: resolved.source
       ? workflowUsageConsentHash(resolved.source)
       : null,
@@ -139,7 +184,6 @@ export function buildWorkflowPermissionReview(
       typeof input.resumeFromRunId === 'string' && input.resumeFromRunId.trim()
         ? input.resumeFromRunId.trim()
         : null,
-    runInBackground: input.run_in_background === true,
     showUsageWarning: options.showUsageWarning !== false,
   }
 }

@@ -29,6 +29,7 @@ export type JournalEntry = {
   hash: string
   value: unknown
   tokens: number
+  toolCalls?: number
   ok: boolean
   status?: AgentRunResult['status']
 }
@@ -130,6 +131,9 @@ export function createJournal(
       return {
         value: entry.value,
         tokens: entry.tokens,
+        ...(typeof entry.toolCalls === 'number'
+          ? { toolCalls: entry.toolCalls }
+          : {}),
         ok: entry.ok,
         ...(entry.status ? { status: entry.status } : {}),
       }
@@ -159,6 +163,9 @@ export function createJournal(
         hash,
         value: result.value,
         tokens: result.tokens,
+        ...(typeof result.toolCalls === 'number'
+          ? { toolCalls: result.toolCalls }
+          : {}),
         ok: result.ok,
         ...(result.status ? { status: result.status } : {}),
       }

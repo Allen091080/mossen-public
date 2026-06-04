@@ -9,10 +9,12 @@ import {
 } from '../../constants/xml.js'
 import type { SetAppState, TaskStateBase, TaskStatus } from '../../Task.js'
 import { createTaskStateBase } from '../../Task.js'
+import type { SdkWorkflowProgress } from '../../types/tools.js'
 import {
   WORKFLOW_AGENT_RETRY_ABORT_REASON,
   WORKFLOW_AGENT_SKIP_ABORT_REASON,
   type WorkflowAgentControlAction,
+  type WorkflowPhaseMeta,
   type WorkflowProgressEvent,
 } from '../../tools/WorkflowTool/engine/types.js'
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
@@ -23,6 +25,7 @@ import {
   initTaskOutput,
 } from '../../utils/task/diskOutput.js'
 import { registerTask, updateTaskState } from '../../utils/task/framework.js'
+import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
 
 export type WorkflowAgentTaskProgress = {
   agentNumber: number
@@ -37,21 +40,37 @@ export type WorkflowAgentTaskProgress = {
     | 'retry_requested'
     | 'cached'
   tokens: number
+  toolCalls: number
 }
 
 export type LocalWorkflowTaskState = TaskStateBase & {
   type: 'local_workflow'
   runId: string
+  workflowRunId: string
   workflowName: string
+  script?: string
+  prompt?: string
+  scriptPath?: string
+  args?: unknown
+  title?: string
+  phaseDefinitions?: WorkflowPhaseMeta[]
+  transcriptDir?: string
   summary?: string
+  defaultModel?: string
   isBackgrounded: true
   abortController?: AbortController
   agentCount: number
+  totalToolCalls: number
   tokensSpent: number
+  failures?: string[]
+  durationMs?: number
   currentPhase?: string
   phases: string[]
+  workflowProgress: SdkWorkflowProgress[]
+  progressVersion: number
   agents: WorkflowAgentTaskProgress[]
   log: string[]
+  logs: string[]
   paused?: boolean
   pauseStartedAt?: number
   error?: string
@@ -74,6 +93,16 @@ const pauseWaiters = new Map<
 >()
 
 const MAX_TASK_LOG_LINES = 200
+export const WORKFLOW_PAUSE_ABORT_REASON = 'workflow_paused'
+
+type WorkflowTaskFinishPatch = {
+  agentCount?: number
+  totalToolCalls?: number
+  tokensSpent?: number
+  failures?: string[]
+  durationMs?: number
+  error?: string
+}
 
 type TaskLike = {
   type?: string
@@ -112,6 +141,39 @@ function appendLogLine(taskId: string, line: string): void {
   appendTaskOutput(taskId, `${line}\n`)
 }
 
+function formatWorkflowArgs(args: unknown): string {
+  try {
+    const json = JSON.stringify(args)
+    return json === undefined ? String(args) : json
+  } catch {
+    return String(args)
+  }
+}
+
+type WorkflowResumePromptSource = {
+  scriptPath?: string
+  runId?: string
+  workflowRunId?: string
+  args?: unknown
+}
+
+export function buildWorkflowResumePrompt(
+  task: WorkflowResumePromptSource,
+): string | null {
+  const workflowRunId = task.workflowRunId ?? task.runId
+  if (!task.scriptPath || !workflowRunId) return null
+  const args = task.args !== undefined ? `, args: ${formatWorkflowArgs(task.args)}` : ''
+  return `Resume the paused workflow by calling: Workflow({scriptPath: '${task.scriptPath}', resumeFromRunId: '${workflowRunId}'${args}}) — completed agents return cached results.`
+}
+
+function buildWorkflowRecoveryPrompt(
+  task: LocalWorkflowTaskState,
+): string | null {
+  if (!task.scriptPath || !task.runId) return null
+  const args = task.args !== undefined ? `, args: ${formatWorkflowArgs(task.args)}` : ''
+  return `To resume after editing the script, call: Workflow({scriptPath: '${task.scriptPath}', resumeFromRunId: '${task.runId}'${args}})`
+}
+
 function releasePauseWaiters(taskId: string, err?: Error): void {
   const waiters = pauseWaiters.get(taskId)
   if (!waiters) return
@@ -141,6 +203,15 @@ function progressLine(event: WorkflowProgressEvent): string {
   }
 }
 
+function nextLogState(
+  task: LocalWorkflowTaskState,
+  line: string,
+): Pick<LocalWorkflowTaskState, 'log' | 'logs'> {
+  const prior = task.logs ?? task.log
+  const next = [...prior, line].slice(-MAX_TASK_LOG_LINES)
+  return { log: next, logs: next }
+}
+
 function setWorkflowAgent(
   agents: WorkflowAgentTaskProgress[],
   next: WorkflowAgentTaskProgress,
@@ -152,6 +223,98 @@ function setWorkflowAgent(
   return agents.map(agent =>
     agent.agentNumber === next.agentNumber ? { ...agent, ...next } : agent,
   )
+}
+
+function phaseIndexFor(
+  task: LocalWorkflowTaskState,
+  phase: string | null,
+): number | undefined {
+  if (!phase) return undefined
+  const index = task.phases.indexOf(phase)
+  return index >= 0 ? index + 1 : undefined
+}
+
+function workflowProgressForSdk(
+  event: WorkflowProgressEvent,
+  task: LocalWorkflowTaskState,
+): SdkWorkflowProgress[] | undefined {
+  switch (event.kind) {
+    case 'phase':
+      return [
+        {
+          type: 'workflow_phase',
+          index: phaseIndexFor(task, event.title) ?? task.phases.length,
+          title: event.title,
+          state: 'start',
+        },
+      ]
+    case 'log':
+      return undefined
+    case 'agent_queued':
+      return [
+        {
+          type: 'workflow_agent',
+          index: event.agentNumber,
+          label: event.label,
+          phaseTitle: event.phase,
+          phaseIndex: phaseIndexFor(task, event.phase),
+          state: 'queued',
+        },
+      ]
+    case 'agent_start':
+      return [
+        {
+          type: 'workflow_agent',
+          index: event.agentNumber,
+          label: event.label,
+          phaseTitle: event.phase,
+          phaseIndex: phaseIndexFor(task, event.phase),
+          state: 'start',
+        },
+      ]
+    case 'agent_end':
+      return [
+        {
+          type: 'workflow_agent',
+          index: event.agentNumber,
+          label: event.label,
+          phaseTitle: event.phase,
+          phaseIndex: phaseIndexFor(task, event.phase),
+          state: event.status ?? (event.ok ? 'completed' : 'failed'),
+          tokens: event.tokens,
+          toolCalls: event.toolCalls ?? 0,
+        },
+      ]
+  }
+}
+
+function withWorkflowProgress(
+  task: LocalWorkflowTaskState,
+  event: WorkflowProgressEvent,
+): LocalWorkflowTaskState {
+  const workflowProgress = workflowProgressForSdk(event, task)
+  if (!workflowProgress?.length) return task
+  return {
+    ...task,
+    workflowProgress: [...task.workflowProgress, ...workflowProgress],
+    progressVersion: task.progressVersion + 1,
+  }
+}
+
+function emitWorkflowTaskProgress(
+  task: LocalWorkflowTaskState,
+  event: WorkflowProgressEvent,
+): void {
+  emitTaskProgress({
+    taskId: task.id,
+    toolUseId: task.toolUseId,
+    description: task.description,
+    startTime: task.startTime,
+    totalTokens: task.tokensSpent,
+    toolUses: task.totalToolCalls,
+    summary: task.summary,
+    workflowProgress: workflowProgressForSdk(event, task),
+  })
 }
 
 function enqueueWorkflowNotification(
@@ -167,14 +330,25 @@ function enqueueWorkflowNotification(
   const toolUseIdLine = task.toolUseId
     ? `\n<${TOOL_USE_ID_TAG}>${task.toolUseId}</${TOOL_USE_ID_TAG}>`
     : ''
-  const usage = `\n<usage><total_tokens>${task.tokensSpent}</total_tokens><tool_uses>${task.agentCount}</tool_uses></usage>`
+  const usage = `\n<usage><total_tokens>${task.tokensSpent}</total_tokens><tool_uses>${task.totalToolCalls}</tool_uses></usage>`
   const reason = task.error ? `\n<reason>${task.error}</reason>` : ''
+  const recoveryItems =
+    status === 'failed' || status === 'killed'
+      ? [
+          buildWorkflowRecoveryPrompt(task),
+          task.transcriptDir ? `Agent transcripts: ${task.transcriptDir}` : null,
+        ].filter((item): item is string => Boolean(item))
+      : []
+  const recovery =
+    recoveryItems.length > 0
+      ? `\n<recovery>${recoveryItems.join('\n')}</recovery>`
+      : ''
   const message = `<${TASK_NOTIFICATION_TAG}>
 <${TASK_ID_TAG}>${task.id}</${TASK_ID_TAG}>${toolUseIdLine}
 <${TASK_TYPE_TAG}>${task.type}</${TASK_TYPE_TAG}>
 <${OUTPUT_FILE_TAG}>${getTaskOutputPath(task.id)}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
-<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${reason}${usage}
+<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${reason}${usage}${recovery}
 </${TASK_NOTIFICATION_TAG}>`
   enqueuePendingNotification({ value: message, mode: 'task-notification' })
 }
@@ -183,6 +357,13 @@ export function registerWorkflowTask(params: {
   runId: string
   workflowName: string
   description: string
+  script?: string
+  scriptPath?: string
+  args?: unknown
+  title?: string
+  phaseDefinitions?: WorkflowPhaseMeta[]
+  transcriptDir?: string
+  defaultModel?: string
   toolUseId?: string
   abortController: AbortController
   setAppState: SetAppState
@@ -198,15 +379,28 @@ export function registerWorkflowTask(params: {
     type: 'local_workflow',
     status: 'running',
     runId: params.runId,
+    workflowRunId: params.runId,
     workflowName: params.workflowName,
+    script: params.script,
+    prompt: params.script,
+    scriptPath: params.scriptPath,
+    args: params.args,
+    title: params.title,
+    phaseDefinitions: params.phaseDefinitions,
+    transcriptDir: params.transcriptDir,
     summary: params.workflowName,
+    defaultModel: params.defaultModel,
     isBackgrounded: true,
     abortController: params.abortController,
     agentCount: 0,
+    totalToolCalls: 0,
     tokensSpent: 0,
     phases: [],
+    workflowProgress: [],
+    progressVersion: 0,
     agents: [],
     log: [],
+    logs: [],
     paused: false,
   }
   pausedWorkflowTasks.delete(params.runId)
@@ -223,24 +417,31 @@ export function updateWorkflowTaskProgress(
 ): void {
   const line = progressLine(event)
   appendLogLine(runId, line)
+  let taskForSdkProgress: LocalWorkflowTaskState | null = null
   updateTaskState<LocalWorkflowTaskState>(runId, setAppState, task => {
     if (task.status !== 'running') return task
-    const log = [...task.log, line].slice(-MAX_TASK_LOG_LINES)
+    const logState = nextLogState(task, line)
     switch (event.kind) {
-      case 'phase':
-        return {
+      case 'phase': {
+        const next = withWorkflowProgress({
           ...task,
           currentPhase: event.title,
           phases: task.phases.includes(event.title)
             ? task.phases
             : [...task.phases, event.title],
           summary: event.title,
-          log,
-        }
-      case 'log':
-        return { ...task, summary: event.message, log }
-      case 'agent_queued':
-        return {
+          ...logState,
+        }, event)
+        taskForSdkProgress = next
+        return next
+      }
+      case 'log': {
+        const next = { ...task, summary: event.message, ...logState }
+        taskForSdkProgress = next
+        return next
+      }
+      case 'agent_queued': {
+        const next = withWorkflowProgress({
           ...task,
           agentCount: Math.max(task.agentCount, event.agentNumber),
           agents: setWorkflowAgent(task.agents, {
@@ -249,12 +450,16 @@ export function updateWorkflowTaskProgress(
             phase: event.phase,
             status: 'queued',
             tokens: 0,
+            toolCalls: 0,
           }),
           summary: `${event.label} queued`,
-          log,
-        }
-      case 'agent_start':
-        return {
+          ...logState,
+        }, event)
+        taskForSdkProgress = next
+        return next
+      }
+      case 'agent_start': {
+        const next = withWorkflowProgress({
           ...task,
           agentCount: Math.max(task.agentCount, event.agentNumber),
           agents: setWorkflowAgent(task.agents, {
@@ -263,40 +468,48 @@ export function updateWorkflowTaskProgress(
             phase: event.phase,
             status: 'running',
             tokens: 0,
+            toolCalls: 0,
           }),
           summary: event.label,
-          log,
-        }
+          ...logState,
+        }, event)
+        taskForSdkProgress = next
+        return next
+      }
       case 'agent_end': {
         const status =
           event.status ?? (event.ok ? 'completed' : 'failed')
-        return {
+        const toolCalls = event.toolCalls ?? 0
+        const next = withWorkflowProgress({
           ...task,
           tokensSpent: task.tokensSpent + event.tokens,
+          totalToolCalls: task.totalToolCalls + toolCalls,
           agents: setWorkflowAgent(task.agents, {
             agentNumber: event.agentNumber,
             label: event.label,
             phase: event.phase,
             status,
             tokens: event.tokens,
+            toolCalls,
           }),
           summary: `${event.label} ${status}`,
-          log,
-        }
+          ...logState,
+        }, event)
+        taskForSdkProgress = next
+        return next
       }
     }
   })
+  if (taskForSdkProgress) {
+    emitWorkflowTaskProgress(taskForSdkProgress, event)
+  }
 }
 
 export function finishWorkflowTask(
   taskId: string,
   status: Extract<TaskStatus, 'completed' | 'failed' | 'killed'>,
   setAppState: SetAppState,
-  patch: {
-    agentCount?: number
-    tokensSpent?: number
-    error?: string
-  } = {},
+  patch: WorkflowTaskFinishPatch = {},
 ): void {
   let taskForNotification: LocalWorkflowTaskState | null = null
   updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => {
@@ -308,6 +521,8 @@ export function finishWorkflowTask(
       endTime: Date.now(),
       abortController: undefined,
       notified: true,
+      paused: false,
+      pauseStartedAt: undefined,
       summary:
         status === 'completed'
           ? 'completed'
@@ -327,6 +542,22 @@ export function finishWorkflowTask(
   releasePauseWaiters(taskId, new Error(`workflow task ${status}`))
   controlRequests.delete(taskId)
   agentControllers.delete(taskId)
+}
+
+export function completeWorkflowTask(
+  taskId: string,
+  setAppState: SetAppState,
+  patch: Omit<WorkflowTaskFinishPatch, 'error'> = {},
+): void {
+  finishWorkflowTask(taskId, 'completed', setAppState, patch)
+}
+
+export function failWorkflowTask(
+  taskId: string,
+  setAppState: SetAppState,
+  patch: WorkflowTaskFinishPatch = {},
+): void {
+  finishWorkflowTask(taskId, 'failed', setAppState, patch)
 }
 
 export function isWorkflowTaskPaused(taskId: string): boolean {
@@ -377,21 +608,32 @@ export function pauseWorkflowTask(
   setAppState: SetAppState,
 ): boolean {
   const now = Date.now()
+  const line = 'workflow paused'
   let paused = false
+  let controller: AbortController | undefined
   updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => {
     if (task.status !== 'running' || task.paused) return task
+    controller = task.abortController
     paused = true
     return {
       ...task,
+      status: 'paused',
+      endTime: now,
+      notified: true,
       paused: true,
       pauseStartedAt: now,
       summary: 'paused',
-      log: [...task.log, 'workflow paused'].slice(-MAX_TASK_LOG_LINES),
+      abortController: undefined,
+      ...nextLogState(task, line),
     }
   })
   if (!paused) return false
   pausedWorkflowTasks.set(taskId, { startedAt: now })
-  appendLogLine(taskId, 'workflow paused')
+  appendLogLine(taskId, line)
+  controller?.abort(WORKFLOW_PAUSE_ABORT_REASON)
+  releasePauseWaiters(taskId, new Error('workflow task paused'))
+  controlRequests.delete(taskId)
+  agentControllers.delete(taskId)
   return true
 }
 
@@ -400,6 +642,7 @@ export function resumeWorkflowTask(
   setAppState: SetAppState,
 ): boolean {
   const now = Date.now()
+  const line = 'workflow resumed'
   let resumed = false
   updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => {
     if (task.status !== 'running' || !task.paused) return task
@@ -413,12 +656,12 @@ export function resumeWorkflowTask(
       pauseStartedAt: undefined,
       totalPausedMs: (task.totalPausedMs ?? 0) + pausedFor,
       summary: 'resumed',
-      log: [...task.log, 'workflow resumed'].slice(-MAX_TASK_LOG_LINES),
+      ...nextLogState(task, line),
     }
   })
   if (!resumed) return false
   pausedWorkflowTasks.delete(taskId)
-  appendLogLine(taskId, 'workflow resumed')
+  appendLogLine(taskId, line)
   releasePauseWaiters(taskId)
   return true
 }
@@ -518,7 +761,8 @@ export function skipWorkflowAgent(
     WORKFLOW_AGENT_SKIP_ABORT_REASON,
   )
   if (!aborted) rememberControl(taskId, agentNumber, 'skip')
-  appendLogLine(taskId, `skip requested for agent #${agentNumber}`)
+  const line = `skip requested for agent #${agentNumber}`
+  appendLogLine(taskId, line)
   updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => ({
     ...task,
     agents: task.agents.map(agent =>
@@ -526,6 +770,7 @@ export function skipWorkflowAgent(
         ? { ...agent, status: 'skipped' }
         : agent,
     ),
+    ...nextLogState(task, line),
     summary: `skip requested for agent #${agentNumber}`,
   }))
 }
@@ -543,7 +788,8 @@ export function retryWorkflowAgent(
     WORKFLOW_AGENT_RETRY_ABORT_REASON,
   )
   if (!aborted) rememberControl(taskId, agentNumber, 'retry')
-  appendLogLine(taskId, `retry requested for agent #${agentNumber}`)
+  const line = `retry requested for agent #${agentNumber}`
+  appendLogLine(taskId, line)
   updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => ({
     ...task,
     agents: task.agents.map(agent =>
@@ -551,6 +797,7 @@ export function retryWorkflowAgent(
         ? { ...agent, status: 'retry_requested' }
         : agent,
     ),
+    ...nextLogState(task, line),
     summary: `retry requested for agent #${agentNumber}`,
   }))
 }

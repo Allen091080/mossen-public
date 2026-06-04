@@ -209,7 +209,12 @@ export function createWorkflowAgentRunner(
     label: string,
     worktreePath: string | undefined,
     agentAbortController: AbortController | undefined,
-  ): Promise<{ text: string; tokens: number; structuredOutput?: unknown }> {
+  ): Promise<{
+    text: string
+    tokens: number
+    toolCalls: number
+    structuredOutput?: unknown
+  }> {
     const startTime = Date.now()
     const agentId = createAgentId()
     const promptMessages: Message[] = [createUserMessage({ content: promptText })]
@@ -258,6 +263,7 @@ export function createWorkflowAgentRunner(
       // extractTextContent; this catches the text-literal variant.
       text: stripLiteralThinking(extractTextContent(result.content, '\n')),
       tokens: result.totalTokens,
+      toolCalls: result.totalToolUseCount,
       ...(structuredOutput !== undefined ? { structuredOutput } : {}),
     }
   }
@@ -294,7 +300,7 @@ export function createWorkflowAgentRunner(
     try {
       // No schema → return the agent's final text verbatim.
       if (!opts.schema) {
-        const { text, tokens } = await runOnce(
+        const { text, tokens, toolCalls } = await runOnce(
           agentDefinition,
           baseAvailableTools,
           prompt,
@@ -303,7 +309,7 @@ export function createWorkflowAgentRunner(
           worktreeInfo?.worktreePath,
           agentAbortController,
         )
-        return { value: text, tokens, ok: true }
+        return { value: text, tokens, toolCalls, ok: true }
       }
 
       // Schema → require the StructuredOutput tool, then validate+retry on failure.
@@ -317,9 +323,10 @@ export function createWorkflowAgentRunner(
       )
       let promptText = prompt + buildSchemaInstruction(opts.schema)
       let totalTokens = 0
+      let totalToolCalls = 0
       let lastDetail = ''
       for (let attempt = 0; attempt <= MAX_SCHEMA_RETRIES; attempt++) {
-        const { tokens, structuredOutput } = await runOnce(
+        const { tokens, toolCalls, structuredOutput } = await runOnce(
           schemaAgentDefinition,
           schemaTools,
           promptText,
@@ -329,12 +336,18 @@ export function createWorkflowAgentRunner(
           agentAbortController,
         )
         totalTokens += tokens
+        totalToolCalls += toolCalls
         if (structuredOutput === undefined) {
           lastDetail = `the agent never called the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool`
         } else {
           const validation = validateAgainstSchema(structuredOutput, opts.schema)
           if (validation.ok) {
-            return { value: validation.value, tokens: totalTokens, ok: true }
+            return {
+              value: validation.value,
+              tokens: totalTokens,
+              toolCalls: totalToolCalls,
+              ok: true,
+            }
           }
           lastDetail = formatIssues(validation.errors)
         }
@@ -349,12 +362,19 @@ export function createWorkflowAgentRunner(
     } catch (err) {
       if (agentAbortController?.signal.aborted) {
         if (agentAbortController.signal.reason === WORKFLOW_AGENT_SKIP_ABORT_REASON) {
-          return { value: null, tokens: 0, ok: false, status: 'skipped' }
+          return {
+            value: null,
+            tokens: 0,
+            toolCalls: 0,
+            ok: false,
+            status: 'skipped',
+          }
         }
         if (agentAbortController.signal.reason === WORKFLOW_AGENT_RETRY_ABORT_REASON) {
           return {
             value: null,
             tokens: 0,
+            toolCalls: 0,
             ok: false,
             status: 'retry_requested',
           }

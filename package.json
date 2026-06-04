@@ -38,6 +38,7 @@
     "@azure/identity": "^4.13.1",
     "@commander-js/extra-typings": "^14.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "acorn": "^8.16.0",
     "ajv": "^8.18.0",
     "asciichart": "^1.5.25",
     "audio-capture-napi": "^0.0.1",

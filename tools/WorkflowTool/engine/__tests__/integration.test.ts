@@ -40,10 +40,10 @@ function runWorkflow(
     runOneAgent,
     journal: createJournal('test-run'),
   })
-  // Validate meta the way the tool does, then execute the body.
-  extractMeta(source)
+  // Validate meta the way the tool does, then execute only the body.
+  const { scriptBody } = extractMeta(source)
   return runSandbox({
-    source,
+    source: scriptBody,
     scope: runtime.scope,
     timeoutMs: 5000,
   }).then(result => ({ result, events, budget, runtime }))
@@ -117,6 +117,15 @@ return args.value * 2
     expect(result).toBe(42)
   })
 
+  test('does not expose the meta declaration to the workflow body', async () => {
+    const source = `
+export const meta = { name: 'hidden-meta', description: 'meta is not in body scope' }
+return typeof meta
+`
+    const { result } = await runWorkflow(source, fakeAgent)
+    expect(result).toBe('undefined')
+  })
+
   test('budget ceiling aborts the run with a clear error', async () => {
     const source = `
 export const meta = { name: 'greedy', description: 'spends past the budget' }
@@ -146,8 +155,9 @@ const out = await parallel([
 ])
 return out
 `
-    const { result } = await runWorkflow(source, flaky)
+    const { result, runtime } = await runWorkflow(source, flaky)
     expect(result).toEqual(['ok:good one', null, 'ok:good two'])
+    expect(runtime.failures()).toEqual(['parallel[1] failed: agent failed'])
   })
 
   test('rejects a workflow whose script uses a forbidden API', async () => {

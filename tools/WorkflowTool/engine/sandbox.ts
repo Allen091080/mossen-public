@@ -7,25 +7,28 @@
  * Node/Bun API, and must be deterministic across resume (so Date.now /
  * Math.random / argless `new Date()` are blocked).
  *
- * Isolation strategy (no external VM dependency, faithful to the public
- * Workflow contract):
+ * Isolation strategy (VM-backed, faithful to the public Workflow contract):
  *
- *  1. The script body runs inside an async `Function` whose parameter list both
- *     INJECTS the allowed surface (primitives + curated builtins) and SHADOWS
- *     every dangerous global by binding its name to `undefined`. Inside the
- *     body `require`, `process`, `fetch`, `eval`, `Function`, `globalThis`,
- *     etc. therefore resolve to the shadow params, not the real globals.
- *  2. `Math` is replaced by a frozen clone whose `random` throws; `Date` by a
- *     guard that throws on `.now()` and argless construction.
- *  3. A static pre-scan rejects `import` / `require(` / dynamic `import(` before
+ *  1. The script body runs inside a `node:vm` context so synchronous runaway
+ *     loops are cut off by `runInContext(..., { timeout })`, matching the
+ *     official workflow runner's first-frame timeout behavior.
+ *  2. The allowed surface (primitives) is injected as globals, while dangerous
+ *     names (`process`, `fetch`, `Function`, `globalThis`, etc.) are shadowed
+ *     to `undefined` inside the context.
+ *  3. VM-native builtins are used where possible. `Math.random` and `Date`
+ *     are patched inside the VM context so nondeterministic calls throw without
+ *     handing host constructors to the workflow script.
+ *  4. A static pre-scan rejects `import` / `require(` / dynamic `import(` before
  *     anything runs.
- *  4. Execution races against a timeout and an optional AbortSignal.
+ *  5. Async execution races against a timeout and an optional AbortSignal.
  *
  * This is defense-in-depth, not a cryptographic boundary: the workflow author
  * is the operator (scripts come from the model under the operator's session),
  * so the goal is to prevent accidents and enforce determinism, mirroring the
  * documented capability surface rather than sandboxing hostile code.
  */
+
+import vm from 'node:vm'
 
 export class WorkflowScriptError extends Error {
   constructor(message: string) {
@@ -80,79 +83,10 @@ const SHADOWED_GLOBALS = [
   'indexedDB',
 ]
 
-/** A Math clone whose nondeterministic member throws. */
-function makeSafeMath(): Math {
-  const clone: Record<string, unknown> = {}
-  for (const key of Object.getOwnPropertyNames(Math)) {
-    clone[key] = (Math as unknown as Record<string, unknown>)[key]
-  }
-  clone.random = () => {
-    throw new WorkflowScriptError(
-      'Math.random() is unavailable in workflows (breaks resume determinism). ' +
-        'Vary by agent index/label instead.',
-    )
-  }
-  return Object.freeze(clone) as unknown as Math
-}
-
-/** A Date guard: argless `new Date()` and `Date.now()` throw; explicit args ok. */
-function makeSafeDate(): DateConstructor {
-  const denied = () => {
-    throw new WorkflowScriptError(
-      'Date.now() / new Date() are unavailable in workflows (breaks resume ' +
-        'determinism). Pass timestamps via args, or stamp results after the run.',
-    )
-  }
-  const SafeDate = function (this: unknown, ...args: unknown[]): Date {
-    if (args.length === 0) denied()
-    return Reflect.construct(Date, args) as Date
-  } as unknown as DateConstructor
-  // Copy static members, then override now().
-  Object.defineProperties(SafeDate, {
-    parse: { value: Date.parse },
-    UTC: { value: Date.UTC },
-    now: { value: denied },
-    prototype: { value: Date.prototype },
-  })
-  return SafeDate as DateConstructor
-}
-
-/** Curated safe builtins exposed to workflow bodies. */
-function safeBuiltins(): Record<string, unknown> {
-  return {
-    JSON,
-    Math: makeSafeMath(),
-    Date: makeSafeDate(),
-    Array,
-    Object,
-    String,
-    Number,
-    Boolean,
-    Promise,
-    Map,
-    Set,
-    WeakMap,
-    WeakSet,
-    RegExp,
-    Symbol,
-    Error,
-    TypeError,
-    RangeError,
-    parseInt,
-    parseFloat,
-    isNaN,
-    isFinite,
-    encodeURIComponent,
-    decodeURIComponent,
-    structuredClone:
-      typeof structuredClone === 'function' ? structuredClone : undefined,
-  }
-}
-
 export type SandboxScope = Record<string, unknown>
 
 export type RunSandboxOptions = {
-  /** Full workflow source (the meta block is stripped automatically). */
+  /** Workflow script body; callers must strip the leading meta declaration. */
   source: string
   /** Engine surface injected into the body: agent, parallel, pipeline, etc. */
   scope: SandboxScope
@@ -161,6 +95,10 @@ export type RunSandboxOptions = {
   /** Optional external cancellation. */
   signal?: AbortSignal
 }
+
+type WorkflowScriptSyntaxCheck =
+  | { ok: true }
+  | { ok: false; error: string }
 
 /** Reject module syntax before execution (workflows are self-contained). */
 function rejectModuleSyntax(source: string): void {
@@ -185,13 +123,131 @@ function rejectModuleSyntax(source: string): void {
   }
 }
 
-/**
- * Strip the leading `export const meta = {...}` (and any other top-level
- * `export ` keywords) so the body runs as a plain async function. `export`
- * keywords are the only module-ism the contract permits at the top.
- */
-function stripExports(source: string): string {
-  return source.replace(/(^|\n)\s*export\s+(const|let|var|function|async)\b/g, '$1$2')
+const DETERMINISTIC_GUARDS = `
+(() => {
+  const randomDenied = () => {
+    throw new Error(
+      'Math.random() is unavailable in workflows (breaks resume determinism). ' +
+        'Vary by agent index/label instead.'
+    )
+  }
+  Object.defineProperty(Math, 'random', {
+    value: randomDenied,
+    writable: false,
+    configurable: false,
+  })
+
+  const NativeDate = Date
+  const dateDenied = () => {
+    throw new Error(
+      'Date.now() / new Date() are unavailable in workflows (breaks resume ' +
+        'determinism). Pass timestamps via args, or stamp results after the run.'
+    )
+  }
+  function SafeDate(...args) {
+    if (args.length === 0) dateDenied()
+    if (new.target) return Reflect.construct(NativeDate, args, new.target)
+    return NativeDate(...args)
+  }
+  Object.defineProperties(SafeDate, {
+    parse: { value: NativeDate.parse },
+    UTC: { value: NativeDate.UTC },
+    now: { value: dateDenied },
+    prototype: { value: NativeDate.prototype },
+  })
+  Object.defineProperty(globalThis, 'Date', {
+    value: SafeDate,
+    writable: true,
+    configurable: true,
+  })
+})()
+`
+
+function isVmTimeout(err: unknown): boolean {
+  const message =
+    typeof err === 'object' && err !== null && 'message' in err
+      ? String((err as { message?: unknown }).message)
+      : ''
+  return /Script execution timed out after \d+ms/.test(message)
+}
+
+function isSyntaxErrorLike(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'name' in err &&
+    (err as { name?: unknown }).name === 'SyntaxError'
+  )
+}
+
+function normalizeExecutionError(err: unknown): never {
+  if (isSyntaxErrorLike(err)) {
+    const message =
+      typeof err === 'object' && err !== null && 'message' in err
+        ? String((err as { message?: unknown }).message)
+        : String(err)
+    throw new WorkflowScriptError(
+      `Workflow script failed to parse: ${message}`,
+    )
+  }
+  throw err
+}
+
+function wrappedWorkflowSource(source: string): string {
+  return `(async function() {\n"use strict";\n${source}\n})()`
+}
+
+function preflightWorkflowScriptSyntax(source: string): void {
+  try {
+    // Parse only. This does not execute the workflow body; execution still
+    // happens inside the VM context below.
+    new Function(`return (async function() {\n"use strict";\n${source}\n})`)
+  } catch (err) {
+    throw new WorkflowScriptError(
+      `Workflow script failed to parse: ${(err as Error).message}`,
+    )
+  }
+}
+
+function compileWorkflowScript(source: string): vm.Script {
+  rejectModuleSyntax(source)
+  preflightWorkflowScriptSyntax(source)
+  try {
+    return new vm.Script(wrappedWorkflowSource(source), {
+      filename: 'workflow.js',
+    })
+  } catch (err) {
+    throw new WorkflowScriptError(
+      `Workflow script failed to parse: ${(err as Error).message}`,
+    )
+  }
+}
+
+/** Preflight workflow script syntax before launching a background run. */
+export function checkWorkflowScriptSyntax(
+  source: string,
+): WorkflowScriptSyntaxCheck {
+  try {
+    compileWorkflowScript(source)
+    return { ok: true }
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
+function createContext(scope: SandboxScope, timeoutMs: number): vm.Context {
+  const context = vm.createContext({ ...scope })
+  new vm.Script(DETERMINISTIC_GUARDS, {
+    filename: 'workflow-determinism-guards.js',
+  }).runInContext(context, { timeout: timeoutMs })
+
+  for (const name of SHADOWED_GLOBALS) {
+    context[name] = undefined
+  }
+  return context
 }
 
 /**
@@ -201,60 +257,36 @@ function stripExports(source: string): string {
  */
 export async function runSandbox(options: RunSandboxOptions): Promise<unknown> {
   const { source, scope, timeoutMs, signal } = options
-  rejectModuleSyntax(source)
-  const body = stripExports(source)
-
-  const builtins = safeBuiltins()
-
-  // Parameter names = injected scope + safe builtins + shadowed globals.
-  // Later duplicates would be a syntax error, so de-dupe deterministically.
-  const injected: Record<string, unknown> = { ...builtins, ...scope }
-  const paramNames: string[] = []
-  const paramValues: unknown[] = []
-  const seen = new Set<string>()
-  for (const [k, v] of Object.entries(injected)) {
-    if (seen.has(k)) continue
-    seen.add(k)
-    paramNames.push(k)
-    paramValues.push(v)
-  }
-  for (const g of SHADOWED_GLOBALS) {
-    if (seen.has(g)) continue
-    seen.add(g)
-    paramNames.push(g)
-    paramValues.push(undefined)
-  }
-
-  let fn: (...args: unknown[]) => Promise<unknown>
-  try {
-    const AsyncFunction = Object.getPrototypeOf(async function () {})
-      .constructor as new (...a: string[]) => (...args: unknown[]) => Promise<unknown>
-    fn = new AsyncFunction(...paramNames, `"use strict";\n${body}`)
-  } catch (err) {
-    throw new WorkflowScriptError(
-      `Workflow script failed to parse: ${(err as Error).message}`,
-    )
-  }
+  const script = compileWorkflowScript(source)
+  const context = createContext(scope, timeoutMs)
 
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new WorkflowTimeoutError(timeoutMs)), timeoutMs)
   })
+  let removeAbortListener: (() => void) | undefined
   const aborted = new Promise<never>((_, reject) => {
     if (!signal) return
     if (signal.aborted) reject(new WorkflowScriptError('Workflow aborted.'))
-    signal.addEventListener('abort', () =>
-      reject(new WorkflowScriptError('Workflow aborted.')),
-    )
+    const abort = () => {
+      reject(new WorkflowScriptError('Workflow aborted.'))
+    }
+    signal.addEventListener('abort', abort)
+    removeAbortListener = () => signal.removeEventListener('abort', abort)
   })
 
   try {
-    return await Promise.race([
-      Promise.resolve().then(() => fn(...paramValues)),
-      timeout,
-      aborted,
-    ])
+    let value: unknown
+    try {
+      value = script.runInContext(context, { timeout: timeoutMs })
+    } catch (err) {
+      if (isVmTimeout(err)) throw new WorkflowTimeoutError(timeoutMs)
+      normalizeExecutionError(err)
+    }
+    const execution = Promise.resolve(value).catch(normalizeExecutionError)
+    return await Promise.race([execution, timeout, aborted])
   } finally {
     if (timer) clearTimeout(timer)
+    removeAbortListener?.()
   }
 }

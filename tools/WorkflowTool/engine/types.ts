@@ -14,10 +14,13 @@ export type WorkflowPhaseMeta = {
   model?: string
 }
 
+export type WorkflowPhaseInput = string | WorkflowPhaseMeta
+
 /** The `export const meta = {...}` literal at the top of every workflow. */
 export type WorkflowMeta = {
   name: string
   description: string
+  title?: string
   whenToUse?: string
   phases?: WorkflowPhaseMeta[]
   model?: string
@@ -26,7 +29,7 @@ export type WorkflowMeta = {
 /** Options accepted by the in-script `agent()` primitive. */
 export type AgentCallOptions = {
   label?: string
-  phase?: string
+  phase?: WorkflowPhaseInput
   /** JSON Schema; when present the agent result is validated & returned as an object. */
   schema?: Record<string, unknown>
   model?: string
@@ -58,6 +61,7 @@ export type WorkflowProgressEvent =
       ok: boolean
       status?: 'completed' | 'failed' | 'skipped' | 'cached'
       tokens: number
+      toolCalls?: number
     }
 
 /** Sink the runtime uses to surface progress to the WorkflowTool call(). */
@@ -69,6 +73,8 @@ export type AgentRunResult = {
   value: unknown
   /** Output tokens attributed to this run (best-effort). */
   tokens: number
+  /** Tool calls made by this agent run (best-effort). */
+  toolCalls?: number
   ok: boolean
   /** Internal control result for user-driven workflow task controls. */
   status?: 'completed' | 'failed' | 'skipped' | 'retry_requested'

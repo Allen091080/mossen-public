@@ -137,7 +137,7 @@ describe('journal onRecord sink (disk-persistence contract, S1)', () => {
   test('onRecord payload matches the in-memory toData() entries', () => {
     const appended: string[] = []
     const j = createJournal('wf_test', null, e => appended.push(JSON.stringify(e)))
-    j.record(0, 'h0', { value: { n: 5 }, tokens: 7, ok: true })
+    j.record(0, 'h0', { value: { n: 5 }, tokens: 7, toolCalls: 2, ok: true })
     const data = j.toData()
     expect(JSON.parse(appended[0]!)).toEqual(data.entries[0]!)
   })
@@ -155,8 +155,8 @@ describe('journal onRecord sink (disk-persistence contract, S1)', () => {
       agentNumber: 1,
       opts: {},
     })
-    j.record(0, 'ha', { value: 'first', tokens: 3, ok: true })
-    j.record(1, 'hb', { value: 'second', tokens: 4, ok: false })
+    j.record(0, 'ha', { value: 'first', tokens: 3, toolCalls: 2, ok: true })
+    j.record(1, 'hb', { value: 'second', tokens: 4, toolCalls: 1, ok: false })
 
     expect(existsSync(file)).toBe(true)
     const entries = readFileSync(file, 'utf8')
@@ -165,8 +165,20 @@ describe('journal onRecord sink (disk-persistence contract, S1)', () => {
       .map(l => JSON.parse(l))
     expect(entries).toHaveLength(3)
     expect(entries[0]).toMatchObject({ kind: 'started', index: 0, hash: 'ha' })
-    expect(entries[1]).toMatchObject({ index: 0, hash: 'ha', value: 'first', ok: true })
-    expect(entries[2]).toMatchObject({ index: 1, hash: 'hb', value: 'second', ok: false })
+    expect(entries[1]).toMatchObject({
+      index: 0,
+      hash: 'ha',
+      value: 'first',
+      toolCalls: 2,
+      ok: true,
+    })
+    expect(entries[2]).toMatchObject({
+      index: 1,
+      hash: 'hb',
+      value: 'second',
+      toolCalls: 1,
+      ok: false,
+    })
 
     // Feed the reloaded entries back as `prior` → prefix cache hits.
     const resumed = createJournal('wf_run', {
@@ -174,8 +186,18 @@ describe('journal onRecord sink (disk-persistence contract, S1)', () => {
       entries: entries.filter(e => e.kind !== 'started'),
       started: entries.filter(e => e.kind === 'started'),
     })
-    expect(resumed.lookup(0, 'ha')).toEqual({ value: 'first', tokens: 3, ok: true })
-    expect(resumed.lookup(1, 'hb')).toEqual({ value: 'second', tokens: 4, ok: false })
+    expect(resumed.lookup(0, 'ha')).toEqual({
+      value: 'first',
+      tokens: 3,
+      toolCalls: 2,
+      ok: true,
+    })
+    expect(resumed.lookup(1, 'hb')).toEqual({
+      value: 'second',
+      tokens: 4,
+      toolCalls: 1,
+      ok: false,
+    })
     expect(resumed.hits()).toBe(2)
   })
 

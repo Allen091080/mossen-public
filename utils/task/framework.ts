@@ -180,6 +180,9 @@ export async function generateTaskAttachments(state: AppState): Promise<{
         case 'pending':
           // Keep in map — hasn't run yet, but parent already knows about it
           continue
+        case 'paused':
+          // Keep paused tasks visible for explicit resume.
+          continue
         case 'running':
           // Fall through to running logic below
           break
@@ -304,5 +307,7 @@ function getStatusText(status: TaskStatus): string {
       return 'is running'
     case 'pending':
       return 'is pending'
+    case 'paused':
+      return 'is paused'
   }
 }

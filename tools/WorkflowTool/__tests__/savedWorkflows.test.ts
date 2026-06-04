@@ -145,15 +145,25 @@ describe('savedWorkflows loader (S3)', () => {
 
   test('bundled workflows are first-class workflow refs and commands', async () => {
     const bundled = loadBundledWorkflowRefs()
+    expect(bundled.map(wf => wf.commandName)).toContain('deep-research')
     expect(bundled.map(wf => wf.commandName)).toContain('project-scan')
     expect(bundled.every(wf => wf.scope === 'bundled')).toBe(true)
     expect(bundled.every(wf => typeof wf.source === 'string')).toBe(true)
 
     const workflows = getAllWorkflows(root)
+    expect(workflows.map(wf => wf.commandName)).toContain('deep-research')
     expect(workflows.map(wf => wf.commandName)).toContain('project-scan')
+    expect(resolveWorkflowFromSources(root, 'deep-research')?.source).toContain(
+      "name: 'deep-research'",
+    )
     expect(resolveWorkflowFromSources(root, 'project-scan')?.source).toContain(
       "name: 'project-scan'",
     )
+
+    const deepResearchCommand = loadWorkflowCommandsFromSources(root).find(
+      c => c.name === 'deep-research',
+    )
+    expect(deepResearchCommand?.type).toBe('prompt')
 
     const command = loadWorkflowCommandsFromSources(root).find(
       c => c.name === 'project-scan',

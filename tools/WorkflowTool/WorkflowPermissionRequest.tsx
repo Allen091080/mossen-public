@@ -17,6 +17,10 @@ import {
   buildWorkflowPermissionReview,
   type WorkflowPermissionReview,
 } from './permissionReview.js'
+import type {
+  WorkflowStaticPhase,
+  WorkflowStaticPhaseKind,
+} from './engine/staticSummary.js'
 import {
   recordWorkflowUsageConsent,
   workflowNeedsUsageConsentPrompt,
@@ -43,6 +47,89 @@ function DetailRow({
       <Box flexDirection="column" flexShrink={1}>
         {typeof children === 'string' ? <Text>{children}</Text> : children}
       </Box>
+    </Box>
+  )
+}
+
+function staticPhaseKindLabel(kind: WorkflowStaticPhaseKind): string {
+  switch (kind) {
+    case 'loop':
+      return 'loop'
+    case 'parallel':
+      return 'parallel'
+    case 'sequential':
+      return 'step'
+  }
+}
+
+function staticPhaseTitle(
+  review: WorkflowPermissionReview,
+  phase: WorkflowStaticPhase,
+  index: number,
+): { title: string; detail?: string } {
+  const metaPhase = review.meta?.phases?.[index]
+  if (metaPhase) {
+    return { title: metaPhase.title, detail: metaPhase.detail }
+  }
+  return {
+    title: `${staticPhaseKindLabel(phase.kind)}${phase.annotation ? ` ${phase.annotation}` : ''}`,
+  }
+}
+
+function promptSamples(phase: WorkflowStaticPhase): string[] {
+  const seen = new Set<string>()
+  const samples: string[] = []
+  for (const agent of phase.agents) {
+    if (!agent.prompt || seen.has(agent.prompt)) continue
+    seen.add(agent.prompt)
+    samples.push(agent.prompt)
+    if (samples.length === 2) break
+  }
+  return samples
+}
+
+function StaticSummaryDetails({
+  review,
+}: {
+  review: WorkflowPermissionReview
+}): React.ReactNode {
+  const summary = review.staticSummary
+  if (!summary) return null
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text>
+        This dynamic workflow will spin up multiple subagents across the
+        following phases:
+      </Text>
+      {summary.phases.map((phase, index) => {
+        const title = staticPhaseTitle(review, phase, index)
+        const samples = promptSamples(phase)
+        return (
+          <Box
+            key={`${phase.kind}-${phase.annotation ?? ''}-${index}`}
+            flexDirection="column"
+          >
+            <Text>
+              {'  '}
+              {index + 1}. {title.title}
+              {title.detail ? ` - ${title.detail}` : ''}
+            </Text>
+            {samples.length ? (
+              <Text dimColor>
+                {'     '}
+                {samples.map(sample => `- "${sample}"`).join('  ')}
+                {phase.agents.length > samples.length
+                  ? `  +${phase.agents.length - samples.length} more`
+                  : ''}
+              </Text>
+            ) : null}
+          </Box>
+        )
+      })}
+      <Text dimColor>
+        Estimated agents: {summary.estimatedAgents}
+        {summary.hasReturn ? ' - returns a workflow result' : ''}
+      </Text>
     </Box>
   )
 }
@@ -76,9 +163,6 @@ function ReviewDetails({
       {review.resumeFromRunId ? (
         <DetailRow label="Resume">{review.resumeFromRunId}</DetailRow>
       ) : null}
-      {review.runInBackground ? (
-        <DetailRow label="Mode">background</DetailRow>
-      ) : null}
       {review.timeoutMs !== null ? (
         <DetailRow label="Timeout">{String(review.timeoutMs)} ms</DetailRow>
       ) : null}
@@ -100,6 +184,7 @@ function ReviewDetails({
           </Box>
         </DetailRow>
       ) : null}
+      <StaticSummaryDetails review={review} />
       {review.metaError ? (
         <DetailRow label="Warning">
           <Text color="warning">{review.metaError}</Text>

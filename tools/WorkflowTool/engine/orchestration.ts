@@ -28,6 +28,17 @@ export type Thunk<T> = () => Promise<T>
 export async function parallel<T>(
   thunks: Array<Thunk<T>>,
 ): Promise<Array<T | null>> {
+  if (!Array.isArray(thunks)) {
+    throw new TypeError('parallel() expects an array of functions')
+  }
+  if (thunks.length === 0) return []
+  for (const thunk of thunks) {
+    if (typeof thunk !== 'function') {
+      throw new TypeError(
+        'parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)',
+      )
+    }
+  }
   const settled = await Promise.all(
     thunks.map(thunk =>
       Promise.resolve()
@@ -56,12 +67,24 @@ export async function pipeline(
   items: unknown[],
   ...stages: Array<Stage<unknown, unknown>>
 ): Promise<Array<unknown | null>> {
+  if (!Array.isArray(items)) {
+    throw new TypeError('pipeline() expects an array as the first argument')
+  }
+  if (items.length === 0) return []
+  for (const stage of stages) {
+    if (typeof stage !== 'function') {
+      throw new TypeError(
+        'pipeline() stages must be functions: pipeline(items, item => ..., result => ...)',
+      )
+    }
+  }
   const runItem = async (
     item: unknown,
     index: number,
   ): Promise<unknown | null> => {
     let value: unknown = item
     for (const stage of stages) {
+      if (value === null) break
       try {
         value = await stage(value, item, index)
       } catch {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  checkWorkflowScriptSyntax,
   runSandbox,
   WorkflowScriptError,
   WorkflowTimeoutError,
@@ -47,12 +48,18 @@ describe('runSandbox — allowed surface', () => {
     expect(out).toBe('ran:task')
   })
 
-  test('strips export keywords so meta block is harmless', async () => {
+  test('injected timers work while global setTimeout stays hidden', async () => {
     const out = await runSandbox({
       ...base,
-      source: `export const meta = { name: 'x', description: 'd' }\nreturn meta.name`,
+      scope: {
+        timers: {
+          wait: async () => undefined,
+          setTimeout: async (_ms: number, value: string) => value,
+        },
+      },
+      source: `await timers.wait(1); return [typeof setTimeout, await timers.setTimeout(1, 'ok')].join(':')`,
     })
-    expect(out).toBe('x')
+    expect(out).toBe('undefined:ok')
   })
 
   test('explicit Date args still work', async () => {
@@ -96,6 +103,17 @@ describe('runSandbox — blocked surface', () => {
     expect(out).toBe('undefined,undefined,undefined')
   })
 
+  test('constructor chains stay inside the VM context, not the host process', async () => {
+    const out = await runSandbox({
+      ...base,
+      source: `return [
+        Object.constructor('return typeof process')(),
+        Math.max.constructor('return typeof process')(),
+      ].join(',')`,
+    })
+    expect(out).toBe('undefined,undefined')
+  })
+
   test('eval is rejected before execution', async () => {
     await expect(
       runSandbox({ ...base, source: `return eval('1+1')` }),
@@ -127,7 +145,34 @@ describe('runSandbox — blocked surface', () => {
   })
 })
 
+describe('checkWorkflowScriptSyntax', () => {
+  test('accepts a parseable workflow body without executing it', () => {
+    const check = checkWorkflowScriptSyntax(
+      `throw new Error('must not execute during preflight')`,
+    )
+    expect(check).toEqual({ ok: true })
+  })
+
+  test('returns a stable error for invalid syntax', () => {
+    const check = checkWorkflowScriptSyntax(`const value = ;`)
+    expect(check.ok).toBe(false)
+    if ('error' in check) {
+      expect(check.error).toContain('Workflow script failed to parse')
+    }
+  })
+})
+
 describe('runSandbox — limits', () => {
+  test('a synchronous runaway loop hits the VM timeout', async () => {
+    await expect(
+      runSandbox({
+        ...base,
+        timeoutMs: 50,
+        source: `while (true) {}`,
+      }),
+    ).rejects.toThrow(WorkflowTimeoutError)
+  })
+
   test('an awaiting script that never resolves hits the timeout', async () => {
     await expect(
       runSandbox({

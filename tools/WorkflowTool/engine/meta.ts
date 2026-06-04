@@ -12,6 +12,7 @@
  * a single line of its logic.
  */
 
+import { parse } from 'acorn'
 import type { WorkflowMeta } from './types.js'
 
 export class WorkflowMetaError extends Error {
@@ -21,101 +22,197 @@ export class WorkflowMetaError extends Error {
   }
 }
 
-/**
- * Find the `export const meta = { ... }` literal and return the source span of
- * the object literal (including the braces) plus the index just past it.
- */
-function locateMetaLiteral(source: string): {
-  literal: string
-  endIndex: number
-} {
-  const marker = /export\s+const\s+meta\s*=\s*\{/.exec(source)
-  if (!marker) {
-    throw new WorkflowMetaError(
-      'Workflow script must begin with `export const meta = { name, description }`.',
-    )
-  }
-  // Start at the opening brace of the object literal.
-  const open = marker.index + marker[0].length - 1
-  let depth = 0
-  let inString: string | null = null
-  let escaped = false
-  for (let i = open; i < source.length; i++) {
-    const ch = source[i]
-    if (inString) {
-      if (escaped) {
-        escaped = false
-      } else if (ch === '\\') {
-        escaped = true
-      } else if (ch === inString) {
-        inString = null
-      }
-      continue
-    }
-    if (ch === '"' || ch === "'" || ch === '`') {
-      inString = ch
-      continue
-    }
-    if (ch === '{') depth++
-    else if (ch === '}') {
-      depth--
-      if (depth === 0) {
-        return { literal: source.slice(open, i + 1), endIndex: i + 1 }
-      }
-    }
-  }
-  throw new WorkflowMetaError('Unterminated `meta` object literal.')
+type AstNode = {
+  type: string
+  start: number
+  end: number
+  [key: string]: unknown
 }
 
-/**
- * Evaluate an object literal in total isolation.
- *
- * The literal is wrapped as `(<literal>)` and evaluated with an empty scope via
- * `new Function`. Because the meta block is required to be a pure literal, this
- * cannot reach globals, perform I/O, or call functions — a literal containing a
- * call/identifier throws here, which is the desired strictness.
- */
-function evalPureLiteral(literal: string): unknown {
-  let value: unknown
-  try {
-    // eslint-disable-next-line no-new-func -- evaluating a validated pure literal in an empty scope
-    const fn = new Function(
-      `"use strict"; return (${literal});`,
-    ) as () => unknown
-    value = fn()
-  } catch (err) {
-    // A literal that references an identifier (e.g. a function call or a
-    // variable) throws a ReferenceError here in the empty scope — which is the
-    // desired strictness for "must be a pure literal".
-    throw new WorkflowMetaError(
-      `meta is not a valid pure literal: ${(err as Error).message}`,
-    )
-  }
-  // Reject actual non-data values (functions, symbols) AFTER evaluation, so a
-  // string value that merely contains a keyword like "function" or "require"
-  // is not falsely rejected.
-  assertPureData(value, 'meta')
-  return value
+type AstProgram = AstNode & {
+  body: AstNode[]
 }
 
-/** Throw unless `value` is JSON-shaped data (no functions / symbols / etc.). */
-function assertPureData(value: unknown, path: string): void {
-  if (value === null) return
-  const t = typeof value
-  if (t === 'string' || t === 'number' || t === 'boolean') return
-  if (Array.isArray(value)) {
-    value.forEach((v, i) => assertPureData(v, `${path}[${i}]`))
-    return
-  }
-  if (t === 'object') {
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      assertPureData(v, `${path}.${k}`)
-    }
-    return
-  }
-  throw new WorkflowMetaError(
-    `meta must be a pure object literal — ${path} is a ${t} (no functions allowed).`,
+const RESERVED_META_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+export const MAX_WORKFLOW_SCRIPT_BYTES = 1024 * 1024
+
+function assertScriptSize(source: string): void {
+  if (source.length <= MAX_WORKFLOW_SCRIPT_BYTES) return
+  throw new WorkflowMetaError(`Script exceeds ${MAX_WORKFLOW_SCRIPT_BYTES} bytes`)
+}
+
+function isAstNode(value: unknown): value is AstNode {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { type?: unknown }).type === 'string'
   )
+}
+
+function parseProgram(source: string): AstProgram {
+  try {
+    return parse(source, {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      allowAwaitOutsideFunction: true,
+      allowReturnOutsideFunction: true,
+    }) as unknown as AstProgram
+  } catch (err) {
+    throw new WorkflowMetaError(
+      `Script parse error: ${err instanceof Error ? err.message : String(err)}. ` +
+        'Workflow scripts must be plain JavaScript — TypeScript syntax ' +
+        '(type annotations like `: string[]`, interfaces, generics) fails to parse.',
+    )
+  }
+}
+
+function getMetaInitializer(statement: AstNode): AstNode {
+  if (statement.type !== 'ExportNamedDeclaration') {
+    throw new WorkflowMetaError(
+      '`export const meta = { name, description, phases }` must be the FIRST statement in the script',
+    )
+  }
+  const declaration = statement.declaration
+  if (!isAstNode(declaration) || declaration.type !== 'VariableDeclaration') {
+    throw new WorkflowMetaError(
+      '`export const meta = { name, description, phases }` must be the FIRST statement in the script',
+    )
+  }
+  if (declaration.kind !== 'const') {
+    throw new WorkflowMetaError(
+      '`export const meta = { name, description, phases }` must be the FIRST statement in the script',
+    )
+  }
+  const declarations = declaration.declarations
+  if (!Array.isArray(declarations) || declarations.length !== 1) {
+    throw new WorkflowMetaError(
+      '`export const meta = { name, description, phases }` must be the FIRST statement in the script',
+    )
+  }
+  const first = declarations[0]
+  if (!isAstNode(first)) {
+    throw new WorkflowMetaError(
+      '`export const meta = { name, description, phases }` must be the FIRST statement in the script',
+    )
+  }
+  const id = first.id
+  const init = first.init
+  if (
+    !isAstNode(id) ||
+    id.type !== 'Identifier' ||
+    id.name !== 'meta' ||
+    !isAstNode(init) ||
+    init.type !== 'ObjectExpression'
+  ) {
+    throw new WorkflowMetaError(
+      '`export const meta = { name, description, phases }` must be the FIRST statement in the script',
+    )
+  }
+  return init
+}
+
+function pureLiteralValue(node: AstNode): unknown {
+  switch (node.type) {
+    case 'Literal':
+      return node.value
+    case 'ArrayExpression': {
+      const elements = node.elements
+      if (!Array.isArray(elements)) return []
+      return elements.map(element => {
+        if (element === null) throw new Error('sparse arrays not allowed')
+        if (!isAstNode(element)) {
+          throw new Error('non-literal array element in meta')
+        }
+        if (element.type === 'SpreadElement') throw new Error('spread not allowed in meta')
+        return pureLiteralValue(element)
+      })
+    }
+    case 'ObjectExpression':
+      return pureObjectLiteral(node)
+    case 'TemplateLiteral': {
+      const expressions = node.expressions
+      if (Array.isArray(expressions) && expressions.length > 0) {
+        throw new Error('template interpolation not allowed in meta')
+      }
+      const quasis = Array.isArray(node.quasis) ? node.quasis : []
+      return quasis
+        .map(quasi => {
+          if (!isAstNode(quasi)) return ''
+          const value = quasi.value
+          if (
+            typeof value === 'object' &&
+            value !== null &&
+            'cooked' in value
+          ) {
+            const cooked = (value as { cooked?: unknown }).cooked
+            return typeof cooked === 'string' ? cooked : ''
+          }
+          return ''
+        })
+        .join('')
+    }
+    case 'UnaryExpression': {
+      const argument = node.argument
+      if (
+        node.operator === '-' &&
+        isAstNode(argument) &&
+        argument.type === 'Literal' &&
+        typeof argument.value === 'number'
+      ) {
+        return -argument.value
+      }
+      throw new Error('only negative-number unary allowed in meta')
+    }
+    default:
+      throw new Error(`non-literal node type in meta: ${node.type}`)
+  }
+}
+
+function propertyKey(property: AstNode): string {
+  const key = property.key
+  let name: string
+  if (isAstNode(key) && key.type === 'Identifier') {
+    name = String(key.name)
+  } else if (isAstNode(key) && key.type === 'Literal') {
+    name = String(key.value)
+  } else {
+    throw new Error(
+      `unsupported key type in meta: ${isAstNode(key) ? key.type : typeof key}`,
+    )
+  }
+  if (RESERVED_META_KEYS.has(name)) {
+    throw new Error(`reserved key name not allowed in meta: ${name}`)
+  }
+  return name
+}
+
+function pureObjectLiteral(node: AstNode): Record<string, unknown> {
+  const out = Object.create(null) as Record<string, unknown>
+  const properties = node.properties
+  if (!Array.isArray(properties)) return out
+  for (const property of properties) {
+    if (!isAstNode(property) || property.type !== 'Property') {
+      throw new Error('only plain properties allowed in meta')
+    }
+    if (property.computed) throw new Error('computed keys not allowed in meta')
+    if (property.method || property.kind !== 'init') {
+      throw new Error('methods/accessors not allowed in meta')
+    }
+    const value = property.value
+    if (!isAstNode(value)) {
+      throw new Error('property value missing in meta')
+    }
+    out[propertyKey(property)] = pureLiteralValue(value)
+  }
+  return out
+}
+
+function skipBodyPrefix(source: string, start: number): number {
+  let index = start
+  while (index < source.length && /[;\s]/.test(source[index] ?? '')) {
+    index++
+  }
+  return index
 }
 
 function asPhases(value: unknown): WorkflowMeta['phases'] {
@@ -154,6 +251,7 @@ export function validateMeta(raw: unknown): WorkflowMeta {
   return {
     name: rec.name,
     description: rec.description,
+    title: typeof rec.title === 'string' && rec.title.trim() ? rec.title : undefined,
     whenToUse: typeof rec.whenToUse === 'string' ? rec.whenToUse : undefined,
     phases: asPhases(rec.phases),
     model: typeof rec.model === 'string' ? rec.model : undefined,
@@ -169,8 +267,30 @@ export function validateMeta(raw: unknown): WorkflowMeta {
 export function extractMeta(source: string): {
   meta: WorkflowMeta
   bodyStartIndex: number
+  scriptBody: string
 } {
-  const { literal, endIndex } = locateMetaLiteral(source)
-  const meta = validateMeta(evalPureLiteral(literal))
-  return { meta, bodyStartIndex: endIndex }
+  assertScriptSize(source)
+  const program = parseProgram(source)
+  const firstStatement = program.body[0]
+  if (!firstStatement) {
+    throw new WorkflowMetaError(
+      '`export const meta = { name, description, phases }` must be the FIRST statement in the script',
+    )
+  }
+  const init = getMetaInitializer(firstStatement)
+  let raw: unknown
+  try {
+    raw = pureObjectLiteral(init)
+  } catch (err) {
+    throw new WorkflowMetaError(
+      `meta must be a pure literal: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+  const meta = validateMeta(raw)
+  const bodyStartIndex = skipBodyPrefix(source, firstStatement.end)
+  return {
+    meta,
+    bodyStartIndex,
+    scriptBody: source.slice(bodyStartIndex),
+  }
 }

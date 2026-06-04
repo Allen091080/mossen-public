@@ -32,6 +32,7 @@ import type {
   JournalEntry,
   JournalStartedEntry,
 } from './journal.js'
+import type { WorkflowPhaseMeta } from './types.js'
 
 const JOURNAL_FILE = 'journal.jsonl'
 const SCRIPT_FILE = 'script.js'
@@ -43,10 +44,19 @@ export type WorkflowRunMeta = {
   runId: string
   workflowName: string
   description: string
+  title?: string
+  phases?: WorkflowPhaseMeta[]
+  defaultModel?: string
+  args?: unknown
+  scriptPath?: string
+  transcriptDir?: string
   createdAt: string
-  status: 'running' | 'completed' | 'failed'
+  status: 'running' | 'paused' | 'completed' | 'failed'
   agentCount?: number
+  totalToolCalls?: number
   tokensSpent?: number
+  failures?: string[]
+  durationMs?: number
 }
 
 /**
@@ -187,12 +197,17 @@ export function loadRunMeta(runId: string): WorkflowRunMeta | null {
 /** Read the persisted script source for a run (for resume from runId). */
 export function loadRunScript(runId: string): string | null {
   try {
-    const path = join(runDir(runId), SCRIPT_FILE)
+    const path = runScriptPath(runId)
     if (!existsSync(path)) return null
     return readFileSync(path, 'utf8')
   } catch {
     return null
   }
+}
+
+/** Absolute path to a run's snapshotted workflow script. */
+export function runScriptPath(runId: string): string {
+  return join(runDir(runId), SCRIPT_FILE)
 }
 
 /** Persist the human-readable progress log for a run (for /workflows). */

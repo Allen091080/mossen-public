@@ -19,12 +19,19 @@
 import { assertBudget, type Budget } from './budget.js'
 import type { Limiter } from './concurrency.js'
 import { hashCall, type Journal } from './journal.js'
-import { parallel as parallelPrim, pipeline as pipelinePrim } from './orchestration.js'
+import {
+  parallel as parallelPrim,
+  pipeline as pipelinePrim,
+  type Stage,
+  type Thunk,
+} from './orchestration.js'
 import type {
   AgentCallOptions,
   WorkflowAgentControlAction,
   AgentRunResult,
   ProgressSink,
+  WorkflowPhaseInput,
+  WorkflowPhaseMeta,
 } from './types.js'
 
 /** Lifetime cap on agent() calls — a backstop far above any real workflow. */
@@ -54,8 +61,14 @@ export type WorkflowRuntimeConfig = {
   progress: ProgressSink
   args: unknown
   runOneAgent: RunOneAgent
+  phases?: WorkflowPhaseMeta[]
+  defaultModel?: string
+  signal?: AbortSignal
   journal?: Journal
   runNestedWorkflow?: RunNestedWorkflow
+  forcedPhase?: string
+  ignorePhaseChanges?: boolean
+  logPrefix?: string
   shouldSkipAgent?: (
     agentNumber: number,
     meta: { phase: string | null; label: string },
@@ -76,6 +89,23 @@ export type WorkflowRuntime = {
   scope: Record<string, unknown>
   /** Total agent() calls issued so far. */
   agentCount(): number
+  /** Total tool calls made by live agent runs. */
+  toolCallCount(): number
+  /** Non-fatal branch failures captured by parallel/pipeline/nested workflows. */
+  failures(): string[]
+  recordFailure(message: string): void
+}
+
+type WorkflowTimers = {
+  wait(ms: number): Promise<void>
+  sleep(ms: number): Promise<void>
+  setTimeout<T = void>(ms: number, value?: T): Promise<T>
+}
+
+export type ResolvedWorkflowPhase = {
+  title: string
+  detail?: string
+  model?: string
 }
 
 /** Derive a short display label from a prompt when none was supplied. */
@@ -83,6 +113,83 @@ export function deriveLabel(prompt: string): string {
   const firstLine = prompt.trim().split('\n')[0] ?? ''
   const trimmed = firstLine.slice(0, 48)
   return trimmed.length < firstLine.length ? `${trimmed}…` : trimmed || 'agent'
+}
+
+export function resolvePhase(
+  input: WorkflowPhaseInput,
+  phases: readonly WorkflowPhaseMeta[] = [],
+): ResolvedWorkflowPhase {
+  const fromMeta = (title: string) =>
+    phases.find(phase => phase.title.trim() === title)
+
+  if (typeof input === 'string') {
+    const title = input.trim()
+    if (!title) {
+      throw new TypeError('phase(title) requires a non-empty string or phase object.')
+    }
+    return { ...fromMeta(title), title }
+  }
+
+  if (typeof input !== 'object' || input == null) {
+    throw new TypeError('phase(title) requires a non-empty string or phase object.')
+  }
+
+  if (typeof input.title !== 'string') {
+    throw new TypeError('phase(title) requires a non-empty string or phase object.')
+  }
+  const title = input.title.trim()
+  if (!title) {
+    throw new TypeError('phase(title) requires a non-empty string or phase object.')
+  }
+  return { ...fromMeta(title), ...input, title }
+}
+
+function coerceTimerDelay(ms: number): number {
+  if (!Number.isFinite(ms) || ms < 0) {
+    throw new TypeError('timers.wait(ms) requires a non-negative finite delay.')
+  }
+  return ms
+}
+
+function createWorkflowTimers(signal?: AbortSignal): WorkflowTimers {
+  const delay = <T>(ms: number, value?: T): Promise<T> => {
+    const delayMs = coerceTimerDelay(ms)
+    if (signal?.aborted) {
+      return Promise.reject(new Error('Workflow aborted.'))
+    }
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup()
+        resolve(value as T)
+      }, delayMs)
+      const abort = () => {
+        clearTimeout(timer)
+        cleanup()
+        reject(new Error('Workflow aborted.'))
+      }
+      const cleanup = () => signal?.removeEventListener('abort', abort)
+      signal?.addEventListener('abort', abort, { once: true })
+    })
+  }
+  return Object.freeze({
+    wait: (ms: number) => delay<void>(ms),
+    sleep: (ms: number) => delay<void>(ms),
+    setTimeout: delay,
+  })
+}
+
+function formatLogPart(value: unknown): string {
+  if (typeof value === 'string') return value
+  try {
+    const json = JSON.stringify(value)
+    return json === undefined ? String(value) : json
+  } catch {
+    return String(value)
+  }
+}
+
+function formatFailureReason(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason)
 }
 
 export function createWorkflowRuntime(
@@ -94,17 +201,66 @@ export function createWorkflowRuntime(
     progress,
     args,
     runOneAgent,
+    phases = [],
+    defaultModel,
+    signal,
     journal,
     runNestedWorkflow,
+    forcedPhase,
+    ignorePhaseChanges = false,
+    logPrefix = '',
     shouldSkipAgent,
     getAgentControl,
     waitForResume,
     maxAgents = MAX_AGENTS_PER_RUN,
   } = config
 
-  let currentPhase: string | null = null
+  let currentPhase: ResolvedWorkflowPhase | null = null
   let agentCounter = 0
+  let toolCallCounter = 0
   let callIndex = 0
+  const failures: string[] = []
+
+  function recordFailure(message: string): void {
+    failures.push(message)
+  }
+
+  function logFailure(message: string): void {
+    recordFailure(message)
+    progress({ kind: 'log', message })
+  }
+
+  async function parallel<T>(
+    thunks: Array<Thunk<T>>,
+  ): Promise<Array<T | null>> {
+    return parallelPrim(
+      thunks.map((thunk, index) => async () => {
+        try {
+          return await thunk()
+        } catch (err) {
+          logFailure(`parallel[${index}] failed: ${formatFailureReason(err)}`)
+          throw err
+        }
+      }),
+    )
+  }
+
+  async function pipeline(
+    items: unknown[],
+    ...stages: Array<Stage<unknown, unknown>>
+  ): Promise<Array<unknown | null>> {
+    return pipelinePrim(
+      items,
+      ...stages.map(stage => async (prev, originalItem, index) => {
+        try {
+          return await stage(prev, originalItem, index)
+        } catch (err) {
+          logFailure(`pipeline[${index}] failed: ${formatFailureReason(err)}`)
+          throw err
+        }
+      }),
+    )
+  }
 
   async function agent(
     prompt: string,
@@ -119,9 +275,25 @@ export function createWorkflowRuntime(
     }
 
     const index = callIndex++
-    const phase = opts.phase ?? currentPhase
+    const phaseInfo =
+      forcedPhase !== undefined
+        ? { title: forcedPhase }
+        : opts.phase !== undefined
+          ? resolvePhase(opts.phase, phases)
+          : currentPhase
+    const phase = phaseInfo?.title ?? null
     const label = opts.label ?? deriveLabel(prompt)
-    const hash = hashCall(prompt, opts)
+    const effectiveModel = opts.model ?? phaseInfo?.model ?? defaultModel
+    const effectiveOpts: AgentCallOptions = {
+      ...opts,
+      ...(forcedPhase !== undefined && phase !== null
+        ? { phase }
+        : opts.phase !== undefined && phase !== null
+          ? { phase }
+          : {}),
+      ...(effectiveModel ? { model: effectiveModel } : {}),
+    }
+    const hash = hashCall(prompt, effectiveOpts)
     if (opts.isolation === 'remote') {
       throw new Error("agent({isolation:'remote'}) is not available in this build")
     }
@@ -141,6 +313,7 @@ export function createWorkflowRuntime(
         ok: cached.ok,
         status: cached.ok ? 'cached' : 'failed',
         tokens: cached.tokens,
+        toolCalls: 0,
       })
       return cached.ok ? cached.value : null
     }
@@ -154,7 +327,12 @@ export function createWorkflowRuntime(
       })
     }
     for (;;) {
-      journal?.start(index, hash, { label, phase, agentNumber, opts })
+      journal?.start(index, hash, {
+        label,
+        phase,
+        agentNumber,
+        opts: effectiveOpts,
+      })
       progress({ kind: 'agent_queued', label, phase, agentNumber })
 
       let result: AgentRunResult
@@ -171,6 +349,7 @@ export function createWorkflowRuntime(
             return Promise.resolve({
               value: null,
               tokens: 0,
+              toolCalls: 0,
               ok: false,
               status: 'skipped' as const,
             })
@@ -178,7 +357,7 @@ export function createWorkflowRuntime(
           progress({ kind: 'agent_start', label, phase, agentNumber })
           // A queued retry request means "run it now"; a running retry request
           // is handled by the per-agent abort controller in agentRunner.
-          return runOneAgent(prompt, opts, { agentNumber, phase, label })
+          return runOneAgent(prompt, effectiveOpts, { agentNumber, phase, label })
         })
       } catch (err) {
         progress({
@@ -188,6 +367,7 @@ export function createWorkflowRuntime(
           agentNumber,
           ok: false,
           tokens: 0,
+          toolCalls: 0,
         })
         throw err
       }
@@ -201,6 +381,7 @@ export function createWorkflowRuntime(
       }
 
       budget.add(result.tokens)
+      toolCallCounter += result.toolCalls ?? 0
       journal?.record(index, hash, result)
       const status =
         result.status ?? (skipped ? 'skipped' : result.ok ? 'completed' : 'failed')
@@ -212,22 +393,32 @@ export function createWorkflowRuntime(
         ok: result.ok,
         status,
         tokens: result.tokens,
+        toolCalls: result.toolCalls ?? 0,
       })
       return result.ok ? result.value : null
     }
   }
 
-  function phase(title: string): void {
-    if (typeof title !== 'string' || !title.trim()) {
-      throw new TypeError('phase(title) requires a non-empty string.')
-    }
-    currentPhase = title
-    progress({ kind: 'phase', title })
+  function phase(title: WorkflowPhaseInput): void {
+    if (ignorePhaseChanges) return
+    const resolved = resolvePhase(title, phases)
+    currentPhase = resolved
+    progress({ kind: 'phase', title: resolved.title })
   }
 
-  function log(message: string): void {
-    progress({ kind: 'log', message: String(message) })
+  function log(message: unknown): void {
+    progress({ kind: 'log', message: `${logPrefix}${String(message)}` })
   }
+
+  const console = Object.freeze({
+    log: (...values: unknown[]) => log(values.map(formatLogPart).join(' ')),
+    info: (...values: unknown[]) => log(values.map(formatLogPart).join(' ')),
+    debug: (...values: unknown[]) => log(values.map(formatLogPart).join(' ')),
+    warn: (...values: unknown[]) =>
+      log(`[warn] ${values.map(formatLogPart).join(' ')}`),
+    error: (...values: unknown[]) =>
+      log(`[error] ${values.map(formatLogPart).join(' ')}`),
+  })
 
   async function workflow(
     nameOrRef: string | { scriptPath: string },
@@ -235,7 +426,7 @@ export function createWorkflowRuntime(
   ): Promise<unknown> {
     if (!runNestedWorkflow) {
       throw new Error(
-        'Nested workflow() is not available in this context (one level of nesting only).',
+        'workflow() cannot be called from within a child workflow — nesting is limited to one level. Inline the inner script or call its agents directly.',
       )
     }
     return runNestedWorkflow(nameOrRef, nestedArgs)
@@ -244,14 +435,19 @@ export function createWorkflowRuntime(
   return {
     scope: {
       agent,
-      parallel: parallelPrim,
-      pipeline: pipelinePrim,
+      parallel,
+      pipeline,
       phase,
       log,
       workflow,
+      timers: createWorkflowTimers(signal),
+      console,
       args,
       budget,
     },
     agentCount: () => agentCounter,
+    toolCallCount: () => toolCallCounter,
+    failures: () => [...failures],
+    recordFailure,
   }
 }

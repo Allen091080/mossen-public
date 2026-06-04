@@ -64,6 +64,9 @@ function AgentRow({
       {agent.tokens > 0 ? (
         <Text dimColor> · {formatNumber(agent.tokens)} tokens</Text>
       ) : null}
+      {agent.toolCalls > 0 ? (
+        <Text dimColor> · {formatNumber(agent.toolCalls)} tools</Text>
+      ) : null}
     </Text>
   )
 }
@@ -143,6 +146,7 @@ export function WorkflowDetailDialog({
       <Text dimColor>
         {' '}
         · {elapsedTime} · {formatNumber(workflow.tokensSpent)} tokens ·{' '}
+        {formatNumber(workflow.totalToolCalls)} tools ·{' '}
         {workflow.agentCount} {workflow.agentCount === 1 ? 'agent' : 'agents'}
       </Text>
     </Text>

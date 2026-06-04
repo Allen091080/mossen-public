@@ -9,7 +9,9 @@ import { t } from '../../utils/i18n/index.js'
 import {
   listWorkflowRuns,
   loadRunLog,
+  loadRunMeta,
   loadRunScript,
+  runScriptPath,
   type WorkflowRunMeta,
 } from '../../tools/WorkflowTool/engine/journalStore.js'
 import {
@@ -19,14 +21,16 @@ import {
 import { isUltracodeActive, setUltracodeActive } from '../../bootstrap/state.js'
 import { WORKFLOW_TOOL_NAME } from '../../tools/WorkflowTool/constants.js'
 import {
+  buildWorkflowResumePrompt,
   pauseWorkflowTask,
-  resumeWorkflowTask,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
 function statusGlyph(status: WorkflowRunMeta['status']): string {
   switch (status) {
     case 'running':
       return '▶'
+    case 'paused':
+      return 'Ⅱ'
     case 'completed':
       return '✓'
     case 'failed':
@@ -70,6 +74,12 @@ function renderRunDetail(runId: string): string {
       : null,
     meta.tokensSpent != null
       ? `${t('cmd.workflows.tokens')}: ~${meta.tokensSpent}`
+      : null,
+    meta.durationMs != null
+      ? `${t('cmd.workflows.duration')}: ${meta.durationMs}ms`
+      : null,
+    meta.failures?.length
+      ? `${t('cmd.workflows.failures')}: ${meta.failures.length}`
       : null,
   ].filter((l): l is string => l !== null)
   const body =
@@ -118,19 +128,34 @@ function saveRun(args: string[]): string {
   }
 }
 
+export function buildWorkflowResumeNextInput(
+  runId: string,
+  scriptPath: string,
+  args?: unknown,
+): string {
+  return (
+    buildWorkflowResumePrompt({ runId, scriptPath, args }) ??
+    `Resume workflow run ${runId} using the ${WORKFLOW_TOOL_NAME} tool.`
+  )
+}
+
 function resumeRun(args: string[]): { message: string; nextInput?: string } {
   const runId = args[0]
   if (!runId) return { message: t('cmd.workflows.resumeUsage') }
   const script = loadRunScript(runId)
   if (script == null) return { message: t('cmd.workflows.notFound', { runId }) }
+  const meta = loadRunMeta(runId)
   return {
     message: t('cmd.workflows.resumeQueued', { runId }),
-    nextInput:
-      `Resume workflow run ${runId} using the ${WORKFLOW_TOOL_NAME} tool. ` +
-      `Call it with resumeFromRunId: "${runId}" and no new script so it reuses ` +
-      `the persisted script and journal. Do not repeat cached completed agent calls.`,
+    nextInput: buildWorkflowResumeNextInput(
+      runId,
+      meta?.scriptPath ?? runScriptPath(runId),
+      meta?.args,
+    ),
   }
 }
+
+type WorkflowCommandResult = { message: string; nextInput?: string }
 
 function pauseTaskRun(
   runId: string | undefined,
@@ -140,6 +165,9 @@ function pauseTaskRun(
   const task = context.getAppState().tasks?.[runId]
   if (!task || task.type !== 'local_workflow') {
     return t('cmd.workflows.notFound', { runId })
+  }
+  if (task.status === 'paused') {
+    return t('cmd.workflows.alreadyPaused', { runId })
   }
   if (task.status !== 'running') {
     return t('cmd.workflows.taskNotRunning', { runId })
@@ -153,19 +181,24 @@ function pauseTaskRun(
 function resumeTaskRun(
   runId: string | undefined,
   context: LocalJSXCommandContext,
-): string {
-  if (!runId) return t('cmd.workflows.resumeTaskUsage')
+): WorkflowCommandResult {
+  if (!runId) return { message: t('cmd.workflows.resumeTaskUsage') }
   const task = context.getAppState().tasks?.[runId]
   if (!task || task.type !== 'local_workflow') {
-    return t('cmd.workflows.notFound', { runId })
+    return { message: t('cmd.workflows.notFound', { runId }) }
   }
-  if (task.status !== 'running') {
-    return t('cmd.workflows.taskNotRunning', { runId })
+  if (task.status !== 'paused') {
+    return { message: t('cmd.workflows.notPaused', { runId }) }
   }
-  const setAppState = context.setAppStateForTasks ?? context.setAppState
-  return resumeWorkflowTask(runId, setAppState)
-    ? t('cmd.workflows.resumed', { runId })
-    : t('cmd.workflows.notPaused', { runId })
+  const meta = loadRunMeta(runId)
+  return {
+    message: t('cmd.workflows.resumeQueued', { runId }),
+    nextInput: buildWorkflowResumeNextInput(
+      runId,
+      meta?.scriptPath ?? task.scriptPath ?? runScriptPath(runId),
+      meta?.args ?? task.args,
+    ),
+  }
 }
 
 /** `ultracode [on|off]` — view or toggle standing orchestration mode (S6). */
@@ -218,7 +251,13 @@ export async function call(
   }
 
   if (tokens[0] === 'resume-task') {
-    onDone(resumeTaskRun(tokens[1], context), { display: 'system' })
+    const result = resumeTaskRun(tokens[1], context)
+    onDone(result.message, {
+      display: 'system',
+      ...(result.nextInput
+        ? { nextInput: result.nextInput, submitNextInput: true }
+        : {}),
+    })
     return null
   }
 

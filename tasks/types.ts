@@ -37,12 +37,16 @@ export type BackgroundTaskState =
 /**
  * Check if a task should be shown in the background tasks indicator.
  * A task is considered a background task if:
- * 1. It is running or pending
+ * 1. It is running, pending, or paused
  * 2. It has been explicitly backgrounded (not a foreground task)
  */
 export function isBackgroundTask(task: unknown): task is BackgroundTaskState {
   const candidate = task as { status?: string; isBackgrounded?: boolean }
-  if (candidate.status !== 'running' && candidate.status !== 'pending') {
+  if (
+    candidate.status !== 'running' &&
+    candidate.status !== 'pending' &&
+    candidate.status !== 'paused'
+  ) {
     return false
   }
   // Foreground tasks (isBackgrounded === false) are not yet "background tasks"

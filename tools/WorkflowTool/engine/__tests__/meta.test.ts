@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import { extractMeta, validateMeta, WorkflowMetaError } from '../meta.js'
+import {
+  extractMeta,
+  MAX_WORKFLOW_SCRIPT_BYTES,
+  validateMeta,
+  WorkflowMetaError,
+} from '../meta.js'
 
 describe('extractMeta', () => {
   test('extracts a minimal valid meta block', () => {
@@ -15,10 +20,12 @@ describe('extractMeta', () => {
     const src = `export const meta = {
       name: 'review',
       description: 'Review changes',
+      title: 'Review changed files',
       phases: [{ title: 'Scan', detail: 'grep logs' }, { title: 'Fix' }],
     }
     phase('Scan')`
     const { meta } = extractMeta(src)
+    expect(meta.title).toBe('Review changed files')
     expect(meta.phases).toHaveLength(2)
     expect(meta.phases![0]).toEqual({ title: 'Scan', detail: 'grep logs', model: undefined })
     expect(meta.phases![1].title).toBe('Fix')
@@ -43,6 +50,21 @@ describe('extractMeta', () => {
     expect(() => extractMeta(`log('no meta here')`)).toThrow(WorkflowMetaError)
   })
 
+  test('rejects scripts larger than the official workflow parser cap', () => {
+    const oversized =
+      `export const meta = { name: 'x', description: 'd' }\n` +
+      'x'.repeat(MAX_WORKFLOW_SCRIPT_BYTES)
+    expect(() => extractMeta(oversized)).toThrow(
+      `Script exceeds ${MAX_WORKFLOW_SCRIPT_BYTES} bytes`,
+    )
+  })
+
+  test('rejects meta that is not the first statement', () => {
+    expect(() =>
+      extractMeta(`const before = true\nexport const meta = { name: 'x', description: 'd' }`),
+    ).toThrow(/FIRST statement/)
+  })
+
   test('rejects meta missing name', () => {
     expect(() =>
       extractMeta(`export const meta = { description: 'no name' }\nbody`),
@@ -58,7 +80,19 @@ describe('extractMeta', () => {
   test('rejects non-literal meta (function call)', () => {
     expect(() =>
       extractMeta(`export const meta = { name: makeName(), description: 'd' }\nbody`),
+    ).toThrow(/non-literal/)
+  })
+
+  test('does not execute non-literal meta expressions while rejecting them', () => {
+    const probe = globalThis as unknown as Record<string, unknown>
+    probe.__workflowMetaExecuted = false
+    expect(() =>
+      extractMeta(
+        `export const meta = { name: (globalThis.__workflowMetaExecuted = true, 'x'), description: 'd' }\nbody`,
+      ),
     ).toThrow(WorkflowMetaError)
+    expect(probe.__workflowMetaExecuted).toBe(false)
+    delete probe.__workflowMetaExecuted
   })
 
   test('rejects non-literal meta (arrow function)', () => {
@@ -66,13 +100,52 @@ describe('extractMeta', () => {
       extractMeta(
         `export const meta = { name: 'x', description: 'd', go: () => 1 }\nbody`,
       ),
-    ).toThrow(/pure object literal/)
+    ).toThrow(/non-literal/)
+  })
+
+  test('rejects meta template interpolation', () => {
+    expect(() =>
+      extractMeta(
+        "export const meta = { name: `x-${1}`, description: 'd' }\nbody",
+      ),
+    ).toThrow(/template interpolation/)
+  })
+
+  test('accepts literal templates without interpolation', () => {
+    const { meta } = extractMeta(
+      "export const meta = { name: `x`, description: `plain template` }\nbody",
+    )
+    expect(meta.description).toBe('plain template')
+  })
+
+  test('rejects sparse arrays and spreads in meta', () => {
+    expect(() =>
+      extractMeta(
+        `export const meta = { name: 'x', description: 'd', phases: [, { title: 'A' }] }\nbody`,
+      ),
+    ).toThrow(/sparse arrays/)
+    expect(() =>
+      extractMeta(
+        `export const meta = { name: 'x', description: 'd', phases: [...items] }\nbody`,
+      ),
+    ).toThrow(/spread/)
+  })
+
+  test('rejects computed and reserved meta keys', () => {
+    expect(() =>
+      extractMeta(`export const meta = { ['name']: 'x', description: 'd' }\nbody`),
+    ).toThrow(/computed keys/)
+    expect(() =>
+      extractMeta(
+        `export const meta = { name: 'x', description: 'd', constructor: {} }\nbody`,
+      ),
+    ).toThrow(/reserved key/)
   })
 
   test('rejects unterminated meta literal', () => {
     expect(() =>
       extractMeta(`export const meta = { name: 'x', description: 'd'`),
-    ).toThrow(/Unterminated/)
+    ).toThrow(/Script parse error/)
   })
 })
 

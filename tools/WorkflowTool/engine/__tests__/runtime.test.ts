@@ -5,12 +5,14 @@ import { createJournal, hashCall } from '../journal.js'
 import {
   createWorkflowRuntime,
   deriveLabel,
+  resolvePhase,
   WorkflowAgentCapError,
   type RunOneAgent,
   type RunNestedWorkflow,
 } from '../runtime.js'
 import type {
   WorkflowAgentControlAction,
+  WorkflowPhaseMeta,
   WorkflowProgressEvent,
 } from '../types.js'
 
@@ -25,7 +27,13 @@ function harness(
     journal?: ReturnType<typeof createJournal>
     maxAgents?: number
     args?: unknown
+    phases?: WorkflowPhaseMeta[]
+    defaultModel?: string
+    signal?: AbortSignal
     runNestedWorkflow?: RunNestedWorkflow
+    forcedPhase?: string
+    ignorePhaseChanges?: boolean
+    logPrefix?: string
     shouldSkipAgent?: (agentNumber: number) => boolean
     getAgentControl?: (agentNumber: number) => WorkflowAgentControlAction | null
     waitForResume?: (
@@ -42,9 +50,15 @@ function harness(
     progress: e => events.push(e),
     args: opts.args,
     runOneAgent,
+    phases: opts.phases,
+    defaultModel: opts.defaultModel,
+    signal: opts.signal,
     journal: opts.journal,
     maxAgents: opts.maxAgents,
     runNestedWorkflow: opts.runNestedWorkflow,
+    forcedPhase: opts.forcedPhase,
+    ignorePhaseChanges: opts.ignorePhaseChanges,
+    logPrefix: opts.logPrefix,
     ...(opts.shouldSkipAgent
       ? { shouldSkipAgent: opts.shouldSkipAgent }
       : {}),
@@ -80,6 +94,21 @@ describe('runtime.agent', () => {
     expect((events[1] as AgentStartEvent).phase).toBe('Scan')
     expect((events[2] as AgentEndEvent).ok).toBe(true)
     expect((events[2] as AgentEndEvent).tokens).toBe(10)
+  })
+
+  test('tracks live tool calls separately from agent count', async () => {
+    const { rt, events } = harness(async () => ({
+      value: 'ok',
+      tokens: 12,
+      toolCalls: 3,
+      ok: true,
+    }))
+    const agent = rt.scope.agent as (p: string) => Promise<unknown>
+
+    expect(await agent('task')).toBe('ok')
+    expect(rt.agentCount()).toBe(1)
+    expect(rt.toolCallCount()).toBe(3)
+    expect((events.at(-1) as AgentEndEvent).toolCalls).toBe(3)
   })
 
   test('returns null when the agent result is not ok', async () => {
@@ -125,6 +154,42 @@ describe('runtime.agent', () => {
     const parallel = rt.scope.parallel as (t: Array<() => Promise<unknown>>) => Promise<unknown[]>
     await parallel(Array.from({ length: 6 }, (_, i) => () => agent(`t${i}`)))
     expect(peak).toBeLessThanOrEqual(2)
+  })
+
+  test('records swallowed parallel and pipeline branch failures', async () => {
+    const { rt, events } = harness(async () => {
+      throw new Error('agent exploded')
+    })
+    const agent = rt.scope.agent as (p: string) => Promise<unknown>
+    const parallel = rt.scope.parallel as (
+      thunks: Array<() => Promise<unknown>>,
+    ) => Promise<Array<unknown | null>>
+    const pipeline = rt.scope.pipeline as (
+      items: unknown[],
+      ...stages: Array<(prev: unknown, item: unknown, i: number) => Promise<unknown>>
+    ) => Promise<Array<unknown | null>>
+
+    expect(await parallel([() => agent('boom')])).toEqual([null])
+    expect(
+      await pipeline([1], async () => {
+        throw new Error('stage exploded')
+      }),
+    ).toEqual([null])
+
+    expect(rt.failures()).toEqual([
+      'parallel[0] failed: agent exploded',
+      'pipeline[0] failed: stage exploded',
+    ])
+    expect(
+      events
+        .filter((e): e is Extract<WorkflowProgressEvent, { kind: 'log' }> =>
+          e.kind === 'log',
+        )
+        .map(e => e.message),
+    ).toEqual([
+      'parallel[0] failed: agent exploded',
+      'pipeline[0] failed: stage exploded',
+    ])
   })
 
   test('skips an agent before execution when a control request exists', async () => {
@@ -224,6 +289,25 @@ describe('runtime.agent', () => {
 })
 
 describe('runtime.phase / log', () => {
+  test('resolvePhase accepts a title or phase object and merges meta defaults', () => {
+    const phases = [
+      { title: 'Build', detail: 'compile', model: 'phase-model' },
+    ]
+
+    expect(resolvePhase('Build', phases)).toEqual({
+      title: 'Build',
+      detail: 'compile',
+      model: 'phase-model',
+    })
+    expect(
+      resolvePhase({ title: 'Build', model: 'override-model' }, phases),
+    ).toEqual({
+      title: 'Build',
+      detail: 'compile',
+      model: 'override-model',
+    })
+  })
+
   test('phase sets the default phase for later agents and emits an event', async () => {
     const { rt, events } = harness(okAgent())
     const phase = rt.scope.phase as (t: string) => void
@@ -236,11 +320,128 @@ describe('runtime.phase / log', () => {
     expect((events[2] as AgentStartEvent).phase).toBe('Build')
   })
 
+  test('phase object model becomes the default for later agents', async () => {
+    const seen: unknown[] = []
+    const { rt, events } = harness(
+      async (_prompt, opts) => {
+        seen.push(opts)
+        return { value: 'ok', tokens: 1, ok: true }
+      },
+      {
+        phases: [
+          { title: 'Review', detail: 'scan risks', model: 'phase-model' },
+        ],
+      },
+    )
+    const phase = rt.scope.phase as (t: WorkflowPhaseMeta) => void
+    const agent = rt.scope.agent as (p: string) => Promise<unknown>
+
+    phase({ title: 'Review' })
+    await agent('scan')
+
+    expect(events[0]).toEqual({ kind: 'phase', title: 'Review' })
+    expect(seen[0]).toMatchObject({ model: 'phase-model' })
+  })
+
+  test('workflow default model applies unless phase or agent overrides it', async () => {
+    const models: unknown[] = []
+    const { rt } = harness(
+      async (_prompt, opts) => {
+        models.push(opts.model)
+        return { value: 'ok', tokens: 1, ok: true }
+      },
+      {
+        defaultModel: 'workflow-model',
+        phases: [{ title: 'Review', model: 'phase-model' }],
+      },
+    )
+    const phase = rt.scope.phase as (t: string) => void
+    const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
+
+    await agent('uses workflow default')
+    phase('Review')
+    await agent('uses phase default')
+    await agent('uses explicit model', { model: 'agent-model' })
+
+    expect(models).toEqual(['workflow-model', 'phase-model', 'agent-model'])
+  })
+
+  test('timers expose abort-aware promise delays without global setTimeout', async () => {
+    const { rt } = harness(okAgent())
+    const timers = rt.scope.timers as {
+      wait(ms: number): Promise<void>
+      setTimeout<T>(ms: number, value: T): Promise<T>
+    }
+
+    await expect(timers.wait(1)).resolves.toBeUndefined()
+    await expect(timers.setTimeout(1, 'done')).resolves.toBe('done')
+  })
+
+  test('timers reject when the workflow is aborted', async () => {
+    const ctrl = new AbortController()
+    const { rt } = harness(okAgent(), { signal: ctrl.signal })
+    const timers = rt.scope.timers as { wait(ms: number): Promise<void> }
+
+    const pending = timers.wait(1000)
+    ctrl.abort()
+    await expect(pending).rejects.toThrow(/aborted/)
+  })
+
   test('log emits a log event', () => {
     const { rt, events } = harness(okAgent())
     const log = rt.scope.log as (m: string) => void
     log('progress note')
     expect(events).toEqual([{ kind: 'log', message: 'progress note' }])
+  })
+
+  test('forced phase overrides child phase changes and agent phase options', async () => {
+    const seen: Array<{
+      opts: unknown
+      meta: { phase: string | null; label: string }
+    }> = []
+    const { rt, events } = harness(
+      async (_prompt, opts, meta) => {
+        seen.push({ opts, meta })
+        return { value: 'ok', tokens: 1, ok: true }
+      },
+      {
+        forcedPhase: '▶ child',
+        ignorePhaseChanges: true,
+      },
+    )
+    const phase = rt.scope.phase as (t: string) => void
+    const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
+
+    phase('Inner')
+    await agent('child task', { label: 'child-agent', phase: 'Other' })
+
+    expect(events.map(e => e.kind)).toEqual([
+      'agent_queued',
+      'agent_start',
+      'agent_end',
+    ])
+    expect((events[0] as AgentQueuedEvent).phase).toBe('▶ child')
+    expect(seen[0]?.meta.phase).toBe('▶ child')
+    expect(seen[0]?.opts).toMatchObject({ phase: '▶ child' })
+  })
+
+  test('logPrefix applies to log and console progress output', () => {
+    const { rt, events } = harness(okAgent(), { logPrefix: '[child] ' })
+    const log = rt.scope.log as (m: string) => void
+    const childConsole = rt.scope.console as {
+      warn(...values: unknown[]): void
+      error(...values: unknown[]): void
+    }
+
+    log('hello')
+    childConsole.warn('careful', { n: 1 })
+    childConsole.error('bad', undefined)
+
+    expect(events).toEqual([
+      { kind: 'log', message: '[child] hello' },
+      { kind: 'log', message: '[child] [warn] careful {"n":1}' },
+      { kind: 'log', message: '[child] [error] bad undefined' },
+    ])
   })
 })
 
@@ -248,7 +449,9 @@ describe('runtime.workflow', () => {
   test('throws when nested workflows are unavailable', async () => {
     const { rt } = harness(okAgent())
     const workflow = rt.scope.workflow as (n: string) => Promise<unknown>
-    await expect(workflow('child')).rejects.toThrow(/nesting/)
+    await expect(workflow('child')).rejects.toThrow(
+      'workflow() cannot be called from within a child workflow — nesting is limited to one level. Inline the inner script or call its agents directly.',
+    )
   })
 
   test('delegates nested workflow calls when provided', async () => {

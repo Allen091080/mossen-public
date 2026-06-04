@@ -64,6 +64,19 @@ describe('createLimiter', () => {
 })
 
 describe('parallel (barrier)', () => {
+  test('validates input like the official primitive', async () => {
+    await expect(parallel('not-array' as never)).rejects.toThrow(
+      'parallel() expects an array of functions',
+    )
+    await expect(parallel([Promise.resolve(1) as never])).rejects.toThrow(
+      'parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)',
+    )
+  })
+
+  test('returns [] for an empty thunk list', async () => {
+    await expect(parallel([])).resolves.toEqual([])
+  })
+
   test('returns results in input order', async () => {
     const out = await parallel([
       async () => 'a',
@@ -97,6 +110,19 @@ describe('parallel (barrier)', () => {
 })
 
 describe('pipeline (no barrier)', () => {
+  test('validates input like the official primitive', async () => {
+    await expect(pipeline('not-array' as never)).rejects.toThrow(
+      'pipeline() expects an array as the first argument',
+    )
+    await expect(pipeline([1], 'bad-stage' as never)).rejects.toThrow(
+      'pipeline() stages must be functions: pipeline(items, item => ..., result => ...)',
+    )
+  })
+
+  test('returns [] for empty items before validating stages', async () => {
+    await expect(pipeline([], 'bad-stage' as never)).resolves.toEqual([])
+  })
+
   test('threads each item through all stages', async () => {
     const out = await pipeline(
       [1, 2, 3],
@@ -124,6 +150,20 @@ describe('pipeline (no barrier)', () => {
         if (n === 2) throw new Error('drop')
         return n
       },
+      async (n: number) => {
+        stage2Ran++
+        return n * 100
+      },
+    )
+    expect(out).toEqual([100, null, 300])
+    expect(stage2Ran).toBe(2)
+  })
+
+  test('a null stage result drops that item and skips its remaining stages', async () => {
+    let stage2Ran = 0
+    const out = await pipeline(
+      [1, 2, 3],
+      async (n: number) => (n === 2 ? null : n),
       async (n: number) => {
         stage2Ran++
         return n * 100
