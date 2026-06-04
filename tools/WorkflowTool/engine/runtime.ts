@@ -352,12 +352,14 @@ export function createWorkflowRuntime(
         status: cached.ok ? 'cached' : 'failed',
         tokens: cached.tokens,
         toolCalls: 0,
+        durationMs: cached.durationMs ?? 0,
       })
       return cached.ok ? cached.value : null
     }
 
     agentCounter++
     const agentNumber = agentCounter
+    const agentStartedAt = Date.now()
     if (startedHit) {
       progress({
         kind: 'log',
@@ -407,6 +409,7 @@ export function createWorkflowRuntime(
           ok: false,
           tokens: 0,
           toolCalls: 0,
+          durationMs: Date.now() - agentStartedAt,
         })
         throw err
       }
@@ -426,6 +429,7 @@ export function createWorkflowRuntime(
             status: 'failed',
             tokens: result.tokens,
             toolCalls: result.toolCalls ?? 0,
+            durationMs: result.durationMs ?? Date.now() - agentStartedAt,
           })
           throw new Error(
             formatWorkflowAgentAbandonedMessage({
@@ -464,6 +468,7 @@ export function createWorkflowRuntime(
         status,
         tokens: result.tokens,
         toolCalls: result.toolCalls ?? 0,
+        durationMs: result.durationMs ?? Date.now() - agentStartedAt,
       })
       return result.ok ? result.value : null
     }

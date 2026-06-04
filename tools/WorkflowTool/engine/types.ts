@@ -62,6 +62,7 @@ export type WorkflowProgressEvent =
       status?: 'completed' | 'failed' | 'skipped' | 'cached'
       tokens: number
       toolCalls?: number
+      durationMs?: number
     }
 
 /** Sink the runtime uses to surface progress to the WorkflowTool call(). */
@@ -80,6 +81,8 @@ export type AgentRunResult = {
   status?: 'completed' | 'failed' | 'skipped' | 'retry_requested' | 'stalled'
   /** Idle timeout that caused a stalled result, when status is 'stalled'. */
   stallTimeoutMs?: number
+  /** Wall-clock time spent running this agent attempt. */
+  durationMs?: number
 }
 
 export type WorkflowAgentControlAction = 'skip' | 'retry'

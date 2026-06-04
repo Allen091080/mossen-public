@@ -41,6 +41,7 @@ export type WorkflowAgentTaskProgress = {
     | 'cached'
   tokens: number
   toolCalls: number
+  durationMs?: number
 }
 
 export type LocalWorkflowTaskState = TaskStateBase & {
@@ -315,6 +316,9 @@ function workflowProgressForSdk(
           state: event.status ?? (event.ok ? 'completed' : 'failed'),
           tokens: event.tokens,
           toolCalls: event.toolCalls ?? 0,
+          ...(event.durationMs !== undefined
+            ? { durationMs: event.durationMs }
+            : {}),
         },
       ]
   }
@@ -552,6 +556,9 @@ export function updateWorkflowTaskProgress(
             status,
             tokens: event.tokens,
             toolCalls,
+            ...(event.durationMs !== undefined
+              ? { durationMs: event.durationMs }
+              : {}),
           }),
           summary: `${event.label} ${status}`,
           ...logState,

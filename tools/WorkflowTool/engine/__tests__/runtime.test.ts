@@ -115,6 +115,19 @@ describe('runtime.agent', () => {
     expect((events.at(-1) as AgentEndEvent).toolCalls).toBe(3)
   })
 
+  test('emits agent duration on completion', async () => {
+    const { rt, events } = harness(async () => {
+      await new Promise(resolve => setTimeout(resolve, 5))
+      return { value: 'ok', tokens: 1, ok: true }
+    })
+    const agent = rt.scope.agent as (p: string) => Promise<unknown>
+
+    await agent('timed task')
+
+    expect(typeof (events.at(-1) as AgentEndEvent).durationMs).toBe('number')
+    expect((events.at(-1) as AgentEndEvent).durationMs).toBeGreaterThanOrEqual(0)
+  })
+
   test('returns null when the agent result is not ok', async () => {
     const { rt } = harness(async () => ({ value: 'x', tokens: 5, ok: false }))
     const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>

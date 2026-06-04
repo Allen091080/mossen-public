@@ -48,7 +48,9 @@ import type { WorkflowMeta, WorkflowProgressEvent } from './engine/types.js'
 import {
   loadWorkflowRefsFromAllSources,
   resolveWorkflowFromAllSources,
+  type SavedWorkflowRef,
 } from './savedWorkflows.js'
+import { logWorkflowPhaseCompletionMetrics } from './phaseTelemetry.js'
 import type { WorkflowRuntime } from './engine/runtime.js'
 import { getProjectDir } from '../../utils/sessionStorage.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -171,11 +173,13 @@ type ChildWorkflowRuntimeBehavior = {
 type ResolvedWorkflowSource = {
   source: string
   label: string
+  scope?: SavedWorkflowRef['scope']
 }
 
 type WorkflowSourceResolution = {
   source: string
   resolvedScriptPath?: string
+  scope?: SavedWorkflowRef['scope'] | 'inline' | 'scriptPath'
 }
 
 type RemoteWorkflowLaunchResult = {
@@ -228,6 +232,7 @@ function sourceFromWorkflowRef(
             )
           })()),
     label: ref.name,
+    scope: ref.scope,
   }
 }
 
@@ -328,16 +333,17 @@ async function resolveSource(
       return {
         source: input.script,
         resolvedScriptPath: resolve(scriptPath),
+        scope: 'scriptPath',
       }
     }
-    return { source: readWorkflowScriptFile(scriptPath) }
+    return { source: readWorkflowScriptFile(scriptPath), scope: 'scriptPath' }
   }
   if (typeof input.name === 'string' && input.name.trim()) {
     const named = await resolveNamedWorkflowSource(input.name)
-    return { source: input.script ?? named.source }
+    return { source: input.script ?? named.source, scope: named.scope }
   }
   if (typeof input.script === 'string' && input.script.trim()) {
-    return { source: input.script }
+    return { source: input.script, scope: 'inline' }
   }
   throw new Error('Must provide script, name, or scriptPath')
 }
@@ -684,7 +690,11 @@ export const WorkflowTool = buildTool({
       ? resumeRunId
       : `wf_${randomUUID().replace(/-/g, '').slice(0, 10)}`
     const taskId = generateTaskId('local_workflow')
-    const { source, resolvedScriptPath } = await resolveSource(input)
+    const {
+      source,
+      resolvedScriptPath,
+      scope: workflowSourceScope,
+    } = await resolveSource(input)
 
     // Validate + surface meta early so a malformed script fails fast — for the
     // background path too, so the caller learns of a bad script synchronously.
@@ -817,6 +827,22 @@ export const WorkflowTool = buildTool({
       if (line) appendWorkflowResultLogLine(log, line)
       updateWorkflowTaskProgress(taskId, e, setTaskState)
     }
+    const emitBundledPhaseCompletionMetrics = () => {
+      if (workflowSourceScope !== 'bundled') return
+      if (typeof toolUseContext.getAppState !== 'function') return
+      const task = toolUseContext.getAppState().tasks?.[taskId] as
+        | { workflowProgress?: unknown }
+        | undefined
+      const workflowProgress = Array.isArray(task?.workflowProgress)
+        ? task.workflowProgress
+        : []
+      logWorkflowPhaseCompletionMetrics({
+        workflowRunId: runId,
+        workflowSource: 'built-in',
+        workflowName: meta.name,
+        progress: workflowProgress,
+      })
+    }
 
     const limiter = createLimiter(defaultConcurrency())
     const budget = createBudget(
@@ -945,6 +971,7 @@ export const WorkflowTool = buildTool({
     void execute()
       .then(() => {
         saveRunLog(runId, log)
+        emitBundledPhaseCompletionMetrics()
         finalizeRunMeta(runId, {
           status: 'completed',
           agentCount: agentCount(),
@@ -994,6 +1021,7 @@ export const WorkflowTool = buildTool({
           failures: failures(),
           durationMs: durationMs(),
         }
+        emitBundledPhaseCompletionMetrics()
         if (killed) finishWorkflowTask(taskId, 'killed', setTaskState, patch)
         else
           failWorkflowTask(taskId, setTaskState, {
