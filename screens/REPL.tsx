@@ -46,6 +46,7 @@ import { registerSandboxPermissionCallback } from '../hooks/useSwarmPermissionPo
 import { getTeamName, getAgentName } from '../utils/teammate.js';
 import { WorkerPendingPermission } from '../components/permissions/WorkerPendingPermission.js';
 import { injectUserMessageToTeammate, getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
+import { pendingWorkflowCount as getPendingWorkflowCount } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js';
 import { isLocalAgentTask, queuePendingMessage, appendMessageToLocalAgent, type LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js';
 import { isLocalShellTask } from '../tasks/LocalShellTask/guards.js';
 import { registerLeaderToolUseConfirmQueue, unregisterLeaderToolUseConfirmQueue, registerLeaderSetToolPermissionContext, unregisterLeaderSetToolPermissionContext } from '../utils/swarm/leaderPermissionBridge.js';
@@ -1671,9 +1672,10 @@ export function REPL({
       // isLoggableMessage and never reach disk. Using raw prev.length
       // would make checkResumeConsistency report false delta<0 for
       // every turn that ran a progress-emitting tool.
-      count(prev, isLoggableMessage))]);
+      count(prev, isLoggableMessage),
+      getPendingWorkflowCount(store.getState().tasks))]);
     }
-  }, [hasRunningTeammates, setMessages]);
+  }, [hasRunningTeammates, setMessages, store]);
 
   // Show auto permissions warning when entering auto mode
   // (either via Shift+Tab toggle or on startup). Debounced to avoid
@@ -3034,7 +3036,7 @@ export function REPL({
               swarmBudgetInfoRef.current = budgetInfo;
             }
           } else {
-            setMessages(prev => [...prev, createTurnDurationMessage(turnDurationMs, budgetInfo, count(prev, isLoggableMessage))]);
+            setMessages(prev => [...prev, createTurnDurationMessage(turnDurationMs, budgetInfo, count(prev, isLoggableMessage), getPendingWorkflowCount(store.getState().tasks))]);
           }
         }
         // Clear the controller so CancelRequestHandler's canCancelRunningTask

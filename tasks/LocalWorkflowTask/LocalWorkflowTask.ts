@@ -75,6 +75,39 @@ const pauseWaiters = new Map<
 
 const MAX_TASK_LOG_LINES = 200
 
+type TaskLike = {
+  type?: string
+  status?: string
+}
+
+export function isPendingWorkflowTask(
+  task: unknown,
+): task is LocalWorkflowTaskState {
+  const candidate = task as TaskLike | null | undefined
+  return (
+    candidate?.type === 'local_workflow' &&
+    (candidate.status === 'pending' || candidate.status === 'running')
+  )
+}
+
+export function pendingWorkflowCount(
+  tasks: Record<string, unknown> | null | undefined,
+): number {
+  if (!tasks) return 0
+  let count = 0
+  for (const task of Object.values(tasks)) {
+    if (isPendingWorkflowTask(task)) count++
+  }
+  return count
+}
+
+export function hasPendingWorkflows(
+  tasks: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!tasks) return false
+  return Object.values(tasks).some(isPendingWorkflowTask)
+}
+
 function appendLogLine(taskId: string, line: string): void {
   appendTaskOutput(taskId, `${line}\n`)
 }

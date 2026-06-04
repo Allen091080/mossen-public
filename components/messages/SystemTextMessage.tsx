@@ -499,9 +499,10 @@ function TurnDurationMessage(t0) {
   } = t0;
   const bg = useSelectedMessageBg();
   const store = useAppStateStore();
+  const persistedPendingWorkflowCount = typeof message.pendingWorkflowCount === "number" ? message.pendingWorkflowCount : 0;
   const [backgroundTaskSummary] = useState(() => {
     const tasks = store.getState().tasks;
-    const running = (Object.values(tasks ?? {}) as TaskState[]).filter(isBackgroundTask);
+    const running = (Object.values(tasks ?? {}) as TaskState[]).filter(task => isBackgroundTask(task) && !(persistedPendingWorkflowCount > 0 && task.type === "local_workflow"));
     return running.length > 0 ? getPillLabel(running) : null;
   });
   const showTurnDuration = getGlobalConfig().showTurnDuration ?? true;
@@ -528,10 +529,15 @@ function TurnDurationMessage(t0) {
     en: `Completed in ${duration}`,
     zh: `已完成 · ${duration}`
   }) : "";
-  const backgroundText = backgroundTaskSummary ? getLocalizedText({
-    en: ` \u00B7 ${backgroundTaskSummary} still running`,
-    zh: ` \u00B7 ${backgroundTaskSummary} 仍在运行`
+  const workflowBackgroundText = persistedPendingWorkflowCount > 0 ? getLocalizedText({
+    en: `${persistedPendingWorkflowCount} background ${persistedPendingWorkflowCount === 1 ? "workflow" : "workflows"} still running`,
+    zh: `${persistedPendingWorkflowCount} 个后台 workflow 仍在运行`
   }) : "";
+  const taskBackgroundText = backgroundTaskSummary ? getLocalizedText({
+    en: `${backgroundTaskSummary} still running`,
+    zh: `${backgroundTaskSummary} 仍在运行`
+  }) : "";
+  const backgroundText = [workflowBackgroundText, taskBackgroundText].filter(Boolean).map(text => ` \u00B7 ${text}`).join("");
   return <Box flexDirection="row" marginTop={addMargin ? 1 : 0} backgroundColor={bg} width="100%">
       <Box minWidth={2}><Text dimColor={true}>{TURN_COMPLETION_ICON}</Text></Box>
       <Text dimColor={true}>{turnDurationText}{budgetSuffix}{backgroundText}</Text>

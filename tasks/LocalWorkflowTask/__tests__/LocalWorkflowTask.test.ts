@@ -3,8 +3,10 @@ import type { AppState } from '../../../state/AppState.js'
 import type { SetAppState } from '../../../Task.js'
 import { getTaskOutputPath } from '../../../utils/task/diskOutput.js'
 import {
+  hasPendingWorkflows,
   isWorkflowTaskPaused,
   pauseWorkflowTask,
+  pendingWorkflowCount,
   resumeWorkflowTask,
   type LocalWorkflowTaskState,
   waitForWorkflowTaskResume,
@@ -34,6 +36,34 @@ function workflowTask(id: string): LocalWorkflowTaskState {
 }
 
 describe('LocalWorkflowTask pause/resume controls', () => {
+  test('pending workflow helpers count only unfinished workflow tasks', () => {
+    const running = workflowTask('wf_running')
+    const paused = { ...workflowTask('wf_paused'), paused: true }
+    const pending = { ...workflowTask('wf_pending'), status: 'pending' as const }
+    const completed = {
+      ...workflowTask('wf_completed'),
+      status: 'completed' as const,
+    }
+    const unrelated = {
+      ...workflowTask('agent_running'),
+      type: 'local_agent' as const,
+      status: 'running' as const,
+    }
+
+    const tasks = {
+      running,
+      paused,
+      pending,
+      completed,
+      unrelated,
+    }
+
+    expect(pendingWorkflowCount(tasks)).toBe(3)
+    expect(hasPendingWorkflows(tasks)).toBe(true)
+    expect(pendingWorkflowCount({ completed, unrelated })).toBe(0)
+    expect(hasPendingWorkflows({ completed, unrelated })).toBe(false)
+  })
+
   test('pause blocks waiters until resume releases them', async () => {
     const runId = 'wf_pause_test'
     let state = {

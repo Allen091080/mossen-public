@@ -4418,6 +4418,7 @@ export function createTurnDurationMessage(
   durationMs: number,
   budget?: { tokens: number; limit: number; nudges: number },
   messageCount?: number,
+  pendingWorkflowCount?: number,
 ): SystemTurnDurationMessage {
   return {
     type: 'system',
@@ -4427,6 +4428,10 @@ export function createTurnDurationMessage(
     budgetLimit: budget?.limit,
     budgetNudges: budget?.nudges,
     messageCount,
+    pendingWorkflowCount:
+      pendingWorkflowCount !== undefined && pendingWorkflowCount > 0
+        ? pendingWorkflowCount
+        : undefined,
     timestamp: new Date().toISOString(),
     uuid: randomUUID(),
     isMeta: false,
