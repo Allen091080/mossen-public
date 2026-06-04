@@ -102,15 +102,33 @@ describe('workflow remote agent helpers', () => {
 
   test('coerces a successful remote result message to text', () => {
     const result = coerceRemoteWorkflowAgentResult(
-      [{ type: 'result', subtype: 'success', result: 'done remotely' }],
+      [
+        {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'tool_use', name: 'Read', id: 'toolu_1' }],
+          },
+        },
+        {
+          type: 'result',
+          subtype: 'success',
+          result: 'done remotely',
+          usage: {
+            input_tokens: 10,
+            output_tokens: 4,
+            cache_creation_input_tokens: 3,
+            cache_read_input_tokens: 2,
+          },
+        },
+      ],
       {},
       'remote',
     )
 
     expect(result).toEqual({
       value: 'done remotely',
-      tokens: 0,
-      toolCalls: 0,
+      tokens: 19,
+      toolCalls: 1,
       ok: true,
     })
   })
@@ -132,7 +150,37 @@ describe('workflow remote agent helpers', () => {
     expect(result.value).toBe('remote assistant text')
   })
 
-  test('validates schema results from remote JSON text', () => {
+  test('validates schema results from remote structured output', () => {
+    const result = coerceRemoteWorkflowAgentResult(
+      [
+        {
+          type: 'result',
+          subtype: 'success',
+          structured_output: { ok: true },
+          modelUsage: {
+            'mossen-model': {
+              inputTokens: 8,
+              outputTokens: 2,
+              cacheCreationInputTokens: 1,
+              cacheReadInputTokens: 4,
+            },
+          },
+          toolCalls: 3,
+        },
+      ],
+      { schema: OBJECT_SCHEMA },
+      'remote-schema',
+    )
+
+    expect(result).toEqual({
+      value: { ok: true },
+      tokens: 15,
+      toolCalls: 3,
+      ok: true,
+    })
+  })
+
+  test('falls back to schema results from remote JSON text', () => {
     const result = coerceRemoteWorkflowAgentResult(
       [{ type: 'result', subtype: 'success', result: '{"ok":true}' }],
       { schema: OBJECT_SCHEMA },
@@ -140,6 +188,18 @@ describe('workflow remote agent helpers', () => {
     )
 
     expect(result.value).toEqual({ ok: true })
+  })
+
+  test('reports remote structured output retry exhaustion for schema agents', () => {
+    expect(() =>
+      coerceRemoteWorkflowAgentResult(
+        [{ type: 'result', subtype: 'error_max_structured_output_retries' }],
+        { schema: OBJECT_SCHEMA },
+        'remote-schema',
+      ),
+    ).toThrow(
+      "agent({isolation:'remote', schema}) completed without structured output: the remote agent called StructuredOutput but every attempt failed schema validation.",
+    )
   })
 
   test('throws a remote session error for non-success result messages', () => {

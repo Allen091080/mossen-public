@@ -159,7 +159,9 @@ function buildSchemaInstruction(schema: Record<string, unknown>): string {
 function buildRemoteSchemaInstruction(schema: Record<string, unknown>): string {
   return (
     '\n\nIMPORTANT: Complete this remote workflow agent task by returning ' +
-    'only JSON conforming to this JSON Schema. Do not wrap the JSON in prose.\n\n' +
+    `structured output conforming to this JSON Schema. If a ${SYNTHETIC_OUTPUT_TOOL_NAME} ` +
+    'tool is available, call it exactly once. Otherwise return only JSON and ' +
+    'do not wrap the JSON in prose.\n\n' +
     `JSON Schema:\n${JSON.stringify(schema, null, 2)}`
   )
 }
@@ -182,6 +184,26 @@ export function buildRemoteWorkflowAgentPrompt(
 
 function remoteMessageType(message: RemoteSdkMessage): string | null {
   return typeof message.type === 'string' ? message.type : null
+}
+
+function asRemoteRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function lastRemoteResultMessage(
+  messages: readonly RemoteSdkMessage[],
+): RemoteSdkMessage | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!
+    if (remoteMessageType(message) === 'result') return message
+  }
+  return null
+}
+
+function remoteResultSubtype(message: RemoteSdkMessage | null): string | null {
+  return typeof message?.subtype === 'string' ? message.subtype : null
 }
 
 function extractTextFromContent(content: unknown): string {
@@ -217,7 +239,7 @@ function extractRemoteAssistantText(messages: readonly RemoteSdkMessage[]): stri
 
 function remoteResultError(message: RemoteSdkMessage): string | null {
   if (remoteMessageType(message) !== 'result') return null
-  const subtype = (message as { subtype?: unknown }).subtype
+  const subtype = remoteResultSubtype(message)
   if (subtype === 'success') return null
   const errors = (message as { errors?: unknown }).errors
   if (Array.isArray(errors)) {
@@ -246,21 +268,136 @@ function extractRemoteResultText(messages: readonly RemoteSdkMessage[]): string 
   return extractRemoteAssistantText(messages)
 }
 
+function extractRemoteStructuredOutput(
+  messages: readonly RemoteSdkMessage[],
+): unknown | undefined {
+  const result = lastRemoteResultMessage(messages)
+  if (remoteResultSubtype(result) !== 'success') return undefined
+  if (result && Object.hasOwn(result, 'structured_output')) {
+    return (result as { structured_output?: unknown }).structured_output
+  }
+  if (result && Object.hasOwn(result, 'structuredOutput')) {
+    return (result as { structuredOutput?: unknown }).structuredOutput
+  }
+  return undefined
+}
+
+function numericProperty(
+  record: Record<string, unknown>,
+  key: string,
+): number {
+  const value = record[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function remoteUsageTokens(messages: readonly RemoteSdkMessage[]): number {
+  const result = lastRemoteResultMessage(messages)
+  const usage = asRemoteRecord(result?.usage)
+  if (usage) {
+    return (
+      numericProperty(usage, 'input_tokens') +
+      numericProperty(usage, 'output_tokens') +
+      numericProperty(usage, 'cache_creation_input_tokens') +
+      numericProperty(usage, 'cache_read_input_tokens')
+    )
+  }
+
+  const modelUsage = asRemoteRecord(result?.modelUsage)
+  if (!modelUsage) return 0
+  let total = 0
+  for (const value of Object.values(modelUsage)) {
+    const usageRecord = asRemoteRecord(value)
+    if (!usageRecord) continue
+    total +=
+      numericProperty(usageRecord, 'inputTokens') +
+      numericProperty(usageRecord, 'outputTokens') +
+      numericProperty(usageRecord, 'cacheCreationInputTokens') +
+      numericProperty(usageRecord, 'cacheReadInputTokens')
+  }
+  return total
+}
+
+function remoteToolCallCount(messages: readonly RemoteSdkMessage[]): number {
+  let contentToolUses = 0
+  for (const message of messages) {
+    if (remoteMessageType(message) === 'tool_use') contentToolUses++
+    const content = (message as { message?: { content?: unknown } }).message
+      ?.content
+    if (!Array.isArray(content)) continue
+    for (const block of content) {
+      if (
+        block &&
+        typeof block === 'object' &&
+        (block as { type?: unknown }).type === 'tool_use'
+      ) {
+        contentToolUses++
+      }
+    }
+  }
+
+  const result = lastRemoteResultMessage(messages)
+  const directToolCalls =
+    typeof result?.toolCalls === 'number'
+      ? result.toolCalls
+      : typeof result?.tool_calls === 'number'
+        ? result.tool_calls
+        : typeof result?.total_tool_use_count === 'number'
+          ? result.total_tool_use_count
+          : 0
+  return Math.max(contentToolUses, directToolCalls)
+}
+
+function remoteMissingStructuredOutputReason(
+  messages: readonly RemoteSdkMessage[],
+): string {
+  const subtype = remoteResultSubtype(lastRemoteResultMessage(messages))
+  if (subtype === 'error_max_structured_output_retries') {
+    return 'the remote agent called StructuredOutput but every attempt failed schema validation'
+  }
+  if (subtype && subtype !== 'success') {
+    return `the remote turn ended with result subtype '${subtype}'`
+  }
+  return 'the remote agent never called the StructuredOutput tool'
+}
+
 export function coerceRemoteWorkflowAgentResult(
   messages: readonly RemoteSdkMessage[],
   opts: AgentCallOptions,
   label: string,
 ): AgentRunResult {
-  for (const message of messages) {
-    const error = remoteResultError(message)
-    if (error) {
-      throw new Error(`remote session returned an error: ${error}`)
-    }
-  }
+  const tokens = remoteUsageTokens(messages)
+  const toolCalls = remoteToolCallCount(messages)
 
   const text = extractRemoteResultText(messages)
   if (!opts.schema) {
-    return { value: stripLiteralThinking(text), tokens: 0, toolCalls: 0, ok: true }
+    for (const message of messages) {
+      const error = remoteResultError(message)
+      if (error) {
+        throw new Error(`remote session returned an error: ${error}`)
+      }
+    }
+    return { value: stripLiteralThinking(text), tokens, toolCalls, ok: true }
+  }
+
+  const structuredOutput = extractRemoteStructuredOutput(messages)
+  if (structuredOutput !== undefined) {
+    const validation = validateAgainstSchema(structuredOutput, opts.schema)
+    if (!validation.ok) {
+      throw new WorkflowSchemaError(label, formatIssues(validation.errors))
+    }
+    return {
+      value: validation.value,
+      tokens,
+      toolCalls,
+      ok: true,
+    }
+  }
+
+  const result = lastRemoteResultMessage(messages)
+  if (result && remoteResultSubtype(result) !== 'success') {
+    throw new Error(
+      `agent({isolation:'remote', schema}) completed without structured output: ${remoteMissingStructuredOutputReason(messages)}.`,
+    )
   }
 
   let value: unknown
@@ -280,8 +417,8 @@ export function coerceRemoteWorkflowAgentResult(
   }
   return {
     value: validation.value,
-    tokens: 0,
-    toolCalls: 0,
+    tokens,
+    toolCalls,
     ok: true,
   }
 }
