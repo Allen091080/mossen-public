@@ -11,6 +11,15 @@ import {
   getUserWorkflowsDir,
 } from '../../tools/WorkflowTool/savedWorkflows.js'
 
+export function deriveWorkflowSaveName(params: {
+  runId: string
+  explicit?: string
+  metaName?: string
+}): string {
+  const rawName = params.explicit || params.metaName || params.runId
+  return rawName.trim().replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+}
+
 /**
  * Save a run's script as a reusable named workflow.
  * `save <runId> [name] [--user]` writes to project scope by default, or user
@@ -27,8 +36,7 @@ export function saveRun(args: string[]): string {
 
   const explicit = positional[1]
   const metaName = listWorkflowRuns().find(r => r.runId === runId)?.workflowName
-  const rawName = explicit || metaName || runId
-  const name = rawName.trim().replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+  const name = deriveWorkflowSaveName({ runId, explicit, metaName })
   if (!name) return t('cmd.workflows.saveBadName')
 
   const dir = useUser

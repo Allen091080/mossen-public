@@ -21,7 +21,7 @@ import { t } from '../../utils/i18n/index.js'
 import { Byline } from '../../components/design-system/Byline.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js'
-import { saveRun } from './saveWorkflow.js'
+import { deriveWorkflowSaveName, saveRun } from './saveWorkflow.js'
 import {
   buildWorkflowResumeResult,
   resumeRunFromJournal,
@@ -49,11 +49,22 @@ type WorkflowRunItem =
       meta: WorkflowRunMeta
     }
 
-type ViewState =
+type SaveScope = 'project' | 'user'
+
+type WorkflowMainViewState =
   | { mode: 'list' }
   | { mode: 'run'; runId: string }
   | { mode: 'phase'; runId: string; phase: string }
   | { mode: 'agent'; runId: string; agentNumber: number }
+
+type ViewState =
+  | WorkflowMainViewState
+  | {
+      mode: 'save'
+      runId: string
+      scope: SaveScope
+      previous: WorkflowMainViewState
+    }
 
 function isWorkflowTask(task: unknown): task is LocalWorkflowTaskState {
   return (
@@ -167,14 +178,24 @@ function selectedAgent(
 function inputGuide(mode: ViewState['mode']) {
   return () => (
     <Byline>
-      <KeyboardShortcutHint shortcut="up/down" action="select" />
-      <KeyboardShortcutHint shortcut="Enter/right" action="open" />
-      <KeyboardShortcutHint shortcut="Esc/left" action="back" />
-      {mode === 'agent' ? <KeyboardShortcutHint shortcut="j/k" action="scroll" /> : null}
-      <KeyboardShortcutHint shortcut="p" action="pause/resume" />
-      <KeyboardShortcutHint shortcut="x" action="stop" />
-      <KeyboardShortcutHint shortcut="r" action="retry agent" />
-      <KeyboardShortcutHint shortcut="s" action="save" />
+      {mode === 'save' ? (
+        <>
+          <KeyboardShortcutHint shortcut="Tab" action="switch scope" />
+          <KeyboardShortcutHint shortcut="Enter" action="save" />
+          <KeyboardShortcutHint shortcut="Esc" action="back" />
+        </>
+      ) : (
+        <>
+          <KeyboardShortcutHint shortcut="up/down" action="select" />
+          <KeyboardShortcutHint shortcut="Enter/right" action="open" />
+          <KeyboardShortcutHint shortcut="Esc/left" action="back" />
+          {mode === 'agent' ? <KeyboardShortcutHint shortcut="j/k" action="scroll" /> : null}
+          <KeyboardShortcutHint shortcut="p" action="pause/resume" />
+          <KeyboardShortcutHint shortcut="x" action="stop" />
+          <KeyboardShortcutHint shortcut="r" action="retry agent" />
+          <KeyboardShortcutHint shortcut="s" action="save" />
+        </>
+      )}
     </Byline>
   )
 }
@@ -236,10 +257,21 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
   const close = (result = t('cmd.workflows.dismissed')) =>
     onDone(result, { display: 'system' })
 
-  const saveSelectedRun = (runId: string) => {
-    const result = saveRun([runId])
+  const saveSelectedRun = (runId: string, scope: SaveScope) => {
+    const result = saveRun(scope === 'user' ? [runId, '--user'] : [runId])
     setMessage(result)
     onDone(result, { display: 'system' })
+  }
+
+  const openSaveDialog = (run: WorkflowRunItem) => {
+    const previous: WorkflowMainViewState =
+      view.mode === 'save' ? view.previous : view
+    setView({
+      mode: 'save',
+      runId: run.runId,
+      scope: 'project',
+      previous,
+    })
   }
 
   const resumeSelectedRun = (run: WorkflowRunItem) => {
@@ -261,6 +293,10 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
 
   useInput((_input, key) => {
     if (key.escape || key.leftArrow) {
+      if (view.mode === 'save') {
+        setView(view.previous)
+        return
+      }
       if (view.mode === 'agent') {
         setView({ mode: 'phase', runId: view.runId, phase: currentAgent?.phase ?? '' })
         setAgentScroll(0)
@@ -275,6 +311,61 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
         return
       }
       close()
+      return
+    }
+
+    if (view.mode === 'save') {
+      if (key.tab) {
+        setView({
+          ...view,
+          scope: view.scope === 'project' ? 'user' : 'project',
+        })
+        return
+      }
+      if (key.return) {
+        saveSelectedRun(view.runId, view.scope)
+      }
+      return
+    }
+
+    if (_input === 's' && selectedRun) {
+      openSaveDialog(selectedRun)
+      return
+    }
+
+    const liveRun = selectedRun?.kind === 'live' ? selectedRun : null
+    if (_input === 'p') {
+      if (liveRun && liveRun.task.status === 'running' && !liveRun.task.paused) {
+        const ok = pauseWorkflowTask(liveRun.task.id, setAppState)
+        setMessage(ok ? t('cmd.workflows.paused', { runId: liveRun.runId }) : null)
+      } else if (selectedRun) {
+        resumeSelectedRun(selectedRun)
+      }
+      return
+    }
+    if (_input === 'x' && liveRun) {
+      if (view.mode === 'agent' && currentAgent) {
+        skipWorkflowAgent(liveRun.task.id, currentAgent.agentNumber, setAppState)
+        setMessage(
+          t('cmd.workflows.agentStopped', {
+            runId: liveRun.runId,
+            agentNumber: String(currentAgent.agentNumber),
+          }),
+        )
+      } else {
+        killWorkflowTask(liveRun.task.id, setAppState)
+        setMessage(t('cmd.workflows.stopped', { runId: liveRun.runId }))
+      }
+      return
+    }
+    if (_input === 'r' && liveRun && currentAgent) {
+      retryWorkflowAgent(liveRun.task.id, currentAgent.agentNumber, setAppState)
+      setMessage(
+        t('cmd.workflows.agentRetryQueued', {
+          runId: liveRun.runId,
+          agentNumber: String(currentAgent.agentNumber),
+        }),
+      )
       return
     }
 
@@ -320,48 +411,6 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
     if (view.mode === 'agent') {
       if (_input === 'j' || key.downArrow) setAgentScroll(offset => offset + 1)
       if (_input === 'k' || key.upArrow) setAgentScroll(offset => Math.max(0, offset - 1))
-    }
-
-    if (_input === 's' && selectedRun) {
-      saveSelectedRun(selectedRun.runId)
-      return
-    }
-
-    const liveRun = selectedRun?.kind === 'live' ? selectedRun : null
-    if (_input === 'p') {
-      if (liveRun && liveRun.task.status === 'running' && !liveRun.task.paused) {
-        const ok = pauseWorkflowTask(liveRun.task.id, setAppState)
-        setMessage(ok ? t('cmd.workflows.paused', { runId: liveRun.runId }) : null)
-      } else if (selectedRun) {
-        resumeSelectedRun(selectedRun)
-      }
-      return
-    }
-    if (!liveRun) return
-    if (_input === 'x') {
-      if (view.mode === 'agent' && currentAgent) {
-        skipWorkflowAgent(liveRun.task.id, currentAgent.agentNumber, setAppState)
-        setMessage(
-          t('cmd.workflows.agentStopped', {
-            runId: liveRun.runId,
-            agentNumber: String(currentAgent.agentNumber),
-          }),
-        )
-      } else {
-        killWorkflowTask(liveRun.task.id, setAppState)
-        setMessage(t('cmd.workflows.stopped', { runId: liveRun.runId }))
-      }
-      return
-    }
-    if (_input === 'r' && currentAgent) {
-      retryWorkflowAgent(liveRun.task.id, currentAgent.agentNumber, setAppState)
-      setMessage(
-        t('cmd.workflows.agentRetryQueued', {
-          runId: liveRun.runId,
-          agentNumber: String(currentAgent.agentNumber),
-        }),
-      )
-      return
     }
   })
 
@@ -494,6 +543,33 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
             .map(line => (
               <Text key={line} wrap="wrap">{compact(line, 220)}</Text>
             ))}
+        </Box>
+      ) : null}
+      {selectedRun && view.mode === 'save' ? (
+        <Box flexDirection="column">
+          <Text bold>{t('cmd.workflows.saveDialogTitle')}</Text>
+          <Text>
+            {t('cmd.workflows.saveDialogRun')}: {selectedRun.name}{' '}
+            <Text dimColor>{selectedRun.runId}</Text>
+          </Text>
+          <Text>
+            {t('cmd.workflows.saveDialogName')}: /
+            {deriveWorkflowSaveName({
+              runId: selectedRun.runId,
+              metaName: selectedRun.name,
+            })}
+          </Text>
+          <Box flexDirection="column" marginTop={1}>
+            {(['project', 'user'] as const).map(scope => (
+              <Text key={scope} color={view.scope === scope ? 'suggestion' : undefined}>
+                {view.scope === scope ? '> ' : '  '}
+                {scope === 'project'
+                  ? t('cmd.workflows.saveScopeProject')
+                  : t('cmd.workflows.saveScopeUser')}
+              </Text>
+            ))}
+          </Box>
+          <Text dimColor>{t('cmd.workflows.saveDialogHint')}</Text>
         </Box>
       ) : null}
     </Dialog>

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { isValidElement } from 'react'
 import { getTaskOutputPath } from '../../../utils/task/diskOutput.js'
 import { buildWorkflowResumeNextInput, call } from '../workflows.js'
+import { deriveWorkflowSaveName } from '../saveWorkflow.js'
 
 function workflowCommandContext(state: { tasks: Record<string, unknown> }) {
   const setAppState = (updater: (prev: typeof state) => typeof state) => {
@@ -78,6 +79,21 @@ function runningWorkflowTask(params: {
 }
 
 describe('/workflows resume', () => {
+  test('derives a command-safe name for save dialog and save command', () => {
+    expect(
+      deriveWorkflowSaveName({
+        runId: 'wf_fallback',
+        metaName: 'Audit routes + handlers',
+      }),
+    ).toBe('Audit-routes-handlers')
+    expect(
+      deriveWorkflowSaveName({
+        runId: 'wf_fallback',
+        explicit: '  release/checklist  ',
+      }),
+    ).toBe('release-checklist')
+  })
+
   test('opens the interactive workflow progress view with no args', async () => {
     const state = { tasks: {} }
     let message = ''
