@@ -65,7 +65,7 @@ const inputSchema = z.object({
     .string()
     .optional()
     .describe(
-      'The workflow script (JavaScript) to run. Must begin with `export const meta = {...}`. Provide this, scriptPath, or name.',
+      'Self-contained workflow script. Must begin with `export const meta = {...}`. Provide this, scriptPath, or name.',
     ),
   name: z
     .string()
@@ -87,7 +87,7 @@ const inputSchema = z.object({
     .string()
     .optional()
     .describe(
-      'Absolute path to a workflow script file. Alternative to script or name.',
+      'Path to a workflow script file on disk. Every Workflow invocation persists its script under the session directory and returns the path in the tool result. To iterate, edit that file and re-invoke Workflow with the same scriptPath instead of re-sending the full script. Takes precedence over `script` and `name`.',
     ),
   args: z
     .any()
@@ -196,11 +196,11 @@ async function resolveNamedWorkflowSource(
 }
 
 async function readSource(input: WorkflowInput): Promise<string> {
-  if (typeof input.script === 'string' && input.script.trim()) {
-    return input.script
-  }
   if (typeof input.scriptPath === 'string' && input.scriptPath.trim()) {
     return readWorkflowScriptFile(input.scriptPath)
+  }
+  if (typeof input.script === 'string' && input.script.trim()) {
+    return input.script
   }
   if (typeof input.name === 'string' && input.name.trim()) {
     return (await resolveNamedWorkflowSource(input.name)).source
@@ -384,6 +384,7 @@ export const WorkflowTool = buildTool({
   },
   renderToolUseMessage(input: Partial<WorkflowInput> | undefined) {
     if (!input) return WORKFLOW_TOOL_NAME
+    if (input.scriptPath) return `Workflow: ${input.scriptPath}`
     try {
       const src = typeof input.script === 'string' ? input.script : null
       if (src) {
@@ -393,11 +394,7 @@ export const WorkflowTool = buildTool({
     } catch {
       // fall through to a generic label if meta can't be parsed yet
     }
-    return input.scriptPath
-      ? `Workflow: ${input.scriptPath}`
-      : input.name
-        ? `Workflow: ${input.name}`
-      : WORKFLOW_TOOL_NAME
+    return input.name ? `Workflow: ${input.name}` : WORKFLOW_TOOL_NAME
   },
   async call(input: WorkflowInput, toolUseContext, canUseTool) {
     // Resume path: reuse the prior runId for the journal. The script source

@@ -86,15 +86,6 @@ function resolveWorkflowSource(input: WorkflowPermissionInput): {
   source: string | null
   readError: string | null
 } {
-  if (typeof input.script === 'string' && input.script.trim()) {
-    return {
-      sourceKind: 'inline',
-      sourceLabel: 'inline script',
-      source: input.script,
-      readError: null,
-    }
-  }
-
   if (typeof input.scriptPath === 'string' && input.scriptPath.trim()) {
     try {
       return {
@@ -110,6 +101,15 @@ function resolveWorkflowSource(input: WorkflowPermissionInput): {
         source: null,
         readError: (err as Error).message,
       }
+    }
+  }
+
+  if (typeof input.script === 'string' && input.script.trim()) {
+    return {
+      sourceKind: 'inline',
+      sourceLabel: 'inline script',
+      source: input.script,
+      readError: null,
     }
   }
 

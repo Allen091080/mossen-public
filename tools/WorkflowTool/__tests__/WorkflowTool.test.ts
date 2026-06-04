@@ -224,6 +224,41 @@ return 'ok'
 })
 
 describe('WorkflowTool scriptPath guards', () => {
+  it('uses scriptPath contents before inline script when both are provided', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wf-scriptpath-priority-'))
+    const scriptPath = join(dir, 'file.js')
+    try {
+      writeFileSync(
+        scriptPath,
+        `
+export const meta = { name: 'file-flow', description: 'File workflow wins' }
+import fs from 'fs'
+`,
+      )
+
+      const result = await WorkflowTool.call!(
+        {
+          scriptPath,
+          script: `
+export const meta = { name: 'inline-flow', description: 'Inline workflow loses' }
+return 'ok'
+`,
+        },
+        {
+          abortController: new AbortController(),
+          setAppState: () => {},
+        } as never,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(result.data.summary).toBe('File workflow wins')
+      expect(result.data.error).toContain('Workflow scripts cannot use import')
+      expect(result.data.scriptPath).toBeUndefined()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('surfaces the official missing-file error before launching a workflow', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wf-missing-tool-'))
     const scriptPath = join(dir, 'missing.js')

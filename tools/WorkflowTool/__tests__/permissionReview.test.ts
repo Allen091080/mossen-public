@@ -72,6 +72,30 @@ describe('buildWorkflowPermissionReview', () => {
     expect(review.meta?.description).toBe('Validate a change before shipping')
   })
 
+  test('uses scriptPath before inline script in the review payload', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mossen-workflow-review-priority-'))
+    const scriptPath = join(dir, 'ship-check.js')
+    try {
+      writeFileSync(scriptPath, WORKFLOW_SOURCE)
+
+      const review = buildWorkflowPermissionReview({
+        scriptPath,
+        script: `
+export const meta = { name: 'inline-flow', description: 'Inline review loses' }
+return 'ok'
+`,
+      })
+
+      expect(review.sourceKind).toBe('file')
+      expect(review.sourceLabel).toBe(scriptPath)
+      expect(review.meta?.name).toBe('ship-check')
+      expect(review.meta?.description).toBe('Validate a change before shipping')
+      expect(review.scriptSource).toBe(WORKFLOW_SOURCE)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('surfaces official scriptPath read errors in the review payload', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mossen-workflow-review-missing-'))
     const scriptPath = join(dir, 'missing.js')
