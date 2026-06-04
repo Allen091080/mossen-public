@@ -20,7 +20,7 @@ type Props = {
   onComplete: (result: string) => void;
 };
 
-type EffortChoice = 'auto' | EffortLevel | 'ultracode';
+export type EffortChoice = 'auto' | EffortLevel | 'ultracode';
 
 const PICKER_ORDER: readonly EffortChoice[] = [
   'auto',
@@ -31,6 +31,18 @@ const PICKER_ORDER: readonly EffortChoice[] = [
   'max',
   'ultracode',
 ];
+
+export function getEffortPickerChoices(params: {
+  supportsMax: boolean;
+  workflowsEnabled: boolean;
+}): EffortChoice[] {
+  return PICKER_ORDER.filter(choice => {
+    if (choice === 'ultracode') {
+      return params.supportsMax && params.workflowsEnabled;
+    }
+    return true;
+  });
+}
 
 function describeChoice(choice: EffortChoice): string {
   if (choice === 'auto') {
@@ -48,38 +60,37 @@ export function EffortPicker({ onComplete }: Props): React.ReactNode {
   const model = useMainLoopModel();
   const workflowsEnabled = useMemo(() => isWorkflowRuntimeEnabled(), []);
 
+  const supportsMax = modelSupportsMaxEffort(model);
+  const choices = useMemo(
+    () => getEffortPickerChoices({ supportsMax, workflowsEnabled }),
+    [supportsMax, workflowsEnabled],
+  );
+
   // Determine the currently-active effort label for the highlighted default.
   const currentLabel: EffortChoice = useMemo(() => {
     if (appStateEffort === undefined) return 'auto';
-    if (appStateEffort === 'ultracode') return 'ultracode';
+    if (appStateEffort === 'ultracode') {
+      return choices.includes('ultracode') ? 'ultracode' : 'auto';
+    }
     if (typeof appStateEffort === 'string' && EFFORT_LEVELS.includes(appStateEffort as EffortLevel)) {
       return appStateEffort as EffortLevel;
     }
     return 'auto';
-  }, [appStateEffort]);
-
-  const supportsMax = modelSupportsMaxEffort(model);
+  }, [appStateEffort, choices]);
 
   const options = useMemo(() => {
-    return PICKER_ORDER.map(choice => {
+    return choices.map(choice => {
       const disabled =
-        ((choice === 'xhigh' || choice === 'max' || choice === 'ultracode') &&
-          !supportsMax) ||
-        (choice === 'ultracode' && !workflowsEnabled);
+        (choice === 'xhigh' || choice === 'max') && !supportsMax;
       const labelLeft =
         choice === 'auto'
           ? getLocalizedText({ en: 'auto', zh: 'auto' })
           : choice;
       const suffix = disabled
-        ? choice === 'ultracode' && !workflowsEnabled
-          ? getLocalizedText({
-              en: '  (Workflow disabled)',
-              zh: '  （Workflow 已禁用）',
-            })
-          : getLocalizedText({
-              en: '  (unsupported by current model)',
-              zh: '  （当前模型不支持）',
-            })
+        ? getLocalizedText({
+            en: '  (unsupported by current model)',
+            zh: '  （当前模型不支持）',
+          })
         : '';
       return {
         label: `${labelLeft}${suffix}`,
@@ -88,7 +99,7 @@ export function EffortPicker({ onComplete }: Props): React.ReactNode {
         disabled,
       };
     });
-  }, [supportsMax, workflowsEnabled]);
+  }, [choices, supportsMax]);
 
   const handleSelect = useCallback(
     (value: string): void => {
