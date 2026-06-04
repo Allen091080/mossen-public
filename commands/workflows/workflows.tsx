@@ -22,7 +22,10 @@ import { isUltracodeActive, setUltracodeActive } from '../../bootstrap/state.js'
 import { WORKFLOW_TOOL_NAME } from '../../tools/WorkflowTool/constants.js'
 import {
   buildWorkflowResumePrompt,
+  killWorkflowTask,
   pauseWorkflowTask,
+  retryWorkflowAgent,
+  skipWorkflowAgent,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
 type WorkflowTaskLookup = {
@@ -36,6 +39,7 @@ type WorkflowTaskLookup = {
     workflowRunId?: string
     scriptPath?: string
     args?: unknown
+    agents?: Array<{ agentNumber?: number; status?: string }>
   }
 }
 
@@ -225,6 +229,24 @@ function pauseTaskRun(
     : t('cmd.workflows.alreadyPaused', { runId })
 }
 
+function stopTaskRun(
+  runId: string | undefined,
+  context: LocalJSXCommandContext,
+): string {
+  if (!runId) return t('cmd.workflows.stopUsage')
+  const found = findWorkflowTaskForRun(context.getAppState().tasks, runId)
+  if (!found) {
+    return t('cmd.workflows.notFound', { runId })
+  }
+  const { task, taskId } = found
+  if (task.status !== 'running' && task.status !== 'paused') {
+    return t('cmd.workflows.taskNotRunning', { runId })
+  }
+  const setAppState = context.setAppStateForTasks ?? context.setAppState
+  killWorkflowTask(taskId, setAppState)
+  return t('cmd.workflows.stopped', { runId })
+}
+
 function resumeTaskRun(
   runId: string | undefined,
   context: LocalJSXCommandContext,
@@ -247,6 +269,75 @@ function resumeTaskRun(
       meta?.args ?? task.args,
     ),
   }
+}
+
+function parseWorkflowAgentNumber(agentId: string | undefined): number | null {
+  const parsed = Number.parseInt(agentId ?? '', 10)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+}
+
+function hasVisibleAgent(
+  task: WorkflowTaskLookup['task'],
+  agentNumber: number,
+): boolean {
+  const agents = task.agents ?? []
+  return agents.length === 0 || agents.some(agent => agent.agentNumber === agentNumber)
+}
+
+function stopAgentRun(
+  runId: string | undefined,
+  agentId: string | undefined,
+  context: LocalJSXCommandContext,
+): string {
+  const agentNumber = parseWorkflowAgentNumber(agentId)
+  if (!runId || !agentNumber) return t('cmd.workflows.stopAgentUsage')
+  const found = findWorkflowTaskForRun(context.getAppState().tasks, runId)
+  if (!found) {
+    return t('cmd.workflows.notFound', { runId })
+  }
+  if (!hasVisibleAgent(found.task, agentNumber)) {
+    return t('cmd.workflows.agentNotFound', {
+      runId,
+      agentNumber: String(agentNumber),
+    })
+  }
+  if (found.task.status !== 'running') {
+    return t('cmd.workflows.taskNotRunning', { runId })
+  }
+  const setAppState = context.setAppStateForTasks ?? context.setAppState
+  skipWorkflowAgent(found.taskId, agentNumber, setAppState)
+  return t('cmd.workflows.agentStopped', {
+    runId,
+    agentNumber: String(agentNumber),
+  })
+}
+
+function retryAgentRun(
+  runId: string | undefined,
+  agentId: string | undefined,
+  context: LocalJSXCommandContext,
+): string {
+  const agentNumber = parseWorkflowAgentNumber(agentId)
+  if (!runId || !agentNumber) return t('cmd.workflows.retryAgentUsage')
+  const found = findWorkflowTaskForRun(context.getAppState().tasks, runId)
+  if (!found) {
+    return t('cmd.workflows.notFound', { runId })
+  }
+  if (!hasVisibleAgent(found.task, agentNumber)) {
+    return t('cmd.workflows.agentNotFound', {
+      runId,
+      agentNumber: String(agentNumber),
+    })
+  }
+  if (found.task.status !== 'running') {
+    return t('cmd.workflows.taskNotRunning', { runId })
+  }
+  const setAppState = context.setAppStateForTasks ?? context.setAppState
+  retryWorkflowAgent(found.taskId, agentNumber, setAppState)
+  return t('cmd.workflows.agentRetryQueued', {
+    runId,
+    agentNumber: String(agentNumber),
+  })
 }
 
 /** `ultracode [on|off]` — view or toggle standing orchestration mode (S6). */
@@ -298,6 +389,11 @@ export async function call(
     return null
   }
 
+  if (tokens[0] === 'stop' || tokens[0] === 'kill') {
+    onDone(stopTaskRun(tokens[1], context), { display: 'system' })
+    return null
+  }
+
   if (tokens[0] === 'resume-task') {
     const result = resumeTaskRun(tokens[1], context)
     onDone(result.message, {
@@ -305,6 +401,18 @@ export async function call(
       ...(result.nextInput
         ? { nextInput: result.nextInput, submitNextInput: true }
         : {}),
+    })
+    return null
+  }
+
+  if (tokens[0] === 'stop-agent' || tokens[0] === 'skip-agent') {
+    onDone(stopAgentRun(tokens[1], tokens[2], context), { display: 'system' })
+    return null
+  }
+
+  if (tokens[0] === 'retry-agent' || tokens[0] === 'restart-agent') {
+    onDone(retryAgentRun(tokens[1], tokens[2], context), {
+      display: 'system',
     })
     return null
   }
