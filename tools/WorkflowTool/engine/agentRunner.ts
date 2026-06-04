@@ -657,6 +657,24 @@ function withRemoteSessionId(
   return { ...result, remoteSessionId }
 }
 
+function workflowWorkerToolUseContext(
+  toolUseContext: ToolUseContext,
+): ToolUseContext {
+  return {
+    ...toolUseContext,
+    getAppState: () => {
+      const appState = toolUseContext.getAppState()
+      return {
+        ...appState,
+        toolPermissionContext: {
+          ...appState.toolPermissionContext,
+          mode: 'acceptEdits',
+        },
+      }
+    },
+  }
+}
+
 function deriveRemoteLabel(prompt: string): string {
   const firstLine = prompt.trim().split('\n')[0] ?? ''
   const trimmed = firstLine.slice(0, 48)
@@ -925,16 +943,17 @@ export function createWorkflowAgentRunner(
       }, localAgentStallTimeoutMs)
     }
     reset()
-      return {
-        reset,
-        dispose,
-      }
+    return {
+      reset,
+      dispose,
     }
+  }
 
   /** Run a single agent turn to completion; return its final text + tokens. */
   async function runOnce(
     agentDefinition: AgentDefinition,
     availableTools: Tools,
+    workerToolUseContext: ToolUseContext,
     promptText: string,
     model: ModelAlias | undefined,
     label: string,
@@ -957,7 +976,7 @@ export function createWorkflowAgentRunner(
       runAgentImpl({
         agentDefinition,
         promptMessages,
-        toolUseContext,
+        toolUseContext: workerToolUseContext,
         canUseTool,
         isAsync: false,
         availableTools,
@@ -1086,9 +1105,11 @@ export function createWorkflowAgentRunner(
           )
         : null
     const appState = toolUseContext.getAppState()
+    const workerToolUseContext = workflowWorkerToolUseContext(toolUseContext)
+    const workerAppState = workerToolUseContext.getAppState()
     const workerPermissionContext = {
-      ...appState.toolPermissionContext,
-      mode: agentDefinition.permissionMode ?? ('acceptEdits' as const),
+      ...workerAppState.toolPermissionContext,
+      mode: 'acceptEdits' as const,
     }
     const baseAvailableTools = assembleToolPool(
       workerPermissionContext,
@@ -1099,16 +1120,17 @@ export function createWorkflowAgentRunner(
     try {
       // No schema → return the agent's final text verbatim.
       if (!opts.schema) {
-          const { text, tokens, toolCalls } = await runOnce(
-            agentDefinition,
-            baseAvailableTools,
-            prompt,
-            model,
-            meta.label,
-            worktreeInfo?.worktreePath,
-            agentAbortController,
-            meta.onProgress,
-          )
+        const { text, tokens, toolCalls } = await runOnce(
+          agentDefinition,
+          baseAvailableTools,
+          workerToolUseContext,
+          prompt,
+          model,
+          meta.label,
+          worktreeInfo?.worktreePath,
+          agentAbortController,
+          meta.onProgress,
+        )
         return { value: text, tokens, toolCalls, ok: true }
       }
 
@@ -1125,16 +1147,17 @@ export function createWorkflowAgentRunner(
       let totalToolCalls = 0
       let lastDetail = ''
       for (let attempt = 0; attempt <= MAX_SCHEMA_RETRIES; attempt++) {
-          const { tokens, toolCalls, structuredOutput } = await runOnce(
-            schemaAgentDefinition,
-            schemaTools,
-            promptText,
-            model,
-            meta.label,
-            worktreeInfo?.worktreePath,
-            agentAbortController,
-            meta.onProgress,
-          )
+        const { tokens, toolCalls, structuredOutput } = await runOnce(
+          schemaAgentDefinition,
+          schemaTools,
+          workerToolUseContext,
+          promptText,
+          model,
+          meta.label,
+          worktreeInfo?.worktreePath,
+          agentAbortController,
+          meta.onProgress,
+        )
         totalTokens += tokens
         totalToolCalls += toolCalls
         if (structuredOutput === undefined) {

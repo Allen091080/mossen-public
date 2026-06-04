@@ -3,6 +3,7 @@ import {
   getEmptyToolPermissionContext,
   type ToolUseContext,
 } from '../../../../Tool.js'
+import type { PermissionMode } from '../../../../types/permissions.js'
 import type { AgentDefinition } from '../../../AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../../../SyntheticOutputTool/SyntheticOutputTool.js'
 import {
@@ -39,7 +40,11 @@ function testAgent(agentType: string): AgentDefinition {
 
 function workflowRunnerContext(params: {
   agents: AgentDefinition[]
+  allowRules?: string[]
+  askRules?: string[]
   deniedRules?: string[]
+  mode?: PermissionMode
+  shouldAvoidPermissionPrompts?: boolean
 }): ToolUseContext {
   return {
     options: {
@@ -63,9 +68,18 @@ function workflowRunnerContext(params: {
       ({
         toolPermissionContext: {
           ...getEmptyToolPermissionContext(),
+          mode: params.mode ?? 'default',
+          alwaysAllowRules: {
+            localSettings: params.allowRules ?? [],
+          },
+          alwaysAskRules: {
+            localSettings: params.askRules ?? [],
+          },
           alwaysDenyRules: {
             userSettings: params.deniedRules ?? [],
           },
+          shouldAvoidPermissionPrompts:
+            params.shouldAvoidPermissionPrompts ?? false,
         },
         mcp: { tools: [] },
       }) as unknown as ReturnType<ToolUseContext['getAppState']>,
@@ -147,6 +161,79 @@ describe('workflow agent structured output helpers', () => {
 })
 
 describe('workflow local agent resolution', () => {
+  test('runs local workflow agents in acceptEdits while inheriting permission rules', async () => {
+    const observed: Array<{
+      mode: PermissionMode
+      allowRules: string[]
+      askRules: string[]
+      denyRules: string[]
+      shouldAvoidPermissionPrompts?: boolean
+    }> = []
+    const runAgentImpl: NonNullable<
+      WorkflowAgentRunnerDeps['runAgentImpl']
+    > = async function* ({ toolUseContext }) {
+      const permissionContext =
+        toolUseContext.getAppState().toolPermissionContext
+      observed.push({
+        mode: permissionContext.mode,
+        allowRules: [
+          ...(permissionContext.alwaysAllowRules.localSettings ?? []),
+        ],
+        askRules: [...(permissionContext.alwaysAskRules.localSettings ?? [])],
+        denyRules: [...(permissionContext.alwaysDenyRules.userSettings ?? [])],
+        shouldAvoidPermissionPrompts:
+          permissionContext.shouldAvoidPermissionPrompts,
+      })
+      yield {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'ok' }],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      } as never
+    }
+    const agent = {
+      ...testAgent('general-purpose'),
+      permissionMode: 'plan',
+    } as AgentDefinition
+    const runner = createWorkflowAgentRunner({
+      toolUseContext: workflowRunnerContext({
+        agents: [agent],
+        mode: 'bypassPermissions',
+        allowRules: ['Bash(npm test)'],
+        askRules: ['WebFetch(example.com)'],
+        deniedRules: ['Bash(rm -rf *)'],
+        shouldAvoidPermissionPrompts: true,
+      }),
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      runId: 'wf-test',
+      runAgentImpl,
+    })
+
+    await expect(
+      runner('inspect the repo', {}, {
+        agentNumber: 1,
+        phase: null,
+        label: 'inspect',
+      }),
+    ).resolves.toMatchObject({ value: 'ok', ok: true })
+
+    expect(observed).toEqual([
+      {
+        mode: 'acceptEdits',
+        allowRules: ['Bash(npm test)'],
+        askRules: ['WebFetch(example.com)'],
+        denyRules: ['Bash(rm -rf *)'],
+        shouldAvoidPermissionPrompts: true,
+      },
+    ])
+  })
+
   test('reports live local tool progress from the subagent stream', async () => {
     const updates: Array<{
       tokens?: number
