@@ -94,7 +94,7 @@ import { writeToMailbox } from '../../utils/teammateMailbox.js';
 import type { TextHighlight } from '../../utils/textHighlighting.js';
 import type { Theme } from '../../utils/theme.js';
 import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../utils/thinking.js';
-import { findWorkflowTriggerPositions, isWorkflowKeywordEnabled } from '../../utils/workflowKeyword.js';
+import { findWorkflowTriggerPositions, isWorkflowKeywordEnabled, suppressNextWorkflowReminderFor } from '../../utils/workflowKeyword.js';
 import { t as translate } from '../../utils/i18n/index.js';
 import { findTokenBudgetPositions } from '../../utils/tokenBudget.js';
 import { AutoModeOptInDialog } from '../AutoModeOptInDialog.js';
@@ -426,6 +426,7 @@ function PromptInput({
   const [showFastModePicker, setShowFastModePicker] = useState(false);
   const [showThinkingToggle, setShowThinkingToggle] = useState(false);
   const [showAutoModeOptIn, setShowAutoModeOptIn] = useState(false);
+  const [workflowTriggerDismissed, setWorkflowTriggerDismissed] = useState(false);
   const [previousModeBeforeAuto, setPreviousModeBeforeAuto] = useState<PermissionMode | null>(null);
   const autoModeOptInTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -537,7 +538,12 @@ function PromptInput({
   // Workflow keyword positions (rainbow highlight + opt-in to multi-agent
   // orchestration). Gated on WORKFLOW_SCRIPTS so users without the Workflow
   // tool never see a meaningless highlight.
-  const workflowTriggers = useMemo(() => isWorkflowKeywordEnabled() ? findWorkflowTriggerPositions(displayedValue) : [], [displayedValue]);
+  const rawWorkflowTriggers = useMemo(() => isWorkflowKeywordEnabled() ? findWorkflowTriggerPositions(displayedValue) : [], [displayedValue]);
+  const inputWorkflowTriggers = useMemo(() => isWorkflowKeywordEnabled() ? findWorkflowTriggerPositions(input) : [], [input]);
+  const workflowTriggers = useMemo(
+    () => workflowTriggerDismissed && !isSearchingHistory ? [] : rawWorkflowTriggers,
+    [workflowTriggerDismissed, isSearchingHistory, rawWorkflowTriggers],
+  );
   const btwTriggers = useMemo(() => findBtwTriggerPositions(displayedValue), [displayedValue]);
   const buddyTriggers = useMemo(() => findBuddyTriggerPositions(displayedValue), [displayedValue]);
   const slashCommandTriggers = useMemo(() => {
@@ -809,6 +815,11 @@ function PromptInput({
       removeNotification('workflow-keyword-active');
     }
   }, [addNotification, removeNotification, workflowTriggers.length]);
+  useEffect(() => {
+    if (workflowTriggerDismissed && inputWorkflowTriggers.length === 0) {
+      setWorkflowTriggerDismissed(false);
+    }
+  }, [workflowTriggerDismissed, inputWorkflowTriggers.length]);
 
   // Track input length for stash hint
   const prevInputLengthRef = useRef(input.length);
@@ -1159,6 +1170,10 @@ function PromptInput({
     // the user's text here, which would leak the <system-reminder> into the
     // transcript. We only reach here after all early returns (slash-command,
     // bash, exit, suggestions, teammate routing) have passed.
+    if (workflowTriggerDismissed) {
+      suppressNextWorkflowReminderFor(inputParam);
+      setWorkflowTriggerDismissed(false);
+    }
     if (process.env.MOSSEN_CODE_AGENT_SUPERVISOR_ATTACH_JOB_ID) {
       agentSupervisorAttachSubmitGuardUntilRef.current = Date.now() + 1500;
     }
@@ -1167,7 +1182,7 @@ function PromptInput({
       clearBuffer,
       resetHistory
     });
-  }, [hasSuppressedDialogs, promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification, addNotification, isLoading, trackAndSetInput]);
+  }, [hasSuppressedDialogs, promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification, addNotification, isLoading, trackAndSetInput, workflowTriggerDismissed]);
   const {
     suggestions,
     selectedSuggestion,
@@ -1941,7 +1956,7 @@ function PromptInput({
     context: 'Footer',
     isActive: !!footerItemSelected && !isModalOverlayActive
   });
-  useInput((char, key) => {
+  useInput((char, key, event) => {
     // Skip all input handling when a full-screen dialog is open. These dialogs
     // render via early return, but hooks run unconditionally — so without this
     // guard, Escape inside a dialog leaks to the double-press message-selector.
@@ -1983,6 +1998,22 @@ function PromptInput({
 
     // NOTE: ctrl+_ and ctrl+s are handled via Chat context keybindings above.
     // ctrl+g is reserved by the goal overlay handler when a session goal exists.
+    if (key.meta && !key.ctrl && char.toLowerCase() === 'w' && inputWorkflowTriggers.length > 0) {
+      setWorkflowTriggerDismissed(true);
+      removeNotification('workflow-keyword-active');
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (
+      key.backspace &&
+      !workflowTriggerDismissed &&
+      inputWorkflowTriggers.some(trigger => trigger.end === cursorOffset)
+    ) {
+      setWorkflowTriggerDismissed(true);
+      removeNotification('workflow-keyword-active');
+      event.stopImmediatePropagation();
+      return;
+    }
 
     // Type-to-exit footer: printable chars while a pill is selected refocus
     // the input and type the char. Nav keys are captured by useKeybindings

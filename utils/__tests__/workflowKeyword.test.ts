@@ -1,11 +1,14 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import {
   buildWorkflowReminder,
+  clearSuppressedWorkflowRemindersForTests,
+  consumeSuppressedWorkflowReminder,
   findWorkflowTriggerPositions,
   hasAnyWorkflowTrigger,
   hasUltracodeKeyword,
   hasUltraworkKeyword,
   hasWorkflowKeyword,
+  suppressNextWorkflowReminderFor,
 } from '../workflowKeyword.js'
 
 // NOTE on the WORKFLOW_SCRIPTS gate: isWorkflowKeywordEnabled()/applyWorkflow
@@ -17,6 +20,10 @@ import {
 // exercised at runtime by the startup smoke + harness.
 
 describe('workflowKeyword', () => {
+  afterEach(() => {
+    clearSuppressedWorkflowRemindersForTests()
+  })
+
   describe('hasWorkflowKeyword', () => {
     test('matches standalone "workflow"', () => {
       expect(hasWorkflowKeyword('please use a workflow here')).toBe(true)
@@ -152,6 +159,21 @@ describe('workflowKeyword', () => {
       // 3rd arg = ultracodeStanding: no keyword, but standing mode on → fires.
       expect(buildWorkflowReminder('just keep going', true, true)).not.toBeNull()
       expect(buildWorkflowReminder('just keep going', true, false)).toBeNull()
+    })
+  })
+
+  describe('workflow reminder suppression', () => {
+    test('suppresses exactly one matching prompt reminder', () => {
+      suppressNextWorkflowReminderFor('ultracode: audit auth')
+
+      expect(consumeSuppressedWorkflowReminder('different workflow prompt')).toBe(false)
+      expect(consumeSuppressedWorkflowReminder('ultracode: audit auth')).toBe(true)
+      expect(consumeSuppressedWorkflowReminder('ultracode: audit auth')).toBe(false)
+    })
+
+    test('ignores blank suppression requests', () => {
+      suppressNextWorkflowReminderFor('   ')
+      expect(consumeSuppressedWorkflowReminder('   ')).toBe(false)
     })
   })
 })

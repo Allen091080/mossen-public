@@ -27,6 +27,7 @@ export function isWorkflowKeywordEnabled(): boolean {
 const WORKFLOW_RE = /\bworkflows?\b/i
 const ULTRAWORK_RE = /\bultrawork\b/i
 const ULTRACODE_RE = /\bultracode\b/i
+const suppressedWorkflowReminderPrompts = new Set<string>()
 
 export function hasWorkflowKeyword(text: string): boolean {
   return WORKFLOW_RE.test(text)
@@ -121,6 +122,21 @@ export function buildWorkflowReminder(
   return `<system-reminder>\n${t(key)}\n</system-reminder>`
 }
 
+export function suppressNextWorkflowReminderFor(value: string): void {
+  if (!value.trim()) return
+  suppressedWorkflowReminderPrompts.add(value)
+}
+
+export function consumeSuppressedWorkflowReminder(value: string): boolean {
+  if (!suppressedWorkflowReminderPrompts.has(value)) return false
+  suppressedWorkflowReminderPrompts.delete(value)
+  return true
+}
+
+export function clearSuppressedWorkflowRemindersForTests(): void {
+  suppressedWorkflowReminderPrompts.clear()
+}
+
 /**
  * Production entry point: gate on the WORKFLOW_SCRIPTS build flag, then delegate
  * to the injectable, testable buildWorkflowReminder. Returns the reminder block
@@ -133,6 +149,7 @@ export function workflowReminderFor(value: string): string | null {
   // effect: otherwise `/workflows ultracode on` would BOTH latch ultracode here
   // and emit a reminder.
   if (value.trimStart().startsWith('/')) return null
+  if (consumeSuppressedWorkflowReminder(value)) return null
   const enabled = isWorkflowKeywordEnabled()
   if (enabled && hasUltracodeKeyword(value)) {
     setUltracodeActive(true)
