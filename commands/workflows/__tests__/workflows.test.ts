@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { isValidElement } from 'react'
 import { getTaskOutputPath } from '../../../utils/task/diskOutput.js'
 import { buildWorkflowResumeNextInput, call } from '../workflows.js'
 
@@ -77,6 +78,22 @@ function runningWorkflowTask(params: {
 }
 
 describe('/workflows resume', () => {
+  test('opens the interactive workflow progress view with no args', async () => {
+    const state = { tasks: {} }
+    let message = ''
+
+    const result = await call(
+      nextMessage => {
+        message = nextMessage ?? ''
+      },
+      workflowCommandContext(state) as never,
+      '',
+    )
+
+    expect(isValidElement(result)).toBe(true)
+    expect(message).toBe('')
+  })
+
   test('queues an official-shaped Workflow tool call with scriptPath, resumeFromRunId, and args', () => {
     const nextInput = buildWorkflowResumeNextInput(
       'wf_resume1',

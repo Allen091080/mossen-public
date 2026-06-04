@@ -74,6 +74,8 @@ export const STRINGS_EN = {
   'cmd.workflows.description': 'Monitor workflow runs and save them as reusable commands',
   'cmd.workflows.empty': 'No workflow runs in this session yet.',
   'cmd.workflows.emptyHint': 'Type "workflow" in your message to orchestrate subagents; runs appear here.',
+  'cmd.workflows.dialogTitle': 'Workflows',
+  'cmd.workflows.dismissed': 'Workflow view dismissed',
   'cmd.workflows.listTitle': 'Workflow runs this session:',
   'cmd.workflows.detailHint': 'Use /workflows <runId> to see progress, pause/stop to manage the run, stop-agent/retry-agent for a specific agent, resume/resume-task to replay from journal, or save to keep it.',
   'cmd.workflows.notFound': 'No workflow run found with id {runId}.',

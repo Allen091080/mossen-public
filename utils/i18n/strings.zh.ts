@@ -53,6 +53,8 @@ export const STRINGS_ZH = {
   'cmd.workflows.description': '查看工作流运行记录，并保存为可复用命令',
   'cmd.workflows.empty': '本会话还没有工作流运行记录。',
   'cmd.workflows.emptyHint': '在消息里输入 “workflow” 即可编排子 agent；运行记录会出现在这里。',
+  'cmd.workflows.dialogTitle': '工作流',
+  'cmd.workflows.dismissed': '已关闭工作流视图',
   'cmd.workflows.listTitle': '本会话的工作流运行：',
   'cmd.workflows.detailHint': '用 /workflows <runId> 查看执行过程，用 pause/stop 管理整次运行，用 stop-agent/retry-agent 管理单个 agent，用 resume/resume-task 从 journal 续跑，或用 save 保存它。',
   'cmd.workflows.notFound': '找不到 id 为 {runId} 的工作流运行。',

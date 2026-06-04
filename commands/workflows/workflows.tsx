@@ -1,10 +1,8 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import React from 'react'
 import type {
   LocalJSXCommandContext,
   LocalJSXCommandOnDone,
 } from '../../types/command.js'
-import { getProjectRoot } from '../../bootstrap/state.js'
 import { t } from '../../utils/i18n/index.js'
 import { formatDuration, formatNumber } from '../../utils/format.js'
 import {
@@ -15,10 +13,6 @@ import {
   runScriptPath,
   type WorkflowRunMeta,
 } from '../../tools/WorkflowTool/engine/journalStore.js'
-import {
-  getProjectWorkflowsDir,
-  getUserWorkflowsDir,
-} from '../../tools/WorkflowTool/savedWorkflows.js'
 import { isUltracodeActive, setUltracodeActive } from '../../bootstrap/state.js'
 import { WORKFLOW_TOOL_NAME } from '../../tools/WorkflowTool/constants.js'
 import {
@@ -30,6 +24,8 @@ import {
   type LocalWorkflowTaskState,
   type WorkflowAgentTaskProgress,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { WorkflowRunsDialog } from './WorkflowRunsDialog.js'
+import { saveRun } from './saveWorkflow.js'
 
 type WorkflowAgentSnapshot = Partial<WorkflowAgentTaskProgress> & {
   agentNumber?: number
@@ -69,25 +65,6 @@ function statusGlyph(status: WorkflowRunMeta['status']): string {
     default:
       return '•'
   }
-}
-
-function renderRunList(): string {
-  const runs = listWorkflowRuns()
-  if (runs.length === 0) {
-    return [t('cmd.workflows.empty'), t('cmd.workflows.emptyHint')].join('\n')
-  }
-  const lines = runs.map(r => {
-    const agents = r.agentCount != null ? `${r.agentCount} agent(s)` : ''
-    const toks = r.tokensSpent != null ? `~${r.tokensSpent} tok` : ''
-    const meta = [agents, toks].filter(Boolean).join(', ')
-    return `  ${statusGlyph(r.status)} ${r.runId}  ${r.workflowName}${meta ? `  (${meta})` : ''}`
-  })
-  return [
-    t('cmd.workflows.listTitle'),
-    ...lines,
-    '',
-    t('cmd.workflows.detailHint'),
-  ].join('\n')
 }
 
 function asNumber(value: unknown): number {
@@ -326,45 +303,6 @@ function renderAgentDetail(
   return lines.join('\n')
 }
 
-/**
- * Save a run's script as a reusable named workflow (S5 "Save as").
- * `save <runId> [name] [--user]` — default scope is the project workflow
- * directory, `--user` writes to ~/.mossen/workflows. The saved file becomes a
- * /<name> command on next command load.
- */
-function saveRun(args: string[]): string {
-  const useUser = args.includes('--user')
-  const positional = args.filter(a => a !== '--user')
-  const runId = positional[0]
-  if (!runId) return t('cmd.workflows.saveUsage')
-  const script = loadRunScript(runId)
-  if (script == null) return t('cmd.workflows.notFound', { runId })
-
-  // Derive the saved name: explicit arg, else the workflow's meta name, else
-  // the runId. Sanitize to a filesystem- and command-safe slug.
-  const explicit = positional[1]
-  const metaName = listWorkflowRuns().find(r => r.runId === runId)?.workflowName
-  const rawName = explicit || metaName || runId
-  const name = rawName.trim().replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
-  if (!name) return t('cmd.workflows.saveBadName')
-
-  const dir = useUser
-    ? getUserWorkflowsDir()
-    : getProjectWorkflowsDir(getProjectRoot())
-  try {
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-    const dest = join(dir, `${name}.js`)
-    writeFileSync(dest, script, 'utf8')
-    return t('cmd.workflows.saved', {
-      name,
-      scope: useUser ? 'user' : 'project',
-      path: dest,
-    })
-  } catch (err) {
-    return t('cmd.workflows.saveFailed', { error: (err as Error).message })
-  }
-}
-
 export function buildWorkflowResumeNextInput(
   runId: string,
   scriptPath: string,
@@ -579,12 +517,11 @@ export async function call(
   onDone: LocalJSXCommandOnDone,
   context: LocalJSXCommandContext,
   args: string,
-): Promise<null> {
+): Promise<React.ReactNode> {
   const tokens = args.trim().split(/\s+/).filter(Boolean)
 
   if (tokens.length === 0) {
-    onDone(renderRunList())
-    return null
+    return <WorkflowRunsDialog onDone={onDone} />
   }
 
   if (tokens[0] === 'save') {
