@@ -778,6 +778,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'When true, suppress the dynamic workflow usage warning in the Workflow permission review.',
         ),
+      workflowUsageConsentHashes: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Per-workflow source hashes whose dynamic workflow usage warning has already been accepted on this machine.',
+        ),
       reasoningProfile: z
         .enum(['fast', 'standard', 'deep'])
         .optional()

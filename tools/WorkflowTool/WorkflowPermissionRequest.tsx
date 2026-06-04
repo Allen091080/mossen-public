@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react'
 import { Box, Text } from '../../ink.js'
 import { sanitizeToolNameForAnalytics } from '../../services/analytics/metadata.js'
-import { getInitialSettings, updateSettingsForSource } from '../../utils/settings/settings.js'
+import { updateSettingsForSource } from '../../utils/settings/settings.js'
 import { getLocalizedText } from '../../utils/uiLanguage.js'
 import { type UnaryEvent, usePermissionRequestLogging } from '../../components/permissions/hooks.js'
 import { PermissionDialog } from '../../components/permissions/PermissionDialog.js'
@@ -17,8 +17,16 @@ import {
   buildWorkflowPermissionReview,
   type WorkflowPermissionReview,
 } from './permissionReview.js'
+import {
+  recordWorkflowUsageConsent,
+  workflowNeedsUsageConsentPrompt,
+} from './usageConsent.js'
 
-type WorkflowOptionValue = 'yes' | 'yes-skip-warning' | 'no'
+type WorkflowOptionValue =
+  | 'yes'
+  | 'yes-record-consent'
+  | 'yes-skip-warning'
+  | 'no'
 
 function DetailRow({
   label,
@@ -123,14 +131,17 @@ export function WorkflowPermissionRequest({
   onReject,
   workerBadge,
 }: PermissionRequestProps): React.ReactNode {
-  const skipUsageWarning =
-    getInitialSettings().skipWorkflowUsageWarning === true
   const review = useMemo(
-    () =>
-      buildWorkflowPermissionReview(toolUseConfirm.input, {
-        showUsageWarning: !skipUsageWarning,
-      }),
-    [skipUsageWarning, toolUseConfirm.input],
+    () => {
+      const base = buildWorkflowPermissionReview(toolUseConfirm.input)
+      return {
+        ...base,
+        showUsageWarning: workflowNeedsUsageConsentPrompt(
+          base.usageConsentHash,
+        ),
+      }
+    },
+    [toolUseConfirm.input],
   )
   const unaryEvent: UnaryEvent = useMemo(
     () => ({
@@ -148,7 +159,17 @@ export function WorkflowPermissionRequest({
       feedbackConfig: { type: 'accept' },
     },
   ]
-  if (!skipUsageWarning) {
+  if (review.showUsageWarning && review.usageConsentHash) {
+    options.push({
+      label: getLocalizedText({
+        en: 'Yes, remember this workflow',
+        zh: '是，并记住这个 workflow',
+      }),
+      value: 'yes-record-consent',
+      feedbackConfig: { type: 'accept' },
+    })
+  }
+  if (review.showUsageWarning) {
     options.push({
       label: getLocalizedText({
         en: "Yes, and don't show the workflow usage warning again",
@@ -173,6 +194,12 @@ export function WorkflowPermissionRequest({
     switch (value) {
       case 'yes':
         logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept')
+        toolUseConfirm.onAllow(toolUseConfirm.input, [], feedback)
+        onDone()
+        break
+      case 'yes-record-consent':
+        logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept')
+        recordWorkflowUsageConsent(review.usageConsentHash)
         toolUseConfirm.onAllow(toolUseConfirm.input, [], feedback)
         onDone()
         break

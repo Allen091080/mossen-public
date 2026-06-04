@@ -39,6 +39,7 @@ describe('buildWorkflowPermissionReview', () => {
     expect(review.timeoutMs).toBe(5000)
     expect(review.metaError).toBeNull()
     expect(review.scriptPreview).toContain('export const meta')
+    expect(review.usageConsentHash).toMatch(/^wf_sha256:[a-f0-9]{64}$/)
   })
 
   test('loads workflow metadata from scriptPath', () => {

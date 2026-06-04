@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { loadRunScript } from './engine/journalStore.js'
 import { extractMeta } from './engine/meta.js'
 import type { WorkflowMeta } from './engine/types.js'
+import { workflowUsageConsentHash } from './usageConsent.js'
 
 const MAX_PREVIEW_CHARS = 1200
 const MAX_SCRIPT_LINES = 18
@@ -22,6 +23,7 @@ export type WorkflowPermissionReview = {
   metaError: string | null
   argsPreview: string | null
   scriptPreview: string | null
+  usageConsentHash: string | null
   timeoutMs: number | null
   resumeFromRunId: string | null
   runInBackground: boolean
@@ -126,6 +128,9 @@ export function buildWorkflowPermissionReview(
     metaError,
     argsPreview: previewUnknown(input.args),
     scriptPreview: resolved.source ? scriptPreview(resolved.source) : null,
+    usageConsentHash: resolved.source
+      ? workflowUsageConsentHash(resolved.source)
+      : null,
     timeoutMs:
       typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)
         ? input.timeoutMs
