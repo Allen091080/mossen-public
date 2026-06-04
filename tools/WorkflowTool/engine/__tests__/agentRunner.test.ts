@@ -388,6 +388,85 @@ describe('workflow remote agent helpers', () => {
     expect(result.value).toBe('remote done')
   })
 
+  test('fails fast when a remote workflow agent requires action', async () => {
+    await expect(
+      runHostedRemoteWorkflowAgent(
+        'do remote work',
+        {},
+        { agentNumber: 1, phase: null, label: 'remote-work' },
+        undefined,
+        {
+          launch: async () => ({ id: 'session_remote_1' }),
+          poll: async () => ({
+            newEvents: [],
+            lastEventId: null,
+            sessionStatus: 'requires_action',
+          }),
+          getSessionUrl: id => `https://example.invalid/code/${id}`,
+          sleep: async () => {},
+        },
+      ),
+    ).rejects.toThrow(
+      "Remote session session_remote_1 entered 'requires_action'",
+    )
+  })
+
+  test('stops polling after repeated remote metadata fetch failures', async () => {
+    let polls = 0
+    await expect(
+      runHostedRemoteWorkflowAgent(
+        'do remote work',
+        {},
+        { agentNumber: 1, phase: null, label: 'remote-work' },
+        undefined,
+        {
+          launch: async () => ({ id: 'session_remote_1' }),
+          poll: async () => {
+            polls++
+            return {
+              newEvents: [],
+              lastEventId: null,
+              metadataFetchError: `miss-${polls}`,
+            }
+          },
+          getSessionUrl: id => `https://example.invalid/code/${id}`,
+          sleep: async () => {},
+        },
+      ),
+    ).rejects.toThrow(
+      'Remote session session_remote_1: fetchSession failed 10 times in a row (last error: miss-10). Bailing instead of polling to the 30-min timeout.',
+    )
+    expect(polls).toBe(10)
+  })
+
+  test('stops polling after repeated idle empty remote pages', async () => {
+    let polls = 0
+    await expect(
+      runHostedRemoteWorkflowAgent(
+        'do remote work',
+        {},
+        { agentNumber: 1, phase: null, label: 'remote-work' },
+        undefined,
+        {
+          launch: async () => ({ id: 'session_remote_1' }),
+          poll: async () => {
+            polls++
+            return {
+              newEvents: [],
+              lastEventId: null,
+              sessionStatus: 'idle',
+            }
+          },
+          getSessionUrl: id => `https://example.invalid/code/${id}`,
+          sleep: async () => {},
+        },
+      ),
+    ).rejects.toThrow(
+      'remote session returned an error: idle before producing output (https://example.invalid/code/session_remote_1)',
+    )
+    expect(polls).toBe(5)
+  })
+
   test('rejects invalid remote schemas before launching a remote agent', async () => {
     let launched = false
     const runner = createWorkflowAgentRunner({

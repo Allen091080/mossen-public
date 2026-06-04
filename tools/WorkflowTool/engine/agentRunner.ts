@@ -90,6 +90,7 @@ type RemotePollResult = {
   newEvents: RemoteSdkMessage[]
   lastEventId: string | null
   sessionStatus?: RemoteSessionStatus
+  metadataFetchError?: string
 }
 
 type RemoteLaunchResult = {
@@ -557,6 +558,8 @@ export async function runHostedRemoteWorkflowAgent(
 
   const events: RemoteSdkMessage[] = []
   let afterId: string | null = null
+  let idleEmptyPolls = 0
+  let metadataFetchFailures = 0
   const deadline = now() + timeoutMs
   try {
     while (now() <= deadline) {
@@ -565,6 +568,17 @@ export async function runHostedRemoteWorkflowAgent(
       events.push(...page.newEvents)
       afterId = page.lastEventId ?? afterId
 
+      if (page.sessionStatus === undefined) {
+        metadataFetchFailures++
+        if (metadataFetchFailures >= 10) {
+          throw new Error(
+            `Remote session ${launched.id}: fetchSession failed 10 times in a row (last error: ${page.metadataFetchError ?? 'unknown'}). Bailing instead of polling to the 30-min timeout.`,
+          )
+        }
+      } else {
+        metadataFetchFailures = 0
+      }
+
       const resultEvent = events.findLast(
         event => remoteMessageType(event) === 'result',
       )
@@ -572,11 +586,29 @@ export async function runHostedRemoteWorkflowAgent(
         return coerceRemoteWorkflowAgentResult(events, opts, label)
       }
 
+      if (page.sessionStatus === 'requires_action') {
+        throw new Error(
+          `Remote session ${launched.id} entered 'requires_action' (likely a permission prompt) with no client to answer it. Ensure the remote agent's allowed_tools cover what it needs, or set a permissive mode.`,
+        )
+      }
+
       if (page.sessionStatus === 'idle') {
         const text = extractRemoteResultText(events)
         if (text.trim()) {
           return coerceRemoteWorkflowAgentResult(events, opts, label)
         }
+        if (page.newEvents.length === 0) {
+          idleEmptyPolls++
+          if (idleEmptyPolls >= 5) {
+            throw new Error(
+              `remote session returned an error: idle before producing output (${sessionUrlFor(launched.id)})`,
+            )
+          }
+        } else {
+          idleEmptyPolls = 0
+        }
+      } else {
+        idleEmptyPolls = 0
       }
 
       if (page.sessionStatus === 'archived') {
