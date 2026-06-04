@@ -57,6 +57,7 @@ import type { AgentCallOptions, AgentRunResult } from './types.js'
 import {
   WORKFLOW_AGENT_RETRY_ABORT_REASON,
   WORKFLOW_AGENT_SKIP_ABORT_REASON,
+  WORKFLOW_AGENT_STALL_ABORT_REASON,
 } from './types.js'
 import type { RunOneAgent } from './runtime.js'
 
@@ -64,6 +65,7 @@ import type { RunOneAgent } from './runtime.js'
 export const MAX_SCHEMA_RETRIES = 2
 export const DEFAULT_REMOTE_AGENT_TIMEOUT_MS = 30 * 60 * 1000
 export const DEFAULT_REMOTE_AGENT_POLL_INTERVAL_MS = 5 * 1000
+export const DEFAULT_LOCAL_AGENT_STALL_TIMEOUT_MS = 60 * 1000
 
 export class WorkflowSchemaError extends Error {
   constructor(message: string)
@@ -139,6 +141,13 @@ export type WorkflowAgentRunnerDeps = {
     controller: AbortController,
   ) => () => void
   remoteAgentRunner?: WorkflowRemoteAgentRunner
+  runAgentImpl?: typeof runAgent
+  localAgentStallTimeoutMs?: number | null
+}
+
+type WorkflowAgentStallWatch = {
+  reset(): void
+  dispose(): void
 }
 
 function resolveAgentDefinition(
@@ -697,7 +706,41 @@ export function createWorkflowAgentRunner(
     abortController,
     registerAgentController,
     remoteAgentRunner = runHostedRemoteWorkflowAgent,
+    runAgentImpl = runAgent,
+    localAgentStallTimeoutMs = DEFAULT_LOCAL_AGENT_STALL_TIMEOUT_MS,
   } = deps
+
+  function createStallWatch(
+    agentAbortController: AbortController | undefined,
+  ): WorkflowAgentStallWatch | null {
+    if (
+      !agentAbortController ||
+      localAgentStallTimeoutMs == null ||
+      localAgentStallTimeoutMs <= 0
+    ) {
+      return null
+    }
+
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const dispose = () => {
+      if (timer) clearTimeout(timer)
+      timer = null
+    }
+    const reset = () => {
+      dispose()
+      if (agentAbortController.signal.aborted) return
+      timer = setTimeout(() => {
+        if (!agentAbortController.signal.aborted) {
+          agentAbortController.abort(WORKFLOW_AGENT_STALL_ABORT_REASON)
+        }
+      }, localAgentStallTimeoutMs)
+    }
+    reset()
+    return {
+      reset,
+      dispose,
+    }
+  }
 
   /** Run a single agent turn to completion; return its final text + tokens. */
   async function runOnce(
@@ -718,8 +761,9 @@ export function createWorkflowAgentRunner(
     const agentId = createAgentId()
     const promptMessages: Message[] = [createUserMessage({ content: promptText })]
     const messages: Message[] = []
+    const stallWatch = createStallWatch(agentAbortController)
     const run = () =>
-      runAgent({
+      runAgentImpl({
         agentDefinition,
         promptMessages,
         toolUseContext,
@@ -739,12 +783,17 @@ export function createWorkflowAgentRunner(
           ? { agentId, abortController: agentAbortController }
           : { agentId },
         transcriptSubdir: `workflows/${runId}`,
+        onQueryProgress: stallWatch?.reset,
       })
     const stream = worktreePath
       ? runWithCwdOverride(worktreePath, run)
       : run()
-    for await (const message of stream) {
-      messages.push(message)
+    try {
+      for await (const message of stream) {
+        messages.push(message)
+      }
+    } finally {
+      stallWatch?.dispose()
     }
     const structuredOutput = extractStructuredOutputFromMessages(messages)
     const result = finalizeAgentTool(messages, agentId, {
@@ -814,6 +863,19 @@ export function createWorkflowAgentRunner(
               toolCalls: 0,
               ok: false,
               status: 'retry_requested',
+            }
+          }
+          if (
+            agentAbortController.signal.reason ===
+            WORKFLOW_AGENT_STALL_ABORT_REASON
+          ) {
+            return {
+              value: null,
+              tokens: 0,
+              toolCalls: 0,
+              ok: false,
+              status: 'stalled',
+              stallTimeoutMs: localAgentStallTimeoutMs ?? 0,
             }
           }
         }
@@ -926,6 +988,16 @@ export function createWorkflowAgentRunner(
             toolCalls: 0,
             ok: false,
             status: 'retry_requested',
+          }
+        }
+        if (agentAbortController.signal.reason === WORKFLOW_AGENT_STALL_ABORT_REASON) {
+          return {
+            value: null,
+            tokens: 0,
+            toolCalls: 0,
+            ok: false,
+            status: 'stalled',
+            stallTimeoutMs: localAgentStallTimeoutMs ?? 0,
           }
         }
       }

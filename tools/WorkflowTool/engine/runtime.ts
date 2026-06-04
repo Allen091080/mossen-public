@@ -36,6 +36,7 @@ import type {
 
 /** Lifetime cap on agent() calls — a backstop far above any real workflow. */
 export const MAX_AGENTS_PER_RUN = 1000
+export const DEFAULT_WORKFLOW_AGENT_MAX_ATTEMPTS = 3
 
 export class WorkflowAgentCapError extends Error {
   constructor(cap: number) {
@@ -44,6 +45,41 @@ export class WorkflowAgentCapError extends Error {
     )
     this.name = 'WorkflowAgentCapError'
   }
+}
+
+type RetryableAgentStatus = 'retry_requested' | 'stalled'
+
+function retryableStatusReason(status: RetryableAgentStatus): string {
+  return status === 'stalled'
+    ? 'stalled (no progress)'
+    : 'retry requested by user'
+}
+
+export function formatWorkflowAgentStallRetryLog(params: {
+  label: string
+  stallTimeoutMs: number
+  attempt: number
+  maxAttempts: number
+}): string {
+  const seconds = Math.max(0, Math.round(params.stallTimeoutMs / 1000))
+  const suffix =
+    params.attempt + 1 >= params.maxAttempts ? ' on the last attempt' : ''
+  return `[stall] agent "${params.label}" after ${seconds}s — retrying (${params.attempt}/${params.maxAttempts})${suffix}`
+}
+
+export function formatWorkflowAgentAbandonedMessage(params: {
+  attempts: readonly RetryableAgentStatus[]
+  maxAttempts: number
+  stallTimeoutMs?: number
+}): string {
+  if (params.attempts.every(status => status === 'retry_requested')) {
+    return `agent abandoned: user requested retry on all ${params.maxAttempts} attempts`
+  }
+  if (params.attempts.every(status => status === 'stalled')) {
+    return `agent stalled on all ${params.maxAttempts} attempts (no progress for ${params.stallTimeoutMs ?? 0}ms each)`
+  }
+  const lastStatus = params.attempts.at(-1) ?? 'retry_requested'
+  return `agent abandoned after ${params.maxAttempts} attempts (${retryableStatusReason(lastStatus)})`
 }
 
 export type RunOneAgent = (
@@ -84,6 +120,7 @@ export type WorkflowRuntimeConfig = {
     meta: { phase: string | null; label: string },
   ) => Promise<void>
   maxAgents?: number
+  maxAgentAttempts?: number
 }
 
 export type WorkflowRuntime = {
@@ -215,12 +252,14 @@ export function createWorkflowRuntime(
     getAgentControl,
     waitForResume,
     maxAgents = MAX_AGENTS_PER_RUN,
+    maxAgentAttempts = DEFAULT_WORKFLOW_AGENT_MAX_ATTEMPTS,
   } = config
 
   let currentPhase: ResolvedWorkflowPhase | null = null
   let agentCounter = 0
   let toolCallCounter = 0
   let callIndex = 0
+  const retryAttemptLimit = Math.max(1, Math.floor(maxAgentAttempts))
   const failures: string[] = []
 
   function recordFailure(message: string): void {
@@ -325,6 +364,7 @@ export function createWorkflowRuntime(
         message: `workflow journal started hit respawn: agent #${startedHit.agentNumber} ${startedHit.label}`,
       })
     }
+    const retryableAttempts: RetryableAgentStatus[] = []
     for (;;) {
       journal?.start(index, hash, {
         label,
@@ -371,10 +411,41 @@ export function createWorkflowRuntime(
         throw err
       }
 
-      if (result.status === 'retry_requested') {
+      if (
+        result.status === 'retry_requested' ||
+        result.status === 'stalled'
+      ) {
+        retryableAttempts.push(result.status)
+        if (retryableAttempts.length >= retryAttemptLimit) {
+          progress({
+            kind: 'agent_end',
+            label,
+            phase,
+            agentNumber,
+            ok: false,
+            status: 'failed',
+            tokens: result.tokens,
+            toolCalls: result.toolCalls ?? 0,
+          })
+          throw new Error(
+            formatWorkflowAgentAbandonedMessage({
+              attempts: retryableAttempts,
+              maxAttempts: retryAttemptLimit,
+              stallTimeoutMs: result.stallTimeoutMs,
+            }),
+          )
+        }
         progress({
           kind: 'log',
-          message: `retrying agent #${agentNumber}: ${label}`,
+          message:
+            result.status === 'stalled'
+              ? formatWorkflowAgentStallRetryLog({
+                  label,
+                  stallTimeoutMs: result.stallTimeoutMs ?? 0,
+                  attempt: retryableAttempts.length,
+                  maxAttempts: retryAttemptLimit,
+                })
+              : `retrying agent #${agentNumber}: ${label}`,
         })
         continue
       }

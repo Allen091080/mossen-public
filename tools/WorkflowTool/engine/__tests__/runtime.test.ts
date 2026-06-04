@@ -5,6 +5,8 @@ import { createJournal, hashCall } from '../journal.js'
 import {
   createWorkflowRuntime,
   deriveLabel,
+  formatWorkflowAgentAbandonedMessage,
+  formatWorkflowAgentStallRetryLog,
   resolvePhase,
   WorkflowAgentCapError,
   type RunOneAgent,
@@ -36,6 +38,7 @@ function harness(
     logPrefix?: string
     shouldSkipAgent?: (agentNumber: number) => boolean
     getAgentControl?: (agentNumber: number) => WorkflowAgentControlAction | null
+    maxAgentAttempts?: number
     waitForResume?: (
       agentNumber: number,
       meta: { phase: string | null; label: string },
@@ -55,6 +58,7 @@ function harness(
     signal: opts.signal,
     journal: opts.journal,
     maxAgents: opts.maxAgents,
+    maxAgentAttempts: opts.maxAgentAttempts,
     runNestedWorkflow: opts.runNestedWorkflow,
     forcedPhase: opts.forcedPhase,
     ignorePhaseChanges: opts.ignorePhaseChanges,
@@ -293,6 +297,100 @@ describe('runtime.agent', () => {
       'agent_end',
     ])
     expect((events.at(-1) as AgentEndEvent).status).toBe('completed')
+  })
+
+  test('retries a stalled agent with the official workflow stall log', async () => {
+    let calls = 0
+    const { rt, events, budget } = harness(
+      async () => {
+        calls++
+        if (calls === 1) {
+          return {
+            value: null,
+            tokens: 0,
+            toolCalls: 0,
+            ok: false,
+            status: 'stalled',
+            stallTimeoutMs: 1_000,
+          }
+        }
+        return { value: 'recovered', tokens: 7, ok: true }
+      },
+      { maxAgentAttempts: 3 },
+    )
+    const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
+
+    expect(await agent('task', { label: 'slow-agent' })).toBe('recovered')
+    expect(calls).toBe(2)
+    expect(budget.spent()).toBe(7)
+    expect(events.filter(e => e.kind === 'log')).toEqual([
+      {
+        kind: 'log',
+        message: formatWorkflowAgentStallRetryLog({
+          label: 'slow-agent',
+          stallTimeoutMs: 1_000,
+          attempt: 1,
+          maxAttempts: 3,
+        }),
+      },
+    ])
+    expect((events.at(-1) as AgentEndEvent).status).toBe('completed')
+  })
+
+  test('abandons an agent that stalls on every attempt', async () => {
+    let calls = 0
+    const { rt, events } = harness(
+      async () => {
+        calls++
+        return {
+          value: null,
+          tokens: 0,
+          toolCalls: 0,
+          ok: false,
+          status: 'stalled',
+          stallTimeoutMs: 2_500,
+        }
+      },
+      { maxAgentAttempts: 2 },
+    )
+    const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
+
+    await expect(agent('task', { label: 'stuck-agent' })).rejects.toThrow(
+      formatWorkflowAgentAbandonedMessage({
+        attempts: ['stalled', 'stalled'],
+        maxAttempts: 2,
+        stallTimeoutMs: 2_500,
+      }),
+    )
+    expect(calls).toBe(2)
+    expect((events.at(-1) as AgentEndEvent).status).toBe('failed')
+  })
+
+  test('abandons an agent after repeated user retry requests', async () => {
+    let calls = 0
+    const { rt, events } = harness(
+      async () => {
+        calls++
+        return {
+          value: null,
+          tokens: 0,
+          toolCalls: 0,
+          ok: false,
+          status: 'retry_requested',
+        }
+      },
+      { maxAgentAttempts: 2 },
+    )
+    const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
+
+    await expect(agent('task')).rejects.toThrow(
+      formatWorkflowAgentAbandonedMessage({
+        attempts: ['retry_requested', 'retry_requested'],
+        maxAttempts: 2,
+      }),
+    )
+    expect(calls).toBe(2)
+    expect((events.at(-1) as AgentEndEvent).status).toBe('failed')
   })
 })
 

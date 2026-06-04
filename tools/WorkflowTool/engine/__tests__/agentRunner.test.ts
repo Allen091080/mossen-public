@@ -15,6 +15,7 @@ import {
   runHostedRemoteWorkflowAgent,
   withStructuredOutputAllowed,
   withStructuredOutputTool,
+  type WorkflowAgentRunnerDeps,
   WorkflowSchemaError,
 } from '../agentRunner.js'
 
@@ -186,6 +187,49 @@ describe('workflow local agent resolution', () => {
     ).rejects.toThrow(
       "agent({agentType}): agent type 'Missing' not found. Available agents: Explore",
     )
+  })
+})
+
+describe('workflow local agent stall detection', () => {
+  test('returns a stalled control result when the subagent makes no progress', async () => {
+    const neverProgressRunAgent: NonNullable<
+      WorkflowAgentRunnerDeps['runAgentImpl']
+    > = async function* ({ override }) {
+      await new Promise<void>((_resolve, reject) => {
+        const signal = override?.abortController?.signal
+        if (!signal) return
+        signal.addEventListener(
+          'abort',
+          () => reject(new Error('agent aborted')),
+          { once: true },
+        )
+      })
+    }
+    const runner = createWorkflowAgentRunner({
+      toolUseContext: workflowRunnerContext({
+        agents: [testAgent('general-purpose')],
+      }),
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      runId: 'wf-test',
+      abortController: new AbortController(),
+      localAgentStallTimeoutMs: 5,
+      runAgentImpl: neverProgressRunAgent,
+    })
+
+    const result = await runner('stall forever', {}, {
+      agentNumber: 1,
+      phase: null,
+      label: 'stall-check',
+    })
+
+    expect(result).toEqual({
+      value: null,
+      tokens: 0,
+      toolCalls: 0,
+      ok: false,
+      status: 'stalled',
+      stallTimeoutMs: 5,
+    })
   })
 })
 

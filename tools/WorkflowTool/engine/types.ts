@@ -77,10 +77,13 @@ export type AgentRunResult = {
   toolCalls?: number
   ok: boolean
   /** Internal control result for user-driven workflow task controls. */
-  status?: 'completed' | 'failed' | 'skipped' | 'retry_requested'
+  status?: 'completed' | 'failed' | 'skipped' | 'retry_requested' | 'stalled'
+  /** Idle timeout that caused a stalled result, when status is 'stalled'. */
+  stallTimeoutMs?: number
 }
 
 export type WorkflowAgentControlAction = 'skip' | 'retry'
 
 export const WORKFLOW_AGENT_SKIP_ABORT_REASON = 'workflow_agent_skipped'
 export const WORKFLOW_AGENT_RETRY_ABORT_REASON = 'workflow_agent_retry'
+export const WORKFLOW_AGENT_STALL_ABORT_REASON = 'workflow_agent_stalled'
