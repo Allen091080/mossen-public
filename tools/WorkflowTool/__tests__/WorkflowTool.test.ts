@@ -223,6 +223,29 @@ return 'ok'
   })
 })
 
+describe('WorkflowTool scriptPath guards', () => {
+  it('surfaces the official missing-file error before launching a workflow', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wf-missing-tool-'))
+    const scriptPath = join(dir, 'missing.js')
+    try {
+      await expect(
+        WorkflowTool.call!(
+          {
+            scriptPath,
+          },
+          {
+            abortController: new AbortController(),
+            setAppState: () => {},
+          } as never,
+          async () => ({ behavior: 'allow' }) as never,
+        ),
+      ).rejects.toThrow(`Workflow script file not found: ${scriptPath}`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('WorkflowTool syntax preflight', () => {
   it('returns an official error receipt without launching a task', async () => {
     let setAppStateCalls = 0

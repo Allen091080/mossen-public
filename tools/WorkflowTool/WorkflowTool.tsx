@@ -1,5 +1,4 @@
 import { Box, Text } from '../../ink.js'
-import { readFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { z } from 'zod/v4'
@@ -53,6 +52,7 @@ import {
   buildNamedWorkflowPermissionUpdates,
   normalizeWorkflowPermissionRuleContent,
 } from './permissionRules.js'
+import { readWorkflowScriptFile } from './scriptFile.js'
 
 /** Default wall-clock ceiling for a whole workflow run (30 minutes). */
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
@@ -200,13 +200,7 @@ async function readSource(input: WorkflowInput): Promise<string> {
     return input.script
   }
   if (typeof input.scriptPath === 'string' && input.scriptPath.trim()) {
-    try {
-      return readFileSync(input.scriptPath, 'utf8')
-    } catch (err) {
-      throw new Error(
-        `Could not read workflow scriptPath "${input.scriptPath}": ${(err as Error).message}`,
-      )
-    }
+    return readWorkflowScriptFile(input.scriptPath)
   }
   if (typeof input.name === 'string' && input.name.trim()) {
     return (await resolveNamedWorkflowSource(input.name)).source
@@ -224,13 +218,7 @@ function normalizeResumeRunId(value: unknown): string | null {
 }
 
 function readSourceFile(scriptPath: string): string {
-  try {
-    return readFileSync(scriptPath, 'utf8')
-  } catch (err) {
-    throw new Error(
-      `Could not read workflow scriptPath "${scriptPath}": ${(err as Error).message}`,
-    )
-  }
+  return readWorkflowScriptFile(scriptPath)
 }
 
 function workflowTranscriptDir(runId: string): string {

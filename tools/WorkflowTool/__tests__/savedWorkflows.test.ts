@@ -15,6 +15,7 @@ import {
   getWorkflowCommands,
   PROJECT_WORKFLOWS_SUBDIR,
 } from '../savedWorkflows.js'
+import { MAX_WORKFLOW_SCRIPT_FILE_BYTES } from '../scriptFile.js'
 
 // Tests target loadWorkflowCommandsFrom (the UNGATED core) so the disk-read +
 // meta-parse contract is asserted for real regardless of the WORKFLOW_SCRIPTS
@@ -82,6 +83,19 @@ describe('savedWorkflows loader (S3)', () => {
     expect(cmds.find(c => c.name === 'good')).toBeDefined()
     // 'bad.js' has no meta block → extractMeta throws → skipped.
     expect(cmds.every(c => c.name !== 'bad')).toBe(true)
+  })
+
+  test('an oversized workflow file is skipped, not fatal', () => {
+    writeFileSync(join(wfDir, 'good.js'), META('good', 'ok'))
+    writeFileSync(
+      join(wfDir, 'oversized.js'),
+      'x'.repeat(MAX_WORKFLOW_SCRIPT_FILE_BYTES + 1),
+    )
+
+    const cmds = loadWorkflowCommandsFrom(root)
+
+    expect(cmds.find(c => c.name === 'good')).toBeDefined()
+    expect(cmds.every(c => c.name !== 'oversized')).toBe(true)
   })
 
   test('non-.js files are ignored', () => {

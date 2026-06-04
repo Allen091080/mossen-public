@@ -17,7 +17,6 @@
 import {
   existsSync,
   readdirSync,
-  readFileSync,
   realpathSync,
   statSync,
 } from 'node:fs'
@@ -34,6 +33,7 @@ import { loadAllPluginsCacheOnly } from '../../utils/plugins/pluginLoader.js'
 import { isWorkflowRuntimeEnabled } from '../../utils/workflowAvailability.js'
 import { loadBundledWorkflows } from './bundled/index.js'
 import { extractMeta } from './engine/meta.js'
+import { readWorkflowScriptFile } from './scriptFile.js'
 
 /** Project-scoped saved workflows live here (relative to the project root). */
 export const PROJECT_WORKFLOWS_SUBDIR = join('.mossen', 'workflows')
@@ -92,7 +92,7 @@ function readWorkflowDir(
   for (const file of entries) {
     const scriptPath = join(dir, file)
     try {
-      const source = readFileSync(scriptPath, 'utf8')
+      const source = readWorkflowScriptFile(scriptPath)
       const { meta } = extractMeta(source)
       out.push({
         name: meta.name,
@@ -122,7 +122,7 @@ function readPluginWorkflowFile(
   plugin: WorkflowPluginRef,
 ): SavedWorkflow | null {
   try {
-    const source = readFileSync(scriptPath, 'utf8')
+    const source = readWorkflowScriptFile(scriptPath)
     const { meta } = extractMeta(source)
     return {
       name: meta.name,

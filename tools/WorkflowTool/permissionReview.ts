@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import { getProjectRoot } from '../../bootstrap/state.js'
 import { extractMeta } from './engine/meta.js'
 import {
@@ -11,6 +10,7 @@ import {
   resolveWorkflowFromSources,
   type SavedWorkflowRef,
 } from './savedWorkflows.js'
+import { readWorkflowScriptFile } from './scriptFile.js'
 import { workflowUsageConsentHash } from './usageConsent.js'
 
 const MAX_PREVIEW_CHARS = 1200
@@ -69,7 +69,7 @@ function sourceFromWorkflowRef(
   if (ref.source) return { source: ref.source, readError: null }
   if (ref.scriptPath) {
     try {
-      return { source: readFileSync(ref.scriptPath, 'utf8'), readError: null }
+      return { source: readWorkflowScriptFile(ref.scriptPath), readError: null }
     } catch (err) {
       return { source: null, readError: (err as Error).message }
     }
@@ -100,7 +100,7 @@ function resolveWorkflowSource(input: WorkflowPermissionInput): {
       return {
         sourceKind: 'file',
         sourceLabel: input.scriptPath,
-        source: readFileSync(input.scriptPath, 'utf8'),
+        source: readWorkflowScriptFile(input.scriptPath),
         readError: null,
       }
     } catch (err) {

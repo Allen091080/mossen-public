@@ -72,6 +72,25 @@ describe('buildWorkflowPermissionReview', () => {
     expect(review.meta?.description).toBe('Validate a change before shipping')
   })
 
+  test('surfaces official scriptPath read errors in the review payload', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mossen-workflow-review-missing-'))
+    const scriptPath = join(dir, 'missing.js')
+    try {
+      const review = buildWorkflowPermissionReview({ scriptPath })
+
+      expect(review.sourceKind).toBe('file')
+      expect(review.sourceLabel).toBe(scriptPath)
+      expect(review.meta).toBeNull()
+      expect(review.metaError).toBe(
+        `Workflow script file not found: ${scriptPath}`,
+      )
+      expect(review.scriptSource).toBeNull()
+      expect(review.scriptPreview).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('loads workflow metadata from name', () => {
     const priorRoot = getProjectRoot()
     const root = mkdtempSync(join(tmpdir(), 'mossen-workflow-name-review-'))
