@@ -51,6 +51,8 @@ type WorkflowRunItem =
 
 type SaveScope = 'project' | 'user'
 
+export type WorkflowDialogMode = 'list' | 'run' | 'phase' | 'agent' | 'save'
+
 type WorkflowMainViewState =
   | { mode: 'list' }
   | { mode: 'run'; runId: string }
@@ -175,7 +177,13 @@ function selectedAgent(
   return agents[selectedIndex] ?? null
 }
 
-function inputGuide(mode: ViewState['mode']) {
+export function shouldRouteWorkflowAgentControl(
+  mode: WorkflowDialogMode,
+): boolean {
+  return mode === 'phase' || mode === 'agent'
+}
+
+function inputGuide(mode: WorkflowDialogMode) {
   return () => (
     <Byline>
       {mode === 'save' ? (
@@ -344,7 +352,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
       return
     }
     if (_input === 'x' && liveRun) {
-      if (view.mode === 'agent' && currentAgent) {
+      if (shouldRouteWorkflowAgentControl(view.mode) && currentAgent) {
         skipWorkflowAgent(liveRun.task.id, currentAgent.agentNumber, setAppState)
         setMessage(
           t('cmd.workflows.agentStopped', {
@@ -358,7 +366,21 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
       }
       return
     }
-    if (_input === 'r' && liveRun && currentAgent) {
+    if (
+      _input === 'r' &&
+      liveRun &&
+      shouldRouteWorkflowAgentControl(view.mode) &&
+      currentAgent
+    ) {
+      if (currentAgent.status !== 'running') {
+        setMessage(
+          t('cmd.workflows.agentNotRunning', {
+            runId: liveRun.runId,
+            agentNumber: String(currentAgent.agentNumber),
+          }),
+        )
+        return
+      }
       retryWorkflowAgent(liveRun.task.id, currentAgent.agentNumber, setAppState)
       setMessage(
         t('cmd.workflows.agentRetryQueued', {

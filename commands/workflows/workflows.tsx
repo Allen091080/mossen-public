@@ -415,6 +415,17 @@ function hasVisibleAgent(
   return agents.length === 0 || agents.some(agent => agent.agentNumber === agentNumber)
 }
 
+function isRetryableWorkflowAgent(
+  task: WorkflowTaskLookup['task'],
+  agentNumber: number,
+): boolean {
+  const agents = task.agents ?? []
+  if (agents.length === 0) return true
+  return agents.some(
+    agent => agent.agentNumber === agentNumber && agent.status === 'running',
+  )
+}
+
 function stopAgentRun(
   runId: string | undefined,
   agentId: string | undefined,
@@ -462,6 +473,12 @@ function retryAgentRun(
   }
   if (found.task.status !== 'running') {
     return t('cmd.workflows.taskNotRunning', { runId })
+  }
+  if (!isRetryableWorkflowAgent(found.task, agentNumber)) {
+    return t('cmd.workflows.agentNotRunning', {
+      runId,
+      agentNumber: String(agentNumber),
+    })
   }
   const setAppState = context.setAppStateForTasks ?? context.setAppState
   retryWorkflowAgent(found.taskId, agentNumber, setAppState)

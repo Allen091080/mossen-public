@@ -97,6 +97,7 @@ export const STRINGS_ZH = {
   'cmd.workflows.agentStopped': '已请求停止工作流 {runId} 的 agent #{agentNumber}。',
   'cmd.workflows.agentRetryQueued': '已请求重启工作流 {runId} 的 agent #{agentNumber}。',
   'cmd.workflows.agentNotFound': '工作流 {runId} 中没有可见的 agent #{agentNumber}。',
+  'cmd.workflows.agentNotRunning': '工作流 {runId} 的 agent #{agentNumber} 未在运行。',
   'cmd.workflows.agentControlsHint': '控制：/workflows stop-agent {runId} {agentNumber}、/workflows retry-agent {runId} {agentNumber}、/workflows <runId>。',
   'cmd.workflows.resumed': '已排队恢复工作流 {runId}。',
   'cmd.workflows.alreadyPaused': '工作流任务 {runId} 已经处于暂停状态。',

@@ -3,6 +3,7 @@ import { isValidElement } from 'react'
 import { getTaskOutputPath } from '../../../utils/task/diskOutput.js'
 import { buildWorkflowResumeNextInput, call } from '../workflows.js'
 import { deriveWorkflowSaveName } from '../saveWorkflow.js'
+import { shouldRouteWorkflowAgentControl } from '../WorkflowRunsDialog.js'
 
 function workflowCommandContext(state: { tasks: Record<string, unknown> }) {
   const setAppState = (updater: (prev: typeof state) => typeof state) => {
@@ -108,6 +109,14 @@ describe('/workflows resume', () => {
 
     expect(isValidElement(result)).toBe(true)
     expect(message).toBe('')
+  })
+
+  test('interactive controls target agents only when an agent is selected', () => {
+    expect(shouldRouteWorkflowAgentControl('phase')).toBe(true)
+    expect(shouldRouteWorkflowAgentControl('agent')).toBe(true)
+    expect(shouldRouteWorkflowAgentControl('run')).toBe(false)
+    expect(shouldRouteWorkflowAgentControl('list')).toBe(false)
+    expect(shouldRouteWorkflowAgentControl('save')).toBe(false)
   })
 
   test('queues an official-shaped Workflow tool call with scriptPath, resumeFromRunId, and args', () => {
@@ -267,13 +276,37 @@ describe('/workflows resume', () => {
         message = nextMessage
       },
       workflowCommandContext(state) as never,
+      `retry-agent ${runId} 1`,
+    )
+
+    expect(message).toContain(runId)
+    expect(message).toContain('#1')
+    expect(state.tasks[taskId]?.agents?.[0]?.status).toBe('retry_requested')
+    expect(state.tasks[taskId]?.summary).toBe('retry requested for agent #1')
+  })
+
+  test('retry-agent only restarts a running agent', async () => {
+    const taskId = 'wtaskcmd_retry_completed_agent'
+    const runId = 'wf_cmd_retry_completed_agent'
+    const state = {
+      tasks: {
+        [taskId]: runningWorkflowTask({ taskId, runId }),
+      },
+    }
+    let message = ''
+
+    await call(
+      nextMessage => {
+        message = nextMessage
+      },
+      workflowCommandContext(state) as never,
       `retry-agent ${runId} 2`,
     )
 
     expect(message).toContain(runId)
     expect(message).toContain('#2')
-    expect(state.tasks[taskId]?.agents?.[1]?.status).toBe('retry_requested')
-    expect(state.tasks[taskId]?.summary).toBe('retry requested for agent #2')
+    expect(state.tasks[taskId]?.agents?.[1]?.status).toBe('completed')
+    expect(state.tasks[taskId]?.summary).toBe('demo')
   })
 
   test('resume-task queues Workflow input with the workflow run id, not the task id', async () => {

@@ -118,6 +118,7 @@ export const STRINGS_EN = {
   'cmd.workflows.agentStopped': 'Stop requested for workflow {runId} agent #{agentNumber}.',
   'cmd.workflows.agentRetryQueued': 'Restart requested for workflow {runId} agent #{agentNumber}.',
   'cmd.workflows.agentNotFound': 'No visible agent #{agentNumber} found for workflow {runId}.',
+  'cmd.workflows.agentNotRunning': 'Workflow {runId} agent #{agentNumber} is not running.',
   'cmd.workflows.agentControlsHint': 'Controls: /workflows stop-agent {runId} {agentNumber}, /workflows retry-agent {runId} {agentNumber}, /workflows <runId>.',
   'cmd.workflows.resumed': 'Queued workflow resume for {runId}.',
   'cmd.workflows.alreadyPaused': 'Workflow task {runId} is already paused.',
