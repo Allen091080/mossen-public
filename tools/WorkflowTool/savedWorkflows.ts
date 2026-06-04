@@ -70,6 +70,7 @@ type SavedWorkflow = {
   description: string
   scriptPath?: string
   source?: string
+  isEnabled?: () => boolean
   scope: 'project' | 'user' | 'plugin' | 'bundled'
   plugin?: {
     name: string
@@ -216,8 +217,13 @@ export function loadBundledWorkflowRefs(): SavedWorkflowRef[] {
     commandName: wf.name,
     description: wf.description,
     source: wf.source,
+    ...(wf.isEnabled ? { isEnabled: wf.isEnabled } : {}),
     scope: 'bundled',
   }))
+}
+
+export function isWorkflowRefEnabled(wf: SavedWorkflowRef): boolean {
+  return wf.isEnabled?.() ?? true
 }
 
 /**
@@ -233,13 +239,21 @@ function toCommand(wf: SavedWorkflow): Command {
     hasUserSpecifiedDescription: true,
     // 'managed' = a non-skill, non-plugin command loaded from disk; `kind:
     // 'workflow'` badges it as workflow-backed in autocomplete.
-    loadedFrom: wf.scope === 'plugin' ? 'plugin' : 'managed',
+    loadedFrom:
+      wf.scope === 'plugin'
+        ? 'plugin'
+        : wf.scope === 'bundled'
+          ? 'bundled'
+          : 'managed',
     kind: 'workflow',
+    ...(wf.isEnabled ? { isEnabled: wf.isEnabled } : {}),
     // Map the saved scope onto the command settings-source enum so listing /
     // dedupe treat project-scoped workflows like other project-sourced commands.
     source:
       wf.scope === 'plugin'
         ? 'plugin'
+        : wf.scope === 'bundled'
+          ? 'bundled'
         : wf.scope === 'project'
           ? 'projectSettings'
           : 'userSettings',
@@ -354,7 +368,14 @@ export async function loadWorkflowRefsFromAllSources(
   projectRoot: string,
 ): Promise<SavedWorkflowRef[]> {
   const plugins = await loadEnabledWorkflowPlugins()
-  return getAllWorkflows(projectRoot, plugins)
+  return getEnabledWorkflows(projectRoot, plugins)
+}
+
+export function getEnabledWorkflows(
+  projectRoot: string,
+  plugins: readonly WorkflowPluginRef[] = [],
+): SavedWorkflowRef[] {
+  return getAllWorkflows(projectRoot, plugins).filter(isWorkflowRefEnabled)
 }
 
 export function resolveSavedWorkflow(
@@ -373,7 +394,7 @@ export function resolveWorkflowFromSources(
 ): SavedWorkflowRef | null {
   const wanted = name.trim()
   if (!wanted) return null
-  const workflows = getAllWorkflows(projectRoot, plugins)
+  const workflows = getEnabledWorkflows(projectRoot, plugins)
   return (
     workflows.find(wf => wf.commandName === wanted) ??
     workflows.find(wf => wf.name === wanted) ??

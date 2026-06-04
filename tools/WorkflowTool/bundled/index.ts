@@ -1,7 +1,10 @@
+import { isWebSearchAvailable } from '../../WebSearchTool/availability.js'
+
 export type BundledWorkflowDefinition = {
   name: string
   description: string
   source: string
+  isEnabled?: () => boolean
 }
 
 const DEEP_RESEARCH_SOURCE = `export const meta = {
@@ -217,6 +220,7 @@ export function loadBundledWorkflows(): BundledWorkflowDefinition[] {
       description:
         'Investigate a question across multiple search angles, cross-check claims, and return a cited report.',
       source: DEEP_RESEARCH_SOURCE,
+      isEnabled: isWebSearchAvailable,
     },
   ]
 }

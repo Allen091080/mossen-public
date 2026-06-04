@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { isCommandEnabled } from '../../../types/command.js'
+import { isWebSearchAvailableFor } from '../../WebSearchTool/availability.js'
 import {
+  getEnabledWorkflows,
   getProjectWorkflowsDir,
   getLegacyProjectWorkflowsDir,
   getLegacyUserWorkflowsDir,
@@ -29,17 +32,50 @@ import { MAX_WORKFLOW_SCRIPT_FILE_BYTES } from '../scriptFile.js'
 const META = (name: string, desc: string) =>
   `export const meta = { name: '${name}', description: '${desc}' }\nreturn 1\n`
 
+const WEB_SEARCH_ENV_KEYS = [
+  'MOSSEN_CODE_USE_BEDROCK',
+  'MOSSEN_CODE_USE_VERTEX',
+  'MOSSEN_CODE_USE_FOUNDRY',
+  'MOSSEN_CODE_MODEL',
+] as const
+
+type WebSearchEnvKey = (typeof WEB_SEARCH_ENV_KEYS)[number]
+let previousWebSearchEnv: Partial<Record<WebSearchEnvKey, string>>
+
+function clearWebSearchProviderEnv(): void {
+  for (const key of WEB_SEARCH_ENV_KEYS) {
+    delete process.env[key]
+  }
+}
+
+function restoreWebSearchProviderEnv(): void {
+  for (const key of WEB_SEARCH_ENV_KEYS) {
+    const value = previousWebSearchEnv[key]
+    if (value === undefined) {
+      delete process.env[key]
+    } else {
+      process.env[key] = value
+    }
+  }
+}
+
 describe('savedWorkflows loader (S3)', () => {
   let root: string
   let wfDir: string
 
   beforeEach(() => {
+    previousWebSearchEnv = {}
+    for (const key of WEB_SEARCH_ENV_KEYS) {
+      previousWebSearchEnv[key] = process.env[key]
+    }
+    clearWebSearchProviderEnv()
     root = mkdtempSync(join(tmpdir(), 'wf-saved-'))
     wfDir = getProjectWorkflowsDir(root)
     mkdirSync(wfDir, { recursive: true })
   })
   afterEach(() => {
     rmSync(root, { recursive: true, force: true })
+    restoreWebSearchProviderEnv()
   })
 
   test('dir layout uses official-compatible project/user dirs and legacy fallbacks', () => {
@@ -202,6 +238,7 @@ describe('savedWorkflows loader (S3)', () => {
     expect(bundled.map(wf => wf.commandName)).toEqual(['deep-research'])
     expect(bundled.every(wf => wf.scope === 'bundled')).toBe(true)
     expect(bundled.every(wf => typeof wf.source === 'string')).toBe(true)
+    expect(bundled[0]?.isEnabled?.()).toBe(true)
 
     const workflows = getAllWorkflows(root)
     expect(workflows.map(wf => wf.commandName)).toContain('deep-research')
@@ -214,11 +251,44 @@ describe('savedWorkflows loader (S3)', () => {
       c => c.name === 'deep-research',
     )
     expect(deepResearchCommand?.type).toBe('prompt')
+    expect((deepResearchCommand as { loadedFrom?: string }).loadedFrom).toBe(
+      'bundled',
+    )
+    expect((deepResearchCommand as { source?: string }).source).toBe('bundled')
+    expect(isCommandEnabled(deepResearchCommand!)).toBe(true)
     const getPrompt = (deepResearchCommand as unknown as {
       getPromptForCommand: (a: string) => Promise<Array<{ type: string; text: string }>>
     }).getPromptForCommand
     const text = (await getPrompt('Node.js permissions')).map(b => b.text).join('')
     expect(text).toContain('bundled script named "deep-research"')
     expect(text).toContain('Node.js permissions')
+  })
+
+  test('bundled deep-research follows WebSearch availability', () => {
+    expect(isWebSearchAvailableFor('firstParty', 'any-model')).toBe(true)
+    expect(isWebSearchAvailableFor('foundry', 'any-model')).toBe(true)
+    expect(isWebSearchAvailableFor('vertex', 'mossen-sonnet-4')).toBe(true)
+    expect(isWebSearchAvailableFor('vertex', 'mossen-3-5-sonnet')).toBe(false)
+    expect(isWebSearchAvailableFor('bedrock', 'mossen-opus-4')).toBe(false)
+
+    process.env.MOSSEN_CODE_USE_BEDROCK = '1'
+
+    const bundled = loadBundledWorkflowRefs()
+    expect(bundled.map(wf => wf.commandName)).toEqual(['deep-research'])
+    expect(bundled[0]?.isEnabled?.()).toBe(false)
+
+    const deepResearchCommand = loadWorkflowCommandsFromSources(root).find(
+      c => c.name === 'deep-research',
+    )
+    expect(deepResearchCommand).toBeDefined()
+    expect(isCommandEnabled(deepResearchCommand!)).toBe(false)
+
+    expect(getAllWorkflows(root).map(wf => wf.commandName)).toContain(
+      'deep-research',
+    )
+    expect(getEnabledWorkflows(root).map(wf => wf.commandName)).not.toContain(
+      'deep-research',
+    )
+    expect(resolveWorkflowFromSources(root, 'deep-research')).toBeNull()
   })
 })
