@@ -450,8 +450,9 @@ ${body}
       )
 
       expect(result.data.status).toBe('async_launched')
-      expect(result.data.taskId).toMatch(/^wf_[a-z0-9]+$/)
-      expect(result.data.runId).toBe(result.data.taskId)
+      expect(result.data.taskId).toMatch(/^w[a-z0-9]{8}$/)
+      expect(result.data.runId).toMatch(/^wf_[a-z0-9]+$/)
+      expect(result.data.taskId).not.toBe(result.data.runId)
       expect(result.data.summary).toBe('Uses clock')
       expect(result.data.error).toBe(
         'Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable (breaks resume). Stamp results after the workflow returns, or pass timestamps via args.',
@@ -478,6 +479,9 @@ return new Date(2020, 0, 1).getFullYear()
     )
 
     expect(result.data.status).toBe('async_launched')
+    expect(result.data.taskId).toMatch(/^w[a-z0-9]{8}$/)
+    expect(result.data.runId).toMatch(/^wf_[a-z0-9]+$/)
+    expect(result.data.taskId).not.toBe(result.data.runId)
     expect(result.data.summary).toBe('Uses fixed date')
     expect(result.data.error).toBeUndefined()
     expect(result.data.scriptPath).toContain(`${result.data.runId}/script.js`)
@@ -502,8 +506,9 @@ import fs from 'fs'
     )
 
     expect(result.data.status).toBe('async_launched')
-    expect(result.data.taskId).toMatch(/^wf_[a-z0-9]+$/)
-    expect(result.data.runId).toBe(result.data.taskId)
+    expect(result.data.taskId).toMatch(/^w[a-z0-9]{8}$/)
+    expect(result.data.runId).toMatch(/^wf_[a-z0-9]+$/)
+    expect(result.data.taskId).not.toBe(result.data.runId)
     expect(result.data.summary).toBe('Has syntax error')
     expect(result.data.error).toContain('Workflow scripts cannot use import')
     expect(result.data.scriptPath).toBeUndefined()
@@ -552,8 +557,9 @@ return args.value * 2
       )
 
       expect(result.data.status).toBe('async_launched')
-      expect(result.data.taskId).toMatch(/^wf_[a-z0-9]+$/)
-      expect(result.data.runId).toBe(result.data.taskId)
+      expect(result.data.taskId).toMatch(/^w[a-z0-9]{8}$/)
+      expect(result.data.runId).toMatch(/^wf_[a-z0-9]+$/)
+      expect(result.data.taskId).not.toBe(result.data.runId)
       expect(result.data.summary).toBe('Run by name')
       expect(result.data.transcriptDir).toContain(
         `subagents/workflows/${result.data.runId}`,

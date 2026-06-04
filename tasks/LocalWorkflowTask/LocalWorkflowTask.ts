@@ -354,7 +354,9 @@ function enqueueWorkflowNotification(
 }
 
 export function registerWorkflowTask(params: {
+  taskId?: string
   runId: string
+  workflowRunId?: string
   workflowName: string
   description: string
   script?: string
@@ -368,8 +370,10 @@ export function registerWorkflowTask(params: {
   abortController: AbortController
   setAppState: SetAppState
 }): void {
+  const taskId = params.taskId ?? params.runId
+  const workflowRunId = params.workflowRunId ?? params.runId
   const base = createTaskStateBase(
-    params.runId,
+    taskId,
     'local_workflow',
     params.description,
     params.toolUseId,
@@ -378,8 +382,8 @@ export function registerWorkflowTask(params: {
     ...base,
     type: 'local_workflow',
     status: 'running',
-    runId: params.runId,
-    workflowRunId: params.runId,
+    runId: workflowRunId,
+    workflowRunId,
     workflowName: params.workflowName,
     script: params.script,
     prompt: params.script,
@@ -403,10 +407,10 @@ export function registerWorkflowTask(params: {
     logs: [],
     paused: false,
   }
-  pausedWorkflowTasks.delete(params.runId)
-  releasePauseWaiters(params.runId)
-  void initTaskOutput(params.runId)
-  appendLogLine(params.runId, `workflow started: ${params.workflowName}`)
+  pausedWorkflowTasks.delete(taskId)
+  releasePauseWaiters(taskId)
+  void initTaskOutput(taskId)
+  appendLogLine(taskId, `workflow started: ${params.workflowName}`)
   registerTask(task, params.setAppState)
 }
 

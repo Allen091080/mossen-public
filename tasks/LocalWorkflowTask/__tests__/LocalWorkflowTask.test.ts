@@ -100,6 +100,35 @@ describe('LocalWorkflowTask pause/resume controls', () => {
     expect(task.logs).toEqual([])
   })
 
+  test('registerWorkflowTask can separate background task id from workflow run id', () => {
+    const taskId = 'wtasksep1'
+    const runId = 'wf_register_separate'
+    let state = { tasks: {} } as unknown as AppState
+    const setAppState: SetAppState = updater => {
+      state = updater(state)
+    }
+
+    registerWorkflowTask({
+      taskId,
+      runId,
+      workflowRunId: runId,
+      workflowName: 'demo',
+      description: 'demo workflow',
+      script: 'export const meta = {}',
+      scriptPath: '/tmp/workflows/wf_register_separate/script.js',
+      abortController: new AbortController(),
+      setAppState,
+    })
+
+    expect(state.tasks[runId]).toBeUndefined()
+    const task = state.tasks[taskId] as LocalWorkflowTaskState
+    expect(task.id).toBe(taskId)
+    expect(task.runId).toBe(runId)
+    expect(task.workflowRunId).toBe(runId)
+    expect(task.outputFile).toBe(getTaskOutputPath(taskId))
+    expect(task.scriptPath).toBe('/tmp/workflows/wf_register_separate/script.js')
+  })
+
   test('buildWorkflowResumePrompt includes args like official paused workflow prompt', () => {
     expect(
       buildWorkflowResumePrompt({

@@ -25,6 +25,20 @@ import {
   pauseWorkflowTask,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
+type WorkflowTaskLookup = {
+  taskId: string
+  workflowRunId: string
+  task: {
+    type?: string
+    status?: string
+    id?: string
+    runId?: string
+    workflowRunId?: string
+    scriptPath?: string
+    args?: unknown
+  }
+}
+
 function statusGlyph(status: WorkflowRunMeta['status']): string {
   switch (status) {
     case 'running':
@@ -139,6 +153,38 @@ export function buildWorkflowResumeNextInput(
   )
 }
 
+function findWorkflowTaskForRun(
+  tasks: Record<string, unknown> | null | undefined,
+  runOrTaskId: string,
+): WorkflowTaskLookup | null {
+  if (!tasks) return null
+  const exact = tasks[runOrTaskId] as WorkflowTaskLookup['task'] | undefined
+  if (exact?.type === 'local_workflow') {
+    return {
+      taskId: exact.id ?? runOrTaskId,
+      workflowRunId: exact.workflowRunId ?? exact.runId ?? runOrTaskId,
+      task: exact,
+    }
+  }
+
+  for (const [taskId, task] of Object.entries(tasks)) {
+    const candidate = task as WorkflowTaskLookup['task'] | undefined
+    if (
+      candidate?.type === 'local_workflow' &&
+      (candidate.id === runOrTaskId ||
+        candidate.workflowRunId === runOrTaskId ||
+        candidate.runId === runOrTaskId)
+    ) {
+      return {
+        taskId: candidate.id ?? taskId,
+        workflowRunId: candidate.workflowRunId ?? candidate.runId ?? runOrTaskId,
+        task: candidate,
+      }
+    }
+  }
+  return null
+}
+
 function resumeRun(args: string[]): { message: string; nextInput?: string } {
   const runId = args[0]
   if (!runId) return { message: t('cmd.workflows.resumeUsage') }
@@ -162,10 +208,11 @@ function pauseTaskRun(
   context: LocalJSXCommandContext,
 ): string {
   if (!runId) return t('cmd.workflows.pauseUsage')
-  const task = context.getAppState().tasks?.[runId]
-  if (!task || task.type !== 'local_workflow') {
+  const found = findWorkflowTaskForRun(context.getAppState().tasks, runId)
+  if (!found) {
     return t('cmd.workflows.notFound', { runId })
   }
+  const { task, taskId } = found
   if (task.status === 'paused') {
     return t('cmd.workflows.alreadyPaused', { runId })
   }
@@ -173,7 +220,7 @@ function pauseTaskRun(
     return t('cmd.workflows.taskNotRunning', { runId })
   }
   const setAppState = context.setAppStateForTasks ?? context.setAppState
-  return pauseWorkflowTask(runId, setAppState)
+  return pauseWorkflowTask(taskId, setAppState)
     ? t('cmd.workflows.paused', { runId })
     : t('cmd.workflows.alreadyPaused', { runId })
 }
@@ -183,19 +230,20 @@ function resumeTaskRun(
   context: LocalJSXCommandContext,
 ): WorkflowCommandResult {
   if (!runId) return { message: t('cmd.workflows.resumeTaskUsage') }
-  const task = context.getAppState().tasks?.[runId]
-  if (!task || task.type !== 'local_workflow') {
+  const found = findWorkflowTaskForRun(context.getAppState().tasks, runId)
+  if (!found) {
     return { message: t('cmd.workflows.notFound', { runId }) }
   }
+  const { task, workflowRunId } = found
   if (task.status !== 'paused') {
     return { message: t('cmd.workflows.notPaused', { runId }) }
   }
-  const meta = loadRunMeta(runId)
+  const meta = loadRunMeta(workflowRunId)
   return {
     message: t('cmd.workflows.resumeQueued', { runId }),
     nextInput: buildWorkflowResumeNextInput(
-      runId,
-      meta?.scriptPath ?? task.scriptPath ?? runScriptPath(runId),
+      workflowRunId,
+      meta?.scriptPath ?? task.scriptPath ?? runScriptPath(workflowRunId),
       meta?.args ?? task.args,
     ),
   }

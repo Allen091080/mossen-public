@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { z } from 'zod/v4'
 import { buildTool } from 'src/Tool.js'
+import { generateTaskId, type SetAppState } from '../../Task.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { getRuleByContentsForToolName } from '../../utils/permissions/permissions.js'
 import {
@@ -275,6 +276,33 @@ function workflowResumeRunningMessage(
   return `Workflow ${resumeRunId} is still running (task ${taskId}). Stop it first with TaskStop({task_id: "${taskId}"}) before resuming.`
 }
 
+function removeInactiveWorkflowResumeTasks(
+  tasks: Record<string, unknown> | null | undefined,
+  resumeRunId: string | null,
+  setAppState: SetAppState,
+): void {
+  if (!tasks || !resumeRunId) return
+  const staleTaskIds = Object.entries(tasks)
+    .filter(([, task]) => {
+      const candidate = task as RunningWorkflowTask | null | undefined
+      return (
+        candidate?.type === 'local_workflow' &&
+        candidate.status !== 'running' &&
+        (candidate.workflowRunId === resumeRunId || candidate.runId === resumeRunId)
+      )
+    })
+    .map(([taskId]) => taskId)
+  if (staleTaskIds.length === 0) return
+
+  setAppState(prev => {
+    const nextTasks = { ...prev.tasks }
+    for (const taskId of staleTaskIds) {
+      delete nextTasks[taskId]
+    }
+    return { ...prev, tasks: nextTasks }
+  })
+}
+
 function readSourceFile(scriptPath: string): string {
   return readWorkflowScriptFile(scriptPath)
 }
@@ -537,9 +565,12 @@ export const WorkflowTool = buildTool({
         workflowResumeRunningMessage(resumeRunId, runningResumeTask.taskId),
       )
     }
+    const setTaskState =
+      toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
     const runId = resumeRunId
       ? resumeRunId
       : `wf_${randomUUID().replace(/-/g, '').slice(0, 10)}`
+    const taskId = generateTaskId('local_workflow')
     const source = await readSource(input)
 
     // Validate + surface meta early so a malformed script fails fast — for the
@@ -550,7 +581,7 @@ export const WorkflowTool = buildTool({
       return {
         data: {
           status: 'async_launched',
-          taskId: runId,
+          taskId,
           runId,
           summary: meta.description,
           error: determinismError,
@@ -562,7 +593,7 @@ export const WorkflowTool = buildTool({
       return {
         data: {
           status: 'async_launched',
-          taskId: runId,
+          taskId,
           runId,
           summary: meta.description,
           error: syntaxCheck.error,
@@ -573,6 +604,13 @@ export const WorkflowTool = buildTool({
     const prior = resumeRunId ? loadJournal(runId) : null
     const persistedScriptPath = runScriptPath(runId)
     const transcriptDir = workflowTranscriptDir(runId)
+    removeInactiveWorkflowResumeTasks(
+      typeof toolUseContext.getAppState === 'function'
+        ? toolUseContext.getAppState().tasks
+        : undefined,
+      resumeRunId,
+      setTaskState,
+    )
     // tool.call runs in normal Node (OUTSIDE the workflow sandbox), so Date is
     // available here — the determinism ban only applies to the script body.
     initRunArtifacts(runId, source, {
@@ -595,10 +633,10 @@ export const WorkflowTool = buildTool({
 
     const log: string[] = []
     const startedAtMs = Date.now()
-    const setTaskState =
-      toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
     registerWorkflowTask({
+      taskId,
       runId,
+      workflowRunId: runId,
       workflowName: meta.name,
       description: meta.description,
       script: source,
@@ -615,7 +653,7 @@ export const WorkflowTool = buildTool({
     const progress = (e: WorkflowProgressEvent) => {
       const line = formatEvent(e)
       if (line) appendWorkflowResultLogLine(log, line)
-      updateWorkflowTaskProgress(runId, e, setTaskState)
+      updateWorkflowTaskProgress(taskId, e, setTaskState)
     }
 
     const limiter = createLimiter(defaultConcurrency())
@@ -636,7 +674,7 @@ export const WorkflowTool = buildTool({
       registerAgentController: (
         agentNumber: number,
         controller: AbortController,
-      ) => registerWorkflowAgentController(runId, agentNumber, controller),
+      ) => registerWorkflowAgentController(taskId, agentNumber, controller),
     })
     const runtimes: WorkflowRuntime[] = []
     const nestedWorkflowCounts = new Map<string, number>()
@@ -660,8 +698,8 @@ export const WorkflowTool = buildTool({
         journal: useJournal ? journal : undefined,
         ...(childBehavior ?? {}),
         getAgentControl: (agentNumber: number) =>
-          consumeWorkflowAgentControl(runId, agentNumber),
-        waitForResume: () => waitForWorkflowTaskResume(runId, runAbort.signal),
+          consumeWorkflowAgentControl(taskId, agentNumber),
+        waitForResume: () => waitForWorkflowTaskResume(taskId, runAbort.signal),
         runNestedWorkflow:
           depth >= MAX_NESTED_WORKFLOW_DEPTH
             ? undefined
@@ -750,7 +788,7 @@ export const WorkflowTool = buildTool({
           failures: failures(),
           durationMs: durationMs(),
         })
-        completeWorkflowTask(runId, setTaskState, {
+        completeWorkflowTask(taskId, setTaskState, {
           agentCount: agentCount(),
           totalToolCalls: totalToolCalls(),
           tokensSpent: budget.spent(),
@@ -791,9 +829,9 @@ export const WorkflowTool = buildTool({
           failures: failures(),
           durationMs: durationMs(),
         }
-        if (killed) finishWorkflowTask(runId, 'killed', setTaskState, patch)
+        if (killed) finishWorkflowTask(taskId, 'killed', setTaskState, patch)
         else
-          failWorkflowTask(runId, setTaskState, {
+          failWorkflowTask(taskId, setTaskState, {
             ...patch,
             error: (err as Error).message,
           })
@@ -802,7 +840,7 @@ export const WorkflowTool = buildTool({
     return {
       data: {
         status: 'async_launched',
-        taskId: runId,
+        taskId,
         runId,
         summary: meta.description,
         transcriptDir,
