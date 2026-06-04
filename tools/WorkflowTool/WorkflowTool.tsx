@@ -59,6 +59,10 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
 const MAX_NESTED_WORKFLOW_DEPTH = 1
 export const MAX_WORKFLOW_RESULT_LOG_LINES = 1000
 const RESUME_RUN_ID_PATTERN = /^wf_[a-z0-9-]{6,}$/
+const WORKFLOW_NONDETERMINISTIC_API_PATTERN =
+  /\bDate\s*\.\s*now\b|\bMath\s*\.\s*random\b|\bnew\s+Date\s*\(\s*\)/
+const WORKFLOW_DETERMINISM_ERROR =
+  'Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable (breaks resume). Stamp results after the workflow returns, or pass timestamps via args.'
 
 const inputSchema = z.object({
   script: z
@@ -215,6 +219,12 @@ function normalizeResumeRunId(value: unknown): string | null {
     throw new Error('resumeFromRunId must match /^wf_[a-z0-9-]{6,}$/.')
   }
   return runId
+}
+
+function checkWorkflowScriptDeterminism(scriptBody: string): string | null {
+  return WORKFLOW_NONDETERMINISTIC_API_PATTERN.test(scriptBody)
+    ? WORKFLOW_DETERMINISM_ERROR
+    : null
 }
 
 function readSourceFile(scriptPath: string): string {
@@ -409,6 +419,18 @@ export const WorkflowTool = buildTool({
     // Validate + surface meta early so a malformed script fails fast — for the
     // background path too, so the caller learns of a bad script synchronously.
     const { meta, scriptBody } = extractMeta(source)
+    const determinismError = checkWorkflowScriptDeterminism(scriptBody)
+    if (determinismError) {
+      return {
+        data: {
+          status: 'async_launched',
+          taskId: runId,
+          runId,
+          summary: meta.description,
+          error: determinismError,
+        } satisfies WorkflowOutput,
+      }
+    }
     const syntaxCheck = checkWorkflowScriptSyntax(scriptBody)
     if ('error' in syntaxCheck) {
       return {

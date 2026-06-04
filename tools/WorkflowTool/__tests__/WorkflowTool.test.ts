@@ -282,6 +282,64 @@ return 'ok'
 })
 
 describe('WorkflowTool syntax preflight', () => {
+  it.each([
+    ['Date.now()', 'return Date.now()'],
+    ['Math.random()', 'return Math.random()'],
+    ['argless new Date()', 'return new Date()'],
+  ])(
+    'rejects nondeterministic %s before launching a task',
+    async (_, body) => {
+      let setAppStateCalls = 0
+      const result = await WorkflowTool.call!(
+        {
+          script: `
+export const meta = { name: 'bad-determinism', description: 'Uses clock' }
+${body}
+`,
+        },
+        {
+          abortController: new AbortController(),
+          setAppState: () => {
+            setAppStateCalls++
+          },
+        } as never,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(result.data.status).toBe('async_launched')
+      expect(result.data.taskId).toMatch(/^wf_[a-z0-9]+$/)
+      expect(result.data.runId).toBe(result.data.taskId)
+      expect(result.data.summary).toBe('Uses clock')
+      expect(result.data.error).toBe(
+        'Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable (breaks resume). Stamp results after the workflow returns, or pass timestamps via args.',
+      )
+      expect(result.data.scriptPath).toBeUndefined()
+      expect(result.data.transcriptDir).toBeUndefined()
+      expect(setAppStateCalls).toBe(0)
+    },
+  )
+
+  it('allows deterministic Date construction with explicit arguments', async () => {
+    const result = await WorkflowTool.call!(
+      {
+        script: `
+export const meta = { name: 'fixed-date', description: 'Uses fixed date' }
+return new Date(2020, 0, 1).getFullYear()
+`,
+      },
+      {
+        abortController: new AbortController(),
+        setAppState: () => {},
+      } as never,
+      async () => ({ behavior: 'allow' }) as never,
+    )
+
+    expect(result.data.status).toBe('async_launched')
+    expect(result.data.summary).toBe('Uses fixed date')
+    expect(result.data.error).toBeUndefined()
+    expect(result.data.scriptPath).toContain(`${result.data.runId}/script.js`)
+  })
+
   it('returns an official error receipt without launching a task', async () => {
     let setAppStateCalls = 0
     const result = await WorkflowTool.call!(
