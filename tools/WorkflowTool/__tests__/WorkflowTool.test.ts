@@ -221,6 +221,43 @@ return 'ok'
       ),
     ).rejects.toThrow('resumeFromRunId must match')
   })
+
+  it('rejects resumeFromRunId while the same workflow run is still running', async () => {
+    let setAppStateCalls = 0
+
+    await expect(
+      WorkflowTool.call!(
+        {
+          script: `
+export const meta = { name: 'running-resume', description: 'running resume' }
+return 'ok'
+`,
+          resumeFromRunId: 'wf_resume1',
+        },
+        {
+          abortController: new AbortController(),
+          getAppState: () => ({
+            tasks: {
+              task_slot: {
+                id: 'wf_live_task',
+                type: 'local_workflow',
+                status: 'running',
+                runId: 'wf_resume1',
+                workflowRunId: 'wf_resume1',
+              },
+            },
+          }),
+          setAppState: () => {
+            setAppStateCalls++
+          },
+        } as never,
+        async () => ({ behavior: 'allow' }) as never,
+      ),
+    ).rejects.toThrow(
+      'Workflow wf_resume1 is still running (task wf_live_task). Stop it first with TaskStop({task_id: "wf_live_task"}) before resuming.',
+    )
+    expect(setAppStateCalls).toBe(0)
+  })
 })
 
 describe('WorkflowTool scriptPath guards', () => {

@@ -156,6 +156,14 @@ type ResolvedWorkflowSource = {
   label: string
 }
 
+type RunningWorkflowTask = {
+  id?: string
+  type?: string
+  status?: string
+  runId?: string
+  workflowRunId?: string
+}
+
 function sourceFromWorkflowRef(
   ref: Awaited<ReturnType<typeof resolveWorkflowFromAllSources>>,
   requestedName: string,
@@ -225,6 +233,34 @@ function checkWorkflowScriptDeterminism(scriptBody: string): string | null {
   return WORKFLOW_NONDETERMINISTIC_API_PATTERN.test(scriptBody)
     ? WORKFLOW_DETERMINISM_ERROR
     : null
+}
+
+function findRunningWorkflowResumeTask(
+  tasks: Record<string, unknown> | null | undefined,
+  resumeRunId: string | null,
+): { taskId: string; workflowRunId: string } | null {
+  if (!tasks || !resumeRunId) return null
+  for (const [taskId, task] of Object.entries(tasks)) {
+    const candidate = task as RunningWorkflowTask | null | undefined
+    if (
+      candidate?.type === 'local_workflow' &&
+      candidate.status === 'running' &&
+      (candidate.workflowRunId === resumeRunId || candidate.runId === resumeRunId)
+    ) {
+      return {
+        taskId: candidate.id || taskId,
+        workflowRunId: resumeRunId,
+      }
+    }
+  }
+  return null
+}
+
+function workflowResumeRunningMessage(
+  resumeRunId: string,
+  taskId: string,
+): string {
+  return `Workflow ${resumeRunId} is still running (task ${taskId}). Stop it first with TaskStop({task_id: "${taskId}"}) before resuming.`
 }
 
 function readSourceFile(scriptPath: string): string {
@@ -411,6 +447,17 @@ export const WorkflowTool = buildTool({
     // itself still has to be supplied by script, scriptPath, or name, matching
     // the official input contract.
     const resumeRunId = normalizeResumeRunId(input.resumeFromRunId)
+    const runningResumeTask = findRunningWorkflowResumeTask(
+      typeof toolUseContext.getAppState === 'function'
+        ? toolUseContext.getAppState().tasks
+        : undefined,
+      resumeRunId,
+    )
+    if (runningResumeTask && resumeRunId) {
+      throw new Error(
+        workflowResumeRunningMessage(resumeRunId, runningResumeTask.taskId),
+      )
+    }
     const runId = resumeRunId
       ? resumeRunId
       : `wf_${randomUUID().replace(/-/g, '').slice(0, 10)}`
