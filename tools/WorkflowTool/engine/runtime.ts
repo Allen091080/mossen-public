@@ -117,6 +117,9 @@ export function createWorkflowRuntime(
     const phase = opts.phase ?? currentPhase
     const label = opts.label ?? deriveLabel(prompt)
     const hash = hashCall(prompt, opts)
+    if (opts.isolation === 'remote') {
+      throw new Error("agent({isolation:'remote'}) is not available in this build")
+    }
 
     // Resume: replay a cached result if this call matches the prior run.
     const cached = journal?.lookup(index, hash)

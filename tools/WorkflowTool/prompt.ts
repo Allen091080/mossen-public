@@ -20,7 +20,7 @@ Provide the program inline via \`script\`. It must begin with an \`export const 
 The \`meta\` object must be a PURE LITERAL (no variables, calls, or interpolation). Required: \`name\`, \`description\`. Optional: \`whenToUse\`, \`phases\`.
 
 Injected surface available to the script body:
-- agent(prompt, opts?): Promise<any> — run one subagent. Without a schema it returns the agent's final text. With \`opts.schema\` (a JSON Schema) it returns a validated object (the agent is re-prompted on mismatch). opts: { label?, phase?, schema?, model?, isolation?, agentType? }.
+- agent(prompt, opts?): Promise<any> — run one subagent. Without a schema it returns the agent's final text. With \`opts.schema\` (a JSON Schema) it returns a validated object (the agent is re-prompted on mismatch). opts: { label?, phase?, schema?, model?, isolation?, agentType? }. Use \`isolation: 'worktree'\` for concurrent local edits; \`isolation: 'remote'\` is recognized but unavailable in this build.
 - parallel(thunks): Promise<any[]> — run thunks concurrently; BARRIER (awaits all). A thunk that throws becomes null — filter(Boolean) before use.
 - pipeline(items, ...stages): Promise<any[]> — run each item through all stages independently, NO barrier between stages. Each stage receives (prevResult, originalItem, index). A throwing stage drops that item to null.
 - phase(title): void — start a progress phase; later agents group under it.

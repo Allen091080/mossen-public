@@ -30,7 +30,7 @@ export type AgentCallOptions = {
   /** JSON Schema; when present the agent result is validated & returned as an object. */
   schema?: Record<string, unknown>
   model?: string
-  isolation?: 'worktree'
+  isolation?: 'worktree' | 'remote'
   agentType?: string
 }
 

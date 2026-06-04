@@ -166,4 +166,14 @@ return Date.now()
 `
     await expect(runWorkflow(source, fakeAgent)).rejects.toThrow(/determinism/)
   })
+
+  test('rejects remote agent isolation in this build', async () => {
+    const source = `
+export const meta = { name: 'remote-agent', description: 'requests remote isolation' }
+return agent('run elsewhere', { isolation: 'remote' })
+`
+    await expect(runWorkflow(source, fakeAgent)).rejects.toThrow(
+      "agent({isolation:'remote'}) is not available in this build",
+    )
+  })
 })
