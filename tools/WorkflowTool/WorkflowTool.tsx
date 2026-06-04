@@ -9,9 +9,11 @@ import type { PermissionDecision } from '../../utils/permissions/PermissionResul
 import { getRuleByContentsForToolName } from '../../utils/permissions/permissions.js'
 import {
   getOriginalCwd,
+  getCurrentTurnTokenBudget,
   getProjectRoot,
   getSessionId,
   getSessionProjectDir,
+  getTurnOutputTokens,
 } from '../../bootstrap/state.js'
 import {
   completeWorkflowTask,
@@ -817,7 +819,10 @@ export const WorkflowTool = buildTool({
     }
 
     const limiter = createLimiter(defaultConcurrency())
-    const budget = createBudget(null)
+    const budget = createBudget(
+      getCurrentTurnTokenBudget(),
+      getTurnOutputTokens(),
+    )
     // Journal persists each recorded entry to disk so resume works across
     // separate tool invocations (not just in-memory within one run).
     const journal = createJournal(

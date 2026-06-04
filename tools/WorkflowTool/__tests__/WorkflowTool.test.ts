@@ -9,7 +9,11 @@ import {
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { isValidElement } from 'react'
-import { getProjectRoot, setProjectRoot } from '../../../bootstrap/state.js'
+import {
+  getProjectRoot,
+  setProjectRoot,
+  snapshotOutputTokensForTurn,
+} from '../../../bootstrap/state.js'
 import type { AppState } from '../../../state/AppState.js'
 import {
   getEmptyToolPermissionContext,
@@ -22,6 +26,7 @@ import {
   WorkflowTool,
 } from '../WorkflowTool.js'
 import { WORKFLOW_TOOL_NAME } from '../constants.js'
+import { loadRunLog } from '../engine/journalStore.js'
 import { getProjectWorkflowsDir } from '../savedWorkflows.js'
 
 function toolUseContextWithWorkflowRules({
@@ -58,6 +63,18 @@ function workflowValidationContext(
     }),
     setAppState: () => {},
   } as unknown as ToolUseContext
+}
+
+async function waitForWorkflowLog(
+  runId: string,
+  predicate: (lines: string[]) => boolean,
+): Promise<string[]> {
+  for (let i = 0; i < 25; i++) {
+    const lines = loadRunLog(runId)
+    if (predicate(lines)) return lines
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  return loadRunLog(runId)
 }
 
 // Regression for the Ink crash seen in real use: renderToolResultMessage used
@@ -199,6 +216,49 @@ describe('WorkflowTool captured run log', () => {
     expect(log[MAX_WORKFLOW_RESULT_LOG_LINES - 1]).toBe(
       `line-${MAX_WORKFLOW_RESULT_LOG_LINES - 1}`,
     )
+  })
+})
+
+describe('WorkflowTool runtime budget', () => {
+  it('passes the current turn token budget into real workflow runs', async () => {
+    snapshotOutputTokensForTurn(123_456)
+    try {
+      const result = await WorkflowTool.call!(
+        {
+          script: `
+export const meta = { name: 'budget-flow', description: 'Budget flow' }
+log('budget:' + JSON.stringify({
+  total: budget.total,
+  remaining: budget.remaining(),
+  spent: budget.spent(),
+}))
+return 'ok'
+`,
+        },
+        {
+          abortController: new AbortController(),
+          setAppState: () => {},
+        } as never,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(result.data.status).toBe('async_launched')
+      expect(result.data.runId).toMatch(/^wf_[a-z0-9]+$/)
+
+      const lines = await waitForWorkflowLog(
+        result.data.runId!,
+        current => current.some(line => line.startsWith('budget:')),
+      )
+      const budgetLine = lines.find(line => line.startsWith('budget:'))
+      expect(budgetLine).toBeDefined()
+      expect(JSON.parse(budgetLine!.slice('budget:'.length))).toEqual({
+        total: 123_456,
+        remaining: 123_456,
+        spent: 0,
+      })
+    } finally {
+      snapshotOutputTokensForTurn(null)
+    }
   })
 })
 
