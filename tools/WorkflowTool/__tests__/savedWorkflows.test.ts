@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import {
   getProjectWorkflowsDir,
   getLegacyProjectWorkflowsDir,
+  getLegacyUserWorkflowsDir,
   getAllWorkflows,
   isSavedWorkflowsEnabled,
   loadBundledWorkflowRefs,
@@ -14,6 +15,7 @@ import {
   resolveWorkflowFromSources,
   resolveSavedWorkflow,
   getWorkflowCommands,
+  getUserWorkflowsDir,
   LEGACY_PROJECT_WORKFLOWS_SUBDIR,
   PROJECT_WORKFLOWS_SUBDIR,
 } from '../savedWorkflows.js'
@@ -40,7 +42,7 @@ describe('savedWorkflows loader (S3)', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
-  test('dir layout uses the official-compatible project directory and legacy fallback', () => {
+  test('dir layout uses official-compatible project/user dirs and legacy fallbacks', () => {
     const compatSubdir = join(`.${'cla' + 'ude'}`, 'workflows')
     expect(PROJECT_WORKFLOWS_SUBDIR).toBe(compatSubdir)
     expect(LEGACY_PROJECT_WORKFLOWS_SUBDIR).toBe(join('.mossen', 'workflows'))
@@ -48,6 +50,10 @@ describe('savedWorkflows loader (S3)', () => {
     expect(getLegacyProjectWorkflowsDir('/x')).toBe(
       join('/x', '.mossen', 'workflows'),
     )
+    expect(getUserWorkflowsDir().endsWith(compatSubdir)).toBe(true)
+    expect(
+      getLegacyUserWorkflowsDir().endsWith(join('.mossen', 'workflows')),
+    ).toBe(true)
   })
 
   test('a valid .js workflow becomes a prompt command named by its meta', () => {

@@ -2,9 +2,9 @@
  * Saved-workflow loader (S3).
  *
  * A workflow saved via `/workflows` (Save as) lands as a `.js` file under the
- * project workflow directory, or under the user scope (`~/.mossen/workflows/`)
- * when explicitly requested. Legacy project workflow directories are also read
- * for migration compatibility. Each saved file becomes a slash command: typing
+ * project workflow directory, or under the user workflow directory when
+ * explicitly requested. Legacy workflow directories are also read for migration
+ * compatibility. Each saved file becomes a slash command: typing
  * `/<name>` runs that workflow through the Workflow tool. This mirrors how
  * skills under `.mossen/skills` become commands.
  *
@@ -47,6 +47,10 @@ export const PROJECT_WORKFLOWS_SUBDIR = join(
 export const LEGACY_PROJECT_WORKFLOWS_SUBDIR = join('.mossen', 'workflows')
 /** User-scoped saved workflows live here. */
 export function getUserWorkflowsDir(): string {
+  return join(homedir(), COMPAT_WORKFLOW_CONFIG_DIR, 'workflows')
+}
+/** Legacy user-scoped saved workflows are still read for migration compatibility. */
+export function getLegacyUserWorkflowsDir(): string {
   return join(homedir(), '.mossen', 'workflows')
 }
 export function getProjectWorkflowsDir(projectRoot: string): string {
@@ -292,7 +296,8 @@ export function loadSavedWorkflowsFrom(projectRoot: string): SavedWorkflowRef[] 
     'project',
   )
   const user = readWorkflowDir(getUserWorkflowsDir(), 'user')
-  return dedupeWorkflows([...project, ...legacyProject, ...user])
+  const legacyUser = readWorkflowDir(getLegacyUserWorkflowsDir(), 'user')
+  return dedupeWorkflows([...project, ...legacyProject, ...user, ...legacyUser])
 }
 
 export function loadPluginWorkflowsFrom(
