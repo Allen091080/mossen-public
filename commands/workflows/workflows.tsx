@@ -9,14 +9,11 @@ import {
   listWorkflowRuns,
   loadRunLog,
   loadRunMeta,
-  loadRunScript,
   runScriptPath,
   type WorkflowRunMeta,
 } from '../../tools/WorkflowTool/engine/journalStore.js'
 import { isUltracodeActive, setUltracodeActive } from '../../bootstrap/state.js'
-import { WORKFLOW_TOOL_NAME } from '../../tools/WorkflowTool/constants.js'
 import {
-  buildWorkflowResumePrompt,
   killWorkflowTask,
   pauseWorkflowTask,
   retryWorkflowAgent,
@@ -26,6 +23,12 @@ import {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { WorkflowRunsDialog } from './WorkflowRunsDialog.js'
 import { saveRun } from './saveWorkflow.js'
+import {
+  buildWorkflowResumeNextInput,
+  buildWorkflowResumeResult,
+  resumeRunFromJournal,
+  type WorkflowCommandResult,
+} from './resumeWorkflow.js'
 
 type WorkflowAgentSnapshot = Partial<WorkflowAgentTaskProgress> & {
   agentNumber?: number
@@ -303,16 +306,7 @@ function renderAgentDetail(
   return lines.join('\n')
 }
 
-export function buildWorkflowResumeNextInput(
-  runId: string,
-  scriptPath: string,
-  args?: unknown,
-): string {
-  return (
-    buildWorkflowResumePrompt({ runId, scriptPath, args }) ??
-    `Resume workflow run ${runId} using the ${WORKFLOW_TOOL_NAME} tool.`
-  )
-}
+export { buildWorkflowResumeNextInput }
 
 function findWorkflowTaskForRun(
   tasks: Record<string, unknown> | null | undefined,
@@ -345,24 +339,6 @@ function findWorkflowTaskForRun(
   }
   return null
 }
-
-function resumeRun(args: string[]): { message: string; nextInput?: string } {
-  const runId = args[0]
-  if (!runId) return { message: t('cmd.workflows.resumeUsage') }
-  const script = loadRunScript(runId)
-  if (script == null) return { message: t('cmd.workflows.notFound', { runId }) }
-  const meta = loadRunMeta(runId)
-  return {
-    message: t('cmd.workflows.resumeQueued', { runId }),
-    nextInput: buildWorkflowResumeNextInput(
-      runId,
-      meta?.scriptPath ?? runScriptPath(runId),
-      meta?.args,
-    ),
-  }
-}
-
-type WorkflowCommandResult = { message: string; nextInput?: string }
 
 function pauseTaskRun(
   runId: string | undefined,
@@ -418,14 +394,12 @@ function resumeTaskRun(
     return { message: t('cmd.workflows.notPaused', { runId }) }
   }
   const meta = loadRunMeta(workflowRunId)
-  return {
-    message: t('cmd.workflows.resumeQueued', { runId }),
-    nextInput: buildWorkflowResumeNextInput(
-      workflowRunId,
-      meta?.scriptPath ?? task.scriptPath ?? runScriptPath(workflowRunId),
-      meta?.args ?? task.args,
-    ),
-  }
+  return buildWorkflowResumeResult(
+    workflowRunId,
+    meta?.scriptPath ?? task.scriptPath ?? runScriptPath(workflowRunId),
+    meta?.args ?? task.args,
+    runId,
+  )
 }
 
 function parseWorkflowAgentNumber(agentId: string | undefined): number | null {
@@ -530,7 +504,7 @@ export async function call(
   }
 
   if (tokens[0] === 'resume') {
-    const result = resumeRun(tokens.slice(1))
+    const result = resumeRunFromJournal(tokens[1])
     onDone(result.message, {
       display: 'system',
       ...(result.nextInput

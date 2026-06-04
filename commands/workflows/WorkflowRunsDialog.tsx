@@ -3,7 +3,6 @@ import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import { Box, Text, useInput } from '../../ink.js'
 import { useAppState, useSetAppState } from '../../state/AppState.js'
 import {
-  buildWorkflowResumePrompt,
   killWorkflowTask,
   pauseWorkflowTask,
   retryWorkflowAgent,
@@ -13,18 +12,20 @@ import {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import {
   listWorkflowRuns,
-  loadRunMeta,
   loadRunLog,
   runScriptPath,
   type WorkflowRunMeta,
 } from '../../tools/WorkflowTool/engine/journalStore.js'
-import { WORKFLOW_TOOL_NAME } from '../../tools/WorkflowTool/constants.js'
 import { formatDuration, formatNumber } from '../../utils/format.js'
 import { t } from '../../utils/i18n/index.js'
 import { Byline } from '../../components/design-system/Byline.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js'
 import { saveRun } from './saveWorkflow.js'
+import {
+  buildWorkflowResumeResult,
+  resumeRunFromJournal,
+} from './resumeWorkflow.js'
 
 type Props = {
   onDone: LocalJSXCommandOnDone
@@ -241,19 +242,20 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
     onDone(result, { display: 'system' })
   }
 
-  const resumeSelectedRun = (liveRun: Extract<WorkflowRunItem, { kind: 'live' }>) => {
-    const meta = loadRunMeta(liveRun.runId)
-    const scriptPath = meta?.scriptPath ?? liveRun.task.scriptPath ?? runScriptPath(liveRun.runId)
-    const nextInput =
-      buildWorkflowResumePrompt({
-        runId: liveRun.runId,
-        scriptPath,
-        args: meta?.args ?? liveRun.task.args,
-      }) ?? `Resume workflow run ${liveRun.runId} using the ${WORKFLOW_TOOL_NAME} tool.`
-    onDone(t('cmd.workflows.resumeQueued', { runId: liveRun.runId }), {
+  const resumeSelectedRun = (run: WorkflowRunItem) => {
+    const result =
+      run.kind === 'live'
+        ? buildWorkflowResumeResult(
+            run.runId,
+            run.task.scriptPath ?? runScriptPath(run.runId),
+            run.task.args,
+          )
+        : resumeRunFromJournal(run.runId)
+    onDone(result.message, {
       display: 'system',
-      nextInput,
-      submitNextInput: true,
+      ...(result.nextInput
+        ? { nextInput: result.nextInput, submitNextInput: true }
+        : {}),
     })
   }
 
@@ -326,16 +328,16 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
     }
 
     const liveRun = selectedRun?.kind === 'live' ? selectedRun : null
-    if (!liveRun) return
     if (_input === 'p') {
-      if (liveRun.task.status === 'running' && !liveRun.task.paused) {
+      if (liveRun && liveRun.task.status === 'running' && !liveRun.task.paused) {
         const ok = pauseWorkflowTask(liveRun.task.id, setAppState)
         setMessage(ok ? t('cmd.workflows.paused', { runId: liveRun.runId }) : null)
-      } else if (liveRun.task.status === 'paused' || liveRun.task.paused) {
-        resumeSelectedRun(liveRun)
+      } else if (selectedRun) {
+        resumeSelectedRun(selectedRun)
       }
       return
     }
+    if (!liveRun) return
     if (_input === 'x') {
       if (view.mode === 'agent' && currentAgent) {
         skipWorkflowAgent(liveRun.task.id, currentAgent.agentNumber, setAppState)

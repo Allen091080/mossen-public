@@ -26,8 +26,9 @@ import {
   WorkflowTool,
 } from '../WorkflowTool.js'
 import { WORKFLOW_TOOL_NAME } from '../constants.js'
-import { loadRunLog } from '../engine/journalStore.js'
+import { loadRunLog, loadRunMeta } from '../engine/journalStore.js'
 import { getProjectWorkflowsDir } from '../savedWorkflows.js'
+import { killWorkflowTask } from '../../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
 function toolUseContextWithWorkflowRules({
   allow = [],
@@ -75,6 +76,18 @@ async function waitForWorkflowLog(
     await new Promise(resolve => setTimeout(resolve, 5))
   }
   return loadRunLog(runId)
+}
+
+async function waitForRunMetaStatus(
+  runId: string,
+  status: string,
+): Promise<string | undefined> {
+  for (let i = 0; i < 25; i++) {
+    const current = loadRunMeta(runId)?.status
+    if (current === status) return current
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  return loadRunMeta(runId)?.status
 }
 
 // Regression for the Ink crash seen in real use: renderToolResultMessage used
@@ -741,5 +754,40 @@ return args.value * 2
       setProjectRoot(priorRoot)
       rmSync(root, { recursive: true, force: true })
     }
+  })
+
+  it('persists stopped runs as killed so /workflows can resume them distinctly from failures', async () => {
+    const state = { tasks: {} as Record<string, unknown> }
+    const setAppState = (updater: (prev: AppState) => AppState) => {
+      Object.assign(state, updater(state as AppState))
+    }
+
+    const result = await WorkflowTool.call!(
+      {
+        script: `
+export const meta = { name: 'stoppable-flow', description: 'Can be stopped' }
+await timers.wait(5000)
+return 'done'
+`,
+      },
+      {
+        abortController: new AbortController(),
+        getAppState: () => state,
+        setAppState,
+      } as never,
+      async () => ({ behavior: 'allow' }) as never,
+    )
+
+    expect(result.data.status).toBe('async_launched')
+    expect(
+      (state.tasks[result.data.taskId] as { status?: string } | undefined)?.status,
+    ).toBe('running')
+
+    killWorkflowTask(result.data.taskId, setAppState)
+
+    expect(await waitForRunMetaStatus(result.data.runId, 'killed')).toBe('killed')
+    expect(
+      (state.tasks[result.data.taskId] as { status?: string } | undefined)?.status,
+    ).toBe('killed')
   })
 })

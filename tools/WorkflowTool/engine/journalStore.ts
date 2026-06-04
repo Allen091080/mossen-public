@@ -27,6 +27,7 @@ import {
 import { join } from 'node:path'
 import { getSessionId } from '../../../bootstrap/state.js'
 import { getProjectsDir } from '../../../utils/sessionStorage.js'
+import type { TaskStatus } from '../../../Task.js'
 import type {
   JournalData,
   JournalEntry,
@@ -51,7 +52,7 @@ export type WorkflowRunMeta = {
   scriptPath?: string
   transcriptDir?: string
   createdAt: string
-  status: 'running' | 'paused' | 'completed' | 'failed'
+  status: Extract<TaskStatus, 'running' | 'paused' | 'completed' | 'failed' | 'killed'>
   agentCount?: number
   totalToolCalls?: number
   tokensSpent?: number

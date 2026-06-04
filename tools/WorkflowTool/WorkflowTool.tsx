@@ -1047,7 +1047,7 @@ export const WorkflowTool = buildTool({
           return
         }
         finalizeRunMeta(runId, {
-          status: 'failed',
+          status: killed ? 'killed' : 'failed',
           agentCount: agentCount(),
           totalToolCalls: totalToolCalls(),
           tokensSpent: budget.spent(),
