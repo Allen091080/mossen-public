@@ -39,6 +39,12 @@ export type WorkflowProgressEvent =
   | { kind: 'phase'; title: string }
   | { kind: 'log'; message: string }
   | {
+      kind: 'agent_queued'
+      label: string
+      phase: string | null
+      agentNumber: number
+    }
+  | {
       kind: 'agent_start'
       label: string
       phase: string | null
@@ -50,7 +56,7 @@ export type WorkflowProgressEvent =
       phase: string | null
       agentNumber: number
       ok: boolean
-      status?: 'completed' | 'failed' | 'skipped'
+      status?: 'completed' | 'failed' | 'skipped' | 'cached'
       tokens: number
     }
 

@@ -35,12 +35,14 @@ function agentStatusColor(
 ): 'success' | 'error' | 'warning' | 'background' {
   switch (status) {
     case 'completed':
+    case 'cached':
       return 'success'
     case 'failed':
       return 'error'
     case 'skipped':
     case 'retry_requested':
       return 'warning'
+    case 'queued':
     case 'running':
       return 'background'
   }

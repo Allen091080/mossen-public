@@ -127,13 +127,14 @@ export function createWorkflowRuntime(
     const cached = journal?.lookup(index, hash)
     if (cached) {
       agentCounter++
-      progress({ kind: 'agent_start', label, phase, agentNumber: agentCounter })
+      const agentNumber = agentCounter
       progress({
         kind: 'agent_end',
         label,
         phase,
-        agentNumber: agentCounter,
+        agentNumber,
         ok: cached.ok,
+        status: cached.ok ? 'cached' : 'failed',
         tokens: cached.tokens,
       })
       return cached.ok ? cached.value : null
@@ -149,7 +150,7 @@ export function createWorkflowRuntime(
     }
     for (;;) {
       journal?.start(index, hash, { label, phase, agentNumber, opts })
-      progress({ kind: 'agent_start', label, phase, agentNumber })
+      progress({ kind: 'agent_queued', label, phase, agentNumber })
 
       let result: AgentRunResult
       let skipped = false
@@ -167,6 +168,7 @@ export function createWorkflowRuntime(
               status: 'skipped' as const,
             })
           }
+          progress({ kind: 'agent_start', label, phase, agentNumber })
           // A queued retry request means "run it now"; a running retry request
           // is handled by the per-agent abort controller in agentRunner.
           return runOneAgent(prompt, opts, { agentNumber, phase, label })

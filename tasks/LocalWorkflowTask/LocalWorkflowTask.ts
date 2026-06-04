@@ -28,7 +28,14 @@ export type WorkflowAgentTaskProgress = {
   agentNumber: number
   label: string
   phase: string | null
-  status: 'running' | 'completed' | 'failed' | 'skipped' | 'retry_requested'
+  status:
+    | 'queued'
+    | 'running'
+    | 'completed'
+    | 'failed'
+    | 'skipped'
+    | 'retry_requested'
+    | 'cached'
   tokens: number
 }
 
@@ -67,6 +74,8 @@ function progressLine(event: WorkflowProgressEvent): string {
       return `phase: ${event.title}`
     case 'log':
       return event.message
+    case 'agent_queued':
+      return `agent #${event.agentNumber} queued: ${event.label}`
     case 'agent_start':
       return `agent #${event.agentNumber} started: ${event.label}`
     case 'agent_end': {
@@ -172,6 +181,20 @@ export function updateWorkflowTaskProgress(
         }
       case 'log':
         return { ...task, summary: event.message, log }
+      case 'agent_queued':
+        return {
+          ...task,
+          agentCount: Math.max(task.agentCount, event.agentNumber),
+          agents: setWorkflowAgent(task.agents, {
+            agentNumber: event.agentNumber,
+            label: event.label,
+            phase: event.phase,
+            status: 'queued',
+            tokens: 0,
+          }),
+          summary: `${event.label} queued`,
+          log,
+        }
       case 'agent_start':
         return {
           ...task,

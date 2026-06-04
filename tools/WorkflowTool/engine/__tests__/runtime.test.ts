@@ -15,6 +15,7 @@ import type {
 } from '../types.js'
 
 type AgentStartEvent = Extract<WorkflowProgressEvent, { kind: 'agent_start' }>
+type AgentQueuedEvent = Extract<WorkflowProgressEvent, { kind: 'agent_queued' }>
 type AgentEndEvent = Extract<WorkflowProgressEvent, { kind: 'agent_end' }>
 
 function harness(
@@ -62,16 +63,18 @@ describe('runtime.agent', () => {
     expect(rt.agentCount()).toBe(1)
   })
 
-  test('emits agent_start then agent_end', async () => {
+  test('emits agent_queued, agent_start, then agent_end', async () => {
     const { rt, events } = harness(okAgent())
     const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
     await agent('task', { label: 'my-label', phase: 'Scan' })
     const kinds = events.map(e => e.kind)
-    expect(kinds).toEqual(['agent_start', 'agent_end'])
-    expect((events[0] as AgentStartEvent).label).toBe('my-label')
-    expect((events[0] as AgentStartEvent).phase).toBe('Scan')
-    expect((events[1] as AgentEndEvent).ok).toBe(true)
-    expect((events[1] as AgentEndEvent).tokens).toBe(10)
+    expect(kinds).toEqual(['agent_queued', 'agent_start', 'agent_end'])
+    expect((events[0] as AgentQueuedEvent).label).toBe('my-label')
+    expect((events[0] as AgentQueuedEvent).phase).toBe('Scan')
+    expect((events[1] as AgentStartEvent).label).toBe('my-label')
+    expect((events[1] as AgentStartEvent).phase).toBe('Scan')
+    expect((events[2] as AgentEndEvent).ok).toBe(true)
+    expect((events[2] as AgentEndEvent).tokens).toBe(10)
   })
 
   test('returns null when the agent result is not ok', async () => {
@@ -133,6 +136,8 @@ describe('runtime.agent', () => {
     expect(await agent('task')).toBeNull()
     expect(calls).toBe(0)
     expect(budget.spent()).toBe(0)
+    expect(events.map(e => e.kind)).toEqual(['agent_queued', 'agent_end'])
+    expect((events[0] as AgentQueuedEvent).agentNumber).toBe(1)
     expect((events[1] as AgentEndEvent).status).toBe('skipped')
   })
 
@@ -171,8 +176,10 @@ describe('runtime.agent', () => {
     expect(rt.agentCount()).toBe(1)
     expect(budget.spent()).toBe(11)
     expect(events.map(e => e.kind)).toEqual([
+      'agent_queued',
       'agent_start',
       'log',
+      'agent_queued',
       'agent_start',
       'agent_end',
     ])
@@ -188,7 +195,9 @@ describe('runtime.phase / log', () => {
     phase('Build')
     await agent('compile')
     expect(events[0]).toEqual({ kind: 'phase', title: 'Build' })
-    expect((events[1] as AgentStartEvent).phase).toBe('Build')
+    expect(events.map(e => e.kind)).toEqual(['phase', 'agent_queued', 'agent_start', 'agent_end'])
+    expect((events[1] as AgentQueuedEvent).phase).toBe('Build')
+    expect((events[2] as AgentStartEvent).phase).toBe('Build')
   })
 
   test('log emits a log event', () => {
@@ -248,6 +257,9 @@ describe('runtime journal (resume)', () => {
     expect(await a2('beta')).toBe('r2') // cached
     expect(calls).toBe(2) // unchanged → no live runs
     expect(j2.hits()).toBe(2)
+    expect(h2.events.map(e => e.kind)).toEqual(['agent_end', 'agent_end'])
+    expect((h2.events[0] as AgentEndEvent).status).toBe('cached')
+    expect((h2.events[1] as AgentEndEvent).status).toBe('cached')
   })
 
   test('diverging call invalidates the cache from that point on', async () => {
@@ -305,7 +317,8 @@ describe('runtime journal (resume)', () => {
       kind: 'log',
       message: 'workflow journal started hit respawn: agent #1 alpha',
     })
-    expect(events[1]).toMatchObject({ kind: 'agent_start', agentNumber: 1 })
+    expect(events[1]).toMatchObject({ kind: 'agent_queued', agentNumber: 1 })
+    expect(events[2]).toMatchObject({ kind: 'agent_start', agentNumber: 1 })
   })
 })
 
