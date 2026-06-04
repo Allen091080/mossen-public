@@ -93,6 +93,16 @@ describe('LocalWorkflowTask pause/resume controls', () => {
     expect(task.args).toEqual({ ticket: 42 })
     expect(task.title).toBe('Demo')
     expect(task.phaseDefinitions).toEqual([{ title: 'Plan', model: 'fast' }])
+    expect(task.phases).toEqual(['Plan'])
+    expect(task.workflowProgress).toEqual([
+      {
+        type: 'workflow_phase',
+        index: 1,
+        title: 'Plan',
+        state: 'start',
+      },
+    ])
+    expect(task.progressVersion).toBe(1)
     expect(task.transcriptDir).toBe(
       '/tmp/workflows/wf_register_test/transcripts',
     )
@@ -289,6 +299,52 @@ describe('LocalWorkflowTask pause/resume controls', () => {
     expect(task.progressVersion).toBe(3)
     expect(task.totalToolCalls).toBe(2)
     expect(task.logs).toEqual(task.log)
+  })
+
+  test('seeded phase titles are not duplicated when the script enters the phase', () => {
+    const runId = 'wf_seeded_phase_test'
+    let state = { tasks: {} } as unknown as AppState
+    const setAppState: SetAppState = updater => {
+      state = updater(state)
+    }
+
+    registerWorkflowTask({
+      runId,
+      workflowName: 'demo',
+      description: 'demo workflow',
+      phaseDefinitions: [{ title: 'Plan' }, { title: 'Build' }],
+      abortController: new AbortController(),
+      setAppState,
+    })
+    drainSdkEvents()
+
+    updateWorkflowTaskProgress(
+      runId,
+      {
+        kind: 'phase',
+        title: 'Plan',
+      },
+      setAppState,
+    )
+
+    const task = state.tasks[runId] as LocalWorkflowTaskState
+    expect(task.currentPhase).toBe('Plan')
+    expect(task.phases).toEqual(['Plan', 'Build'])
+    expect(task.workflowProgress).toEqual([
+      {
+        type: 'workflow_phase',
+        index: 1,
+        title: 'Plan',
+        state: 'start',
+      },
+      {
+        type: 'workflow_phase',
+        index: 2,
+        title: 'Build',
+        state: 'start',
+      },
+    ])
+    expect(task.progressVersion).toBe(2)
   })
 
   test('pause transitions to official paused status and aborts the run', async () => {

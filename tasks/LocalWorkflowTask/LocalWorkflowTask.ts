@@ -234,12 +234,44 @@ function phaseIndexFor(
   return index >= 0 ? index + 1 : undefined
 }
 
+function seedPhaseTitles(
+  phaseDefinitions: WorkflowPhaseMeta[] | undefined,
+): string[] {
+  const titles: string[] = []
+  for (const phase of phaseDefinitions ?? []) {
+    const title = phase.title.trim()
+    if (title && !titles.includes(title)) titles.push(title)
+  }
+  return titles
+}
+
+function workflowPhaseProgressForTitles(
+  phases: readonly string[],
+): SdkWorkflowProgress[] {
+  return phases.map((title, index) => ({
+    type: 'workflow_phase',
+    index: index + 1,
+    title,
+    state: 'start',
+  }))
+}
+
+function hasWorkflowPhaseProgress(
+  task: LocalWorkflowTaskState,
+  title: string,
+): boolean {
+  return task.workflowProgress.some(
+    progress => progress?.type === 'workflow_phase' && progress.title === title,
+  )
+}
+
 function workflowProgressForSdk(
   event: WorkflowProgressEvent,
   task: LocalWorkflowTaskState,
 ): SdkWorkflowProgress[] | undefined {
   switch (event.kind) {
     case 'phase':
+      if (hasWorkflowPhaseProgress(task, event.title)) return undefined
       return [
         {
           type: 'workflow_phase',
@@ -288,22 +320,29 @@ function workflowProgressForSdk(
   }
 }
 
-function withWorkflowProgress(
+function applyWorkflowProgress(
   task: LocalWorkflowTaskState,
   event: WorkflowProgressEvent,
-): LocalWorkflowTaskState {
+): {
+  task: LocalWorkflowTaskState
+  workflowProgress?: SdkWorkflowProgress[]
+} {
   const workflowProgress = workflowProgressForSdk(event, task)
-  if (!workflowProgress?.length) return task
+  if (!workflowProgress?.length) return { task }
   return {
-    ...task,
-    workflowProgress: [...task.workflowProgress, ...workflowProgress],
-    progressVersion: task.progressVersion + 1,
+    task: {
+      ...task,
+      workflowProgress: [...task.workflowProgress, ...workflowProgress],
+      progressVersion: task.progressVersion + 1,
+    },
+    workflowProgress,
   }
 }
 
 function emitWorkflowTaskProgress(
   task: LocalWorkflowTaskState,
   event: WorkflowProgressEvent,
+  workflowProgress?: SdkWorkflowProgress[],
 ): void {
   emitTaskProgress({
     taskId: task.id,
@@ -313,7 +352,7 @@ function emitWorkflowTaskProgress(
     totalTokens: task.tokensSpent,
     toolUses: task.totalToolCalls,
     summary: task.summary,
-    workflowProgress: workflowProgressForSdk(event, task),
+    workflowProgress: workflowProgress ?? workflowProgressForSdk(event, task),
   })
 }
 
@@ -378,6 +417,8 @@ export function registerWorkflowTask(params: {
     params.description,
     params.toolUseId,
   )
+  const seededPhases = seedPhaseTitles(params.phaseDefinitions)
+  const seededWorkflowProgress = workflowPhaseProgressForTitles(seededPhases)
   const task: LocalWorkflowTaskState = {
     ...base,
     type: 'local_workflow',
@@ -399,9 +440,9 @@ export function registerWorkflowTask(params: {
     agentCount: 0,
     totalToolCalls: 0,
     tokensSpent: 0,
-    phases: [],
-    workflowProgress: [],
-    progressVersion: 0,
+    phases: seededPhases,
+    workflowProgress: seededWorkflowProgress,
+    progressVersion: seededWorkflowProgress.length,
     agents: [],
     log: [],
     logs: [],
@@ -412,6 +453,18 @@ export function registerWorkflowTask(params: {
   void initTaskOutput(taskId)
   appendLogLine(taskId, `workflow started: ${params.workflowName}`)
   registerTask(task, params.setAppState)
+  if (seededWorkflowProgress.length > 0) {
+    emitTaskProgress({
+      taskId,
+      toolUseId: task.toolUseId,
+      description: task.description,
+      startTime: task.startTime,
+      totalTokens: task.tokensSpent,
+      toolUses: task.totalToolCalls,
+      summary: task.summary,
+      workflowProgress: seededWorkflowProgress,
+    })
+  }
 }
 
 export function updateWorkflowTaskProgress(
@@ -422,12 +475,13 @@ export function updateWorkflowTaskProgress(
   const line = progressLine(event)
   appendLogLine(runId, line)
   let taskForSdkProgress: LocalWorkflowTaskState | null = null
+  let workflowProgressForEvent: SdkWorkflowProgress[] | undefined
   updateTaskState<LocalWorkflowTaskState>(runId, setAppState, task => {
     if (task.status !== 'running') return task
     const logState = nextLogState(task, line)
     switch (event.kind) {
       case 'phase': {
-        const next = withWorkflowProgress({
+        const progressed = applyWorkflowProgress({
           ...task,
           currentPhase: event.title,
           phases: task.phases.includes(event.title)
@@ -436,8 +490,9 @@ export function updateWorkflowTaskProgress(
           summary: event.title,
           ...logState,
         }, event)
-        taskForSdkProgress = next
-        return next
+        workflowProgressForEvent = progressed.workflowProgress
+        taskForSdkProgress = progressed.task
+        return progressed.task
       }
       case 'log': {
         const next = { ...task, summary: event.message, ...logState }
@@ -445,7 +500,7 @@ export function updateWorkflowTaskProgress(
         return next
       }
       case 'agent_queued': {
-        const next = withWorkflowProgress({
+        const progressed = applyWorkflowProgress({
           ...task,
           agentCount: Math.max(task.agentCount, event.agentNumber),
           agents: setWorkflowAgent(task.agents, {
@@ -459,11 +514,12 @@ export function updateWorkflowTaskProgress(
           summary: `${event.label} queued`,
           ...logState,
         }, event)
-        taskForSdkProgress = next
-        return next
+        workflowProgressForEvent = progressed.workflowProgress
+        taskForSdkProgress = progressed.task
+        return progressed.task
       }
       case 'agent_start': {
-        const next = withWorkflowProgress({
+        const progressed = applyWorkflowProgress({
           ...task,
           agentCount: Math.max(task.agentCount, event.agentNumber),
           agents: setWorkflowAgent(task.agents, {
@@ -477,14 +533,15 @@ export function updateWorkflowTaskProgress(
           summary: event.label,
           ...logState,
         }, event)
-        taskForSdkProgress = next
-        return next
+        workflowProgressForEvent = progressed.workflowProgress
+        taskForSdkProgress = progressed.task
+        return progressed.task
       }
       case 'agent_end': {
         const status =
           event.status ?? (event.ok ? 'completed' : 'failed')
         const toolCalls = event.toolCalls ?? 0
-        const next = withWorkflowProgress({
+        const progressed = applyWorkflowProgress({
           ...task,
           tokensSpent: task.tokensSpent + event.tokens,
           totalToolCalls: task.totalToolCalls + toolCalls,
@@ -499,13 +556,14 @@ export function updateWorkflowTaskProgress(
           summary: `${event.label} ${status}`,
           ...logState,
         }, event)
-        taskForSdkProgress = next
-        return next
+        workflowProgressForEvent = progressed.workflowProgress
+        taskForSdkProgress = progressed.task
+        return progressed.task
       }
     }
   })
   if (taskForSdkProgress) {
-    emitWorkflowTaskProgress(taskForSdkProgress, event)
+    emitWorkflowTaskProgress(taskForSdkProgress, event, workflowProgressForEvent)
   }
 }
 
