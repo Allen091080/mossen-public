@@ -1,0 +1,215 @@
+{
+  "$comment": "Mossen Distribution Contract v1 — machine-readable single source of truth for the public API surface that cli-harness and other integrators depend on. Edited only via PR; every PR that changes stable_surface must update this file in the same commit (wave_w442 smoke enforces this).",
+  "contractVersion": "1.0.1",
+  "mossenVersion": "1.1.0",
+  "mossenCommit": "v1.1.0",
+  "lastUpdated": "2026-05-26",
+  "$changelog": {
+    "1.0.1": "R8 §3 patch — annotate hook_event subtype variants + permission_denial real location (embedded in result.permission_denials[]); add ndjson_top_level_extras section. Backward-compatible documentation enrichment, no surface change.",
+    "1.0.0": "Initial contract per Phase 1 W442. cli-harness R7 §5 sign-off; final GA tag locked at v1.0.0 after R10 sign-off."
+  },
+  "$mossenVersionHistory": {
+    "1.1.0": "W458 (user-facing model alias scrub) + W459 (first-launch LLM profile wizard) + W459-full (provider picker + URL validation + endpoint test + multi-profile loop + MemorySidecarWizardStep) + W459-schema (per-profile env-var apiKey reference via new ProfileApiKeyEnvRef type) + W462 (/permissions mode-vs-rule clarification). Contract surface unchanged from 1.0.1 — all changes are additive UI/onboarding/internals; no breaking change for cli-harness or other integrators.",
+    "1.0.0": "GA release. Distribution Plan v1 all 4 phases. Promoted from v1.0.0-rc2 after cli-harness R10 sign-off."
+  },
+
+  "stable_surface": {
+    "cli_flags": [
+      "--output-format",
+      "--input-format",
+      "--verbose",
+      "--include-partial-messages",
+      "--include-hook-events",
+      "--model",
+      "--permission-mode",
+      "--permission-prompt-tool",
+      "--append-system-prompt",
+      "--resume",
+      "--allow-dangerously-skip-permissions",
+      "--add-dir",
+      "--plugin-dir",
+      "-p"
+    ],
+
+    "ndjson_message_envelope": {
+      "$comment": "Top-level mossen SDK messages observed on the NDJSON stream. The `type` field discriminates; some message types (notably 'system') use a `subtype` field for sub-discrimination. R4 §B.3 lists 14 short event-type names; this section maps them to the actual {type, subtype?} pairs in mossen source.",
+      "system_init":       { "type": "system", "subtype": "init" },
+      "compact_boundary":  { "type": "system", "subtype": "compact_boundary" },
+      "status":            { "type": "system", "subtype": "status" },
+      "stream_event":      { "type": "stream_event" },
+      "user":              { "type": "user" },
+      "assistant":         { "type": "assistant" },
+      "result":            { "type": "result" },
+      "control_request":   { "type": "control_request" },
+      "control_response":  { "type": "control_response" },
+      "partial_assistant": { "type": "stream_event" }
+    },
+
+    "ndjson_stream_event_subtypes": {
+      "$comment": "When type='stream_event', the nested event.type discriminates between content delta kinds. R4 §B.3 lists these as top-level event names; cli-harness extracts them from the stream_event envelope.",
+      "text_delta":        "via stream_event.event.delta.type='text_delta'",
+      "thinking_start":    "via stream_event.event.content_block.type='thinking' content_block_start",
+      "thinking_delta":    "via stream_event.event.delta.type='thinking_delta'",
+      "tool_use":          "via stream_event.event.content_block.type='tool_use' content_block_start",
+      "tool_result":       "embedded in user message content block (type='tool_result')",
+      "usage":             "via stream_event.event.message_delta.usage",
+      "rate_limit":        "emitted as control_request subtype",
+      "error":             "via result message subtype='error' OR as stderr line",
+      "hook_event":        "R8-resolved (2026-05-25): emitted as system messages with one of three subtypes — {type:'system', subtype:'hook_started'|'hook_progress'|'hook_response'}. See cli/print.ts:823-868 + entrypoints/sdk/coreSchemas.ts SDKHookStartedMessageSchema / SDKHookProgressMessageSchema / SDKHookResponseMessageSchema. cli-harness R8 §1: cli-harness sdk was filtering on top-level type='hook_event' — dead code, cli-harness will fix.",
+      "permission_denial": "R8-resolved (2026-05-25): NOT a top-level event type. Emitted as elements of result.permission_denials[] (SDKPermissionDenial[] array) on the final result message. See QueryEngine.ts (8 push-sites) + ndjson_top_level_extras.result_permission_denials below for the shape. cli-harness R8 §2: cli-harness sdk was filtering on top-level type='permission_denial' — dead code, cli-harness will fix."
+    },
+
+    "ndjson_top_level_extras": {
+      "$comment": "Side-channel data attached to the result message envelope (not its own top-level type). Documented here so contract consumers know where to find them rather than searching for missing top-level event types.",
+      "result_permission_denials": {
+        "location":   "result.permission_denials[]",
+        "element_shape": "SDKPermissionDenial",
+        "element_fields": {
+          "toolName":     "string",
+          "toolUseId":    "string",
+          "toolInput":    "object (the tool input that was denied)"
+        },
+        "emit_sites":  "QueryEngine.ts — 8 push-sites on the in-flight result accumulator",
+        "consumer_note": "cli-harness Memory pane / permission audit log iterates this array after stream completion to surface denied operations to the user. R8 §2 confirms this is the correct integration point."
+      }
+    },
+
+    "system_init_fields": {
+      "$comment": "W442 dual-emit: snake_case (deprecated_since 1.0.0, removed in 1.2.0) and camelCase (stable). Both forms emit simultaneously during the deprecation window. R4 §B.3 (camelCase) is the long-term contract.",
+      "sessionId":          { "type": "string", "since": "1.0.0" },
+      "mossenVersion":      { "type": "string (semver)", "since": "1.0.0" },
+      "slashCommands":      { "type": "string[]", "since": "1.0.0" },
+      "mcpServers":         { "type": "{ name: string, status: string }[]", "since": "1.0.0" },
+      "memoryFiles":        { "type": "MemoryFile[]", "since": "1.0.0", "shape_ref": "memory_file_fields" },
+      "outputStyle":        { "type": "string", "since": "1.0.0" },
+      "tools":              { "type": "string[]", "since": "1.0.0" },
+      "agents":             { "type": "string[]", "since": "1.0.0" },
+      "skills":             { "type": "string[]", "since": "1.0.0" },
+      "plugins":            { "type": "{ name: string, path: string, source?: string }[]", "since": "1.0.0" },
+      "model":              { "type": "string", "since": "1.0.0" },
+      "permissionMode":     { "type": "PermissionMode (already camel)", "since": "1.0.0" },
+      "apiKeySource":       { "type": "ApiKeySource (already camel)", "since": "1.0.0" },
+      "betas":              { "type": "string[]", "since": "1.0.0" },
+      "cwd":                { "type": "string", "since": "1.0.0" },
+      "uuid":               { "type": "string (UUID)", "since": "1.0.0" },
+      "fastModeState":      { "type": "FastModeState", "since": "1.0.0" },
+      "mossenBuild":        { "type": "string (commit short SHA)", "since": "1.1.0 (Phase 2 binary CI)", "status": "planned" }
+    },
+
+    "memory_file_fields": {
+      "$comment": "Per R7 §2: cli-harness MemoryPane.tsx displays all 6 fields. No trimming.",
+      "path":         { "type": "string (display path with $HOME replaced by ~)" },
+      "type":         { "type": "string (one of: User, Project, Local, Managed, AutoMem, TeamMem)" },
+      "charLen":      { "type": "number (UTF-16 length after frontmatter strip)" },
+      "parent":       { "type": "string?", "optional": true },
+      "accessCount":  { "type": "number?", "optional": true },
+      "lastAccessed": { "type": "string? (ISO timestamp)", "optional": true }
+    },
+
+    "data_paths": {
+      "settings_json":                "~/.mossen/settings.json",
+      "settings_active_profile_key":  "mossen.activeProfile",
+      "cli_harness_ownership_prefix": "~/.mossen/.desktop/",
+      "mossen_home_env":              "MOSSEN_HOME",
+      "$comment": "cli_harness_ownership_prefix is owned exclusively by cli-harness — mossen must NOT read or write under this prefix. settings_active_profile_key value is contract-locked per R4 §B.5."
+    },
+
+    "exit_codes": {
+      "$comment": "INFORMATIONAL: W442 records the target contract; mossen source currently uses only 0/1/2/143. Phase 4 W453 will refactor process.exit callsites to use this enum. cli-harness should defer exit-code classification migration until Phase 4 ships.",
+      "0": "ok",
+      "1": "generic_error",
+      "2": "auth_required",
+      "3": "profile_missing",
+      "4": "network_denied",
+      "5": "tool_not_allowed",
+      "6": "timeout",
+      "7": "internal_panic"
+    },
+
+    "tool_result_meta_shapes": {
+      "$comment": "INFORMATIONAL: W442 records the target contract; mossen source does not yet emit tool_result._meta. Phase 4 W454 will add structured _meta to these 4 tools. Until then cli-harness keeps the 3 summary-regex sites (per R7 §1). Removing the regexes is gated on W454.",
+      "cron_created":     { "fields": { "jobId": "string" }, "tool": "CronCreate", "regex_replaces": "/\\bjob\\s+([0-9a-f]{8})\\b/i" },
+      "cron_deleted":     { "fields": { "jobId": "string" }, "tool": "CronDelete", "regex_replaces": "(uses input.id today, no regex)" },
+      "worktree_created": { "fields": { "path": "string", "branch": "string" }, "tool": "EnterWorktree", "regex_replaces": "/Created worktree at (\\S+) on branch (\\S+?)\\./" },
+      "worktree_exited":  { "fields": { "path": "string", "branch": "string" }, "tool": "ExitWorktree",  "regex_replaces": "/preserved at (\\S+) on branch/" }
+    }
+  },
+
+  "deprecated_surface": {
+    "$comment": "Fields emitted by current mossen source that will be removed in a future minor release. Per Distribution Plan §6.2 deprecation policy: at least 2 minor cycles between deprecated-marking and removal.",
+
+    "system_init_fields": {
+      "session_id":             { "alias_of": "sessionId",         "deprecated_since": "1.0.0", "remove_in": "1.2.0" },
+      "slash_commands":         { "alias_of": "slashCommands",     "deprecated_since": "1.0.0", "remove_in": "1.2.0" },
+      "mcp_servers":            { "alias_of": "mcpServers",        "deprecated_since": "1.0.0", "remove_in": "1.2.0" },
+      "mossen_code_version":    { "alias_of": "mossenVersion",     "deprecated_since": "1.0.0", "remove_in": "1.2.0" },
+      "memory_files":           { "alias_of": "memoryFiles",       "deprecated_since": "1.0.0", "remove_in": "1.2.0" },
+      "output_style":           { "alias_of": "outputStyle",       "deprecated_since": "1.0.0", "remove_in": "1.2.0" },
+      "fast_mode_state":        { "alias_of": "fastModeState",     "deprecated_since": "1.0.0", "remove_in": "1.2.0" },
+      "messaging_socket_path":  { "alias_of": "messagingSocketPath", "deprecated_since": "1.0.0", "remove_in": "1.2.0", "internal_only": true }
+    }
+  },
+
+  "breaking_change_protocol": {
+    "policy": "Any change that removes or renames a field in stable_surface must be preceded by: (a) a deprecation entry in deprecated_surface for at least 2 minor cycles, (b) a 'BREAKING:' line in CHANGELOG.md, (c) a major bump of contractVersion if the schema itself changes. R5 Q3 policy locked.",
+    "upcoming": [
+      {
+        "kind": "field_removal",
+        "from": "deprecated_surface.system_init_fields.session_id",
+        "deprecated_since": "1.0.0",
+        "remove_in": "1.2.0",
+        "reason": "snake_case → camelCase alignment per cli-harness R4 §B.3"
+      },
+      {
+        "kind": "field_removal",
+        "from": "deprecated_surface.system_init_fields.slash_commands",
+        "deprecated_since": "1.0.0",
+        "remove_in": "1.2.0",
+        "reason": "snake_case → camelCase alignment per cli-harness R4 §B.3"
+      },
+      {
+        "kind": "field_removal",
+        "from": "deprecated_surface.system_init_fields.mcp_servers",
+        "deprecated_since": "1.0.0",
+        "remove_in": "1.2.0",
+        "reason": "snake_case → camelCase alignment per cli-harness R4 §B.3"
+      },
+      {
+        "kind": "field_removal",
+        "from": "deprecated_surface.system_init_fields.mossen_code_version",
+        "deprecated_since": "1.0.0",
+        "remove_in": "1.2.0",
+        "reason": "snake_case → camelCase alignment per cli-harness R4 §B.3"
+      },
+      {
+        "kind": "field_removal",
+        "from": "deprecated_surface.system_init_fields.memory_files",
+        "deprecated_since": "1.0.0",
+        "remove_in": "1.2.0",
+        "reason": "snake_case → camelCase alignment per cli-harness R4 §B.3"
+      },
+      {
+        "kind": "field_removal",
+        "from": "deprecated_surface.system_init_fields.output_style",
+        "deprecated_since": "1.0.0",
+        "remove_in": "1.2.0",
+        "reason": "snake_case → camelCase alignment per cli-harness R4 §B.3"
+      },
+      {
+        "kind": "field_removal",
+        "from": "deprecated_surface.system_init_fields.fast_mode_state",
+        "deprecated_since": "1.0.0",
+        "remove_in": "1.2.0",
+        "reason": "snake_case → camelCase alignment per cli-harness R4 §B.3"
+      }
+    ]
+  },
+
+  "internals_do_not_depend_on": [
+    "~/.mossen/projects/<hash>/* directory layout",
+    "~/.mossen/sessions/*.json schema",
+    "~/.mossen/daemon/* directory layout",
+    "Mossen internal package layout (services/, utils/, etc.)",
+    "messaging_socket_path / messagingSocketPath value (internal UDS path, only present when UDS_INBOX feature flag is on)"
+  ]
+}

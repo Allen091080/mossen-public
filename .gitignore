@@ -1,0 +1,16 @@
+node_modules/
+.DS_Store
+.mossen/
+.mossensrc/
+coverage/
+dist/
+tmp/
+*.log
+*.tmp
+*.pid
+*.bak-*
+__pycache__/
+*.pyc
+
+# Browser/debug artifacts
+.playwright-mcp/

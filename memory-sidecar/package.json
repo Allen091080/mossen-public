@@ -1,0 +1,14 @@
+{
+  "name": "@mossen/memory-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "mossen-memory": "./src/cli/index.ts"
+  },
+  "scripts": {
+    "cli": "bun ./src/cli/index.ts",
+    "smoke": "python3 ../scripts/wave_w87_memory_sidecar_stage1_smoke.py"
+  },
+  "dependencies": {}
+}

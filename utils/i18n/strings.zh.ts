@@ -1,0 +1,749 @@
+/**
+ * STRINGS_ZH — Chinese (Simplified) translations.
+ *
+ * Type-only import of I18nKey + `satisfies Record<I18nKey, string>` enforces
+ * that every key in STRINGS_EN has a matching zh entry; missing keys produce
+ * a TypeScript compile error.
+ *
+ * Match order with strings.en.ts for diff readability.
+ */
+
+import type { I18nKey } from './keys.js'
+
+export const STRINGS_ZH = {
+  // --- cmd.* ---
+  'cmd.help.description': '显示帮助和可用命令',
+  'cmd.exit.description': '退出交互界面',
+  'cmd.files.description': '列出当前上下文中的全部文件',
+  'cmd.memory.description': '编辑手写的 {product} 记忆文件（mossen.md）',
+  'cmd.memory.crossref':
+    '如要管理自动捕获的旁路记忆库，请用 /memory-sidecar。',
+  'cmd.mcp.description': '管理 MCP 服务器',
+  'cmd.skills.description': '列出可用技能',
+  'cmd.hooks.description': '查看工具事件的 hook 配置',
+  'cmd.resume.description': '恢复之前的对话',
+  'cmd.resume.argumentHint': '[会话 id、标题或搜索词]',
+  'cmd.lang.description': '快速切换运行语言',
+  // W2-S1 高频会话基础 10 命令
+  'cmd.clear.description': '清空对话历史并释放上下文',
+  'cmd.compact.description':
+    '清空对话历史，但保留上下文摘要。可选：/compact [摘要说明]',
+  'cmd.diff.description': '查看未提交变更和每轮 diff',
+  'cmd.copy.description':
+    '复制 {product} 的最新回复到剪贴板（或用 /copy N 复制倒数第 N 条）',
+  'cmd.export.description': '将当前对话导出到文件或剪贴板',
+  'cmd.branch.description': '在当前节点创建当前对话的分支',
+  'cmd.fork.description': '用当前对话上下文运行一个分支智能体',
+  'cmd.rename.description': '重命名当前对话',
+  'cmd.tasks.description': '列出当前会话任务和后台 bash',
+  'cmd.docs.description': '打开 Mossen 本地文档和主题指南',
+  'cmd.usage.description': '显示套餐使用限制',
+  'cmd.rewind.description': '将代码和/或对话恢复到之前的时间点',
+  // W2-S2 编辑 / 配置 8 命令
+  'cmd.config.description': '打开配置面板',
+  'cmd.theme.description': '更换主题',
+  'cmd.color.description': '设置本会话提示栏颜色',
+  'cmd.keybindings.description': '打开或创建按键绑定配置文件',
+  'cmd.vim.description': '在 Vim 和普通编辑模式之间切换',
+  'cmd.voice.description': '切换语音模式',
+  'cmd.effort.description': '设置模型使用的推理强度',
+  'cmd.profile.description': '设置个人工作流的执行和推理配置',
+  'cmd.plan.description': '开启计划模式或查看当前会话计划',
+  'cmd.goal.description': '设置或查看当前会话的完成目标',
+  'cmd.workflows.description': '查看工作流运行记录，并保存为可复用命令',
+  'cmd.workflows.empty': '本会话还没有工作流运行记录。',
+  'cmd.workflows.emptyHint': '在消息里输入 “workflow” 即可编排子 agent；运行记录会出现在这里。',
+  'cmd.workflows.listTitle': '本会话的工作流运行：',
+  'cmd.workflows.detailHint': '用 /workflows <runId> 查看某次运行的执行过程，或 /workflows save <runId> [名称] 保存它。',
+  'cmd.workflows.notFound': '找不到 id 为 {runId} 的工作流运行。',
+  'cmd.workflows.status': '状态',
+  'cmd.workflows.agents': 'Agent 数',
+  'cmd.workflows.tokens': 'Token',
+  'cmd.workflows.progress': '执行过程：',
+  'cmd.workflows.noProgress': '该次运行没有记录执行过程。',
+  'cmd.workflows.saveUsage': '用法：/workflows save <runId> [名称] [--user]',
+  'cmd.workflows.saveBadName': '无法推导出合法的工作流名称，请显式指定一个。',
+  'cmd.workflows.saved': '已保存工作流 “{name}”（{scope} 作用域）→ {path}。现在可通过 /{name} 调用。',
+  'cmd.workflows.saveFailed': '保存工作流失败：{error}',
+  'cmd.workflows.ultracodeOn': '已为本会话开启 ultracode 常驻编排模式。',
+  'cmd.workflows.ultracodeOff': '已关闭 ultracode 常驻编排模式。',
+  'cmd.workflows.ultracodeStatusOn': 'ultracode 常驻编排模式已开启。用 /workflows ultracode off 可关闭。',
+  'cmd.workflows.ultracodeStatusOff': 'ultracode 常驻编排模式已关闭。在消息中输入 “ultracode”（或 /workflows ultracode on）可开启。',
+  'cmd.goal.set.ok': '已为当前会话设置目标。',
+  'cmd.goal.unavailable.hooksDisabled':
+    '/goal 不可用，因为设置或 managed policy 已禁用 hooks。',
+  'cmd.goal.set.empty':
+    '用法：/goal set <目标>、/goal status、/goal why、/goal clear（或 stop/off/reset/none/cancel）、/goal pause、/goal resume 或 /goal done',
+  'cmd.goal.set.truncated': '目标已截断到 {max} 个字素。',
+  'cmd.goal.status.none': '当前没有活跃会话目标。可用 /goal set <目标> 添加。',
+  'cmd.goal.status.scope':
+    '作用域：当前进程；会在 /compact 后保留。评估器可自动续跑，直到达成或达到上限。',
+  'cmd.goal.status.previous': '上一个目标状态',
+  'cmd.goal.status.historyTitle': '本会话此前的目标：',
+  'cmd.goal.status.title': '当前会话目标',
+  'cmd.goal.status.status': '状态',
+  'cmd.goal.status.goal': '目标',
+  'cmd.goal.status.turns': '设置后轮次',
+  'cmd.goal.status.budget': '轮次上限',
+  'cmd.goal.status.elapsed': '已用时',
+  'cmd.goal.status.tokens': '预估 token',
+  'cmd.goal.status.lastTurnTokens': '最近一轮预估 token',
+  'cmd.goal.status.evaluatorTokens': '评估器预估 token',
+  'cmd.goal.status.reason': '最近一次评估原因',
+  'cmd.goal.status.value.active': '活跃',
+  'cmd.goal.status.value.paused': '已暂停',
+  'cmd.goal.status.value.cleared': '已清除',
+  'cmd.goal.status.value.completed': '已完成',
+  'cmd.goal.status.value.failed': '失败',
+  'cmd.goal.clear.ok': '已清除会话目标。',
+  'cmd.goal.clear.none': '没有可清除的会话目标。',
+  'cmd.goal.pause.ok': '已暂停会话目标。使用 /goal resume 可恢复。',
+  'cmd.goal.pause.none': '没有可暂停的活跃会话目标。',
+  'cmd.goal.resume.ok': '已恢复会话目标。',
+  'cmd.goal.resume.none': '没有可恢复的暂停目标。',
+  'cmd.goal.done.ok': '已将会话目标标记为完成。',
+  'cmd.goal.done.none': '没有可完成的活跃会话目标。',
+  'cmd.goal.auto.completed': '会话目标已达成：{reason}',
+  'cmd.goal.auto.continue': '会话目标尚未达成，继续执行：{reason}',
+  'cmd.goal.auto.error': '会话目标评估器已停止：{reason}',
+  'cmd.goal.auto.maxTurns': '会话目标自动续跑达到上限：{reason}',
+  'cmd.goal.auto.paused': '会话目标已暂停，等待用户输入：{reason}',
+  'cmd.goal.reason.pending': '等待首轮评估。',
+  'cmd.goal.reason.deferred': '目标评估正在等待活跃子工作：{reason}',
+  'cmd.goal.reason.continue': '目标尚未达成，将继续执行：{reason}',
+  'cmd.goal.reason.completed': '目标已达成：{reason}',
+  'cmd.goal.reason.paused': '目标已暂停，等待用户处理后恢复：{reason}',
+  'cmd.goal.reason.maxTurns': '已达到自动续跑轮次上限：{reason}',
+  'cmd.goal.reason.error': '评估器异常，已停止自动续跑：{reason}',
+  'cmd.goal.reason.cleared': '目标已清除：{reason}',
+  'cmd.goal.explain.title': '会话目标解释',
+  'cmd.goal.explain.none': '当前没有可解释的会话目标。',
+  'cmd.goal.explain.outcome': '评估结果',
+  'cmd.goal.explain.outcome.pending': '等待首轮评估',
+  'cmd.goal.explain.outcome.deferred': '等待活跃子工作',
+  'cmd.goal.explain.outcome.continue': '未达成，会自动继续',
+  'cmd.goal.explain.outcome.completed': '已达成',
+  'cmd.goal.explain.outcome.paused': '已暂停，等待你处理',
+  'cmd.goal.explain.outcome.maxTurns': '已达到轮次上限',
+  'cmd.goal.explain.outcome.error': '评估异常',
+  'cmd.goal.explain.outcome.cleared': '已清除',
+  'cmd.goal.explain.hint':
+    '提示：/goal status 看当前状态；/goal pause 暂停；/goal resume 恢复。',
+  'cmd.goal.defer.runningTool': '仍有工具调用在运行',
+  'cmd.goal.defer.backgroundShell': '仍有后台 shell 在运行',
+  'cmd.goal.defer.backgroundAgent': '仍有后台 agent 在运行',
+  'cmd.goal.defer.teammate': '仍有委派 agent 在运行',
+  'cmd.scrollSpeed.description': '设置终端滚动速度',
+  'cmd.scrollSpeed.current': '当前滚动速度：{speed}x。',
+  'cmd.scrollSpeed.updated': '滚动速度已设置为 {speed}x。新的滚动会立即使用该倍率。',
+  'cmd.scrollSpeed.invalid': '无效滚动速度：{value}。',
+  'cmd.scrollSpeed.usage': '用法：/scroll-speed <slow|normal|fast|0.1-20>。',
+  'cmd.goal.status.startHint': '开始：/goal set <目标>。目标只作用于当前会话，/resume 后会以暂停状态保留。',
+  'cmd.goal.status.next': '下一步',
+  'cmd.goal.status.nextActive': '评估器可自动续跑，直到目标达成或达到轮次上限。',
+  'cmd.goal.status.nextPaused': '暂停目标不会自动续跑；准备好后使用 /goal resume。',
+  'cmd.goal.status.overlayHint': '浮层：宽屏终端可用 Ctrl-G 隐藏或显示右上角目标卡片。',
+  'ui.workflowKeyword.notification':
+    'Workflow 模式 —— 本条消息已启用多 agent 编排。',
+  'ui.workflowKeyword.reminder':
+    '用户通过输入 workflow 关键词明确选择了多 agent 编排。当任务确有必要时，你可以使用 Workflow 工具来协调子 agent。',
+  'ui.workflowKeyword.ultraworkReminder':
+    '用户为本条消息请求了最强的单轮编排（ultrawork）。请积极拆解任务，使用 Workflow 工具并行 fan-out 多个子 agent，并在汇报前验证发现。',
+  'ui.workflowKeyword.ultracodeReminder':
+    '用户为本会话开启了常驻编排模式（ultracode）。从现在起，对于有分量的工作请默认使用 Workflow 工具——拆解并并行覆盖——直到用户关闭该模式。',
+  'ui.workflowKeyword.ultracodeStandingReminder':
+    '常驻编排模式（ultracode）已激活。对任何有分量的任务，请优先用 Workflow 工具编排子 agent，而不是单打独斗。',
+  'ui.workflowKeyword.ultraworkNotification':
+    'Ultrawork —— 本条消息启用最强单轮多 agent 编排。',
+  'ui.workflowKeyword.ultracodeNotification':
+    'Ultracode —— 本会话已开启常驻多 agent 编排模式。',
+  'ui.goalOverlay.title': '目标',
+  'ui.goalOverlay.hideHint': 'ctrl-g 隐藏',
+  'ui.goalOverlay.hiddenToast': '目标浮层已隐藏；按 Ctrl-G 可再次显示。',
+  'ui.goalOverlay.shownToast': '目标浮层已显示；按 Ctrl-G 可隐藏。',
+  'ui.goalOverlay.subtitle': '当前会话',
+  'ui.goalOverlay.goalCollapsedHint': '目标过长，/goal status 查看完整内容',
+  'ui.goalOverlay.scope': '作用域',
+  'ui.goalOverlay.scopeValue': '本会话',
+  'ui.goalOverlay.statusActive': '活跃：会自动评估',
+  'ui.goalOverlay.statusPaused': '暂停：等待恢复',
+  'ui.goalOverlay.statusCompleted': '已完成：结果已保留',
+  'ui.goalOverlay.statusFailed': '异常：等待处理',
+  'ui.goalOverlay.next': '下一步',
+  'ui.goalOverlay.nextActive': '评估后可续跑',
+  'ui.goalOverlay.nextPaused': '用 /goal resume',
+  'ui.goalOverlay.nextCompleted': '可 /goal clear',
+  'ui.goalOverlay.nextFailed': '查看 /goal why',
+  'ui.goalOverlay.reasonPending': '尚未完成评估',
+  'ui.goalOverlay.elapsedUnknown': '未知',
+  'ui.goalOverlay.tokenPending': '等待首轮估算',
+  'ui.promptInput.exampleCommand.placeholder': '试试“{command}”',
+  'ui.promptInput.context.teammate': '给 @{name} 发消息…',
+  'ui.promptInput.context.goalActive': '继续推进目标：{goal}',
+  'ui.promptInput.context.goalPaused': '目标已暂停：{goal}',
+  'ui.promptInput.context.busy': '输入后续要求，当前轮次结束后发送',
+  'ui.promptInput.context.next': '输入下一步，或用 / 查看命令',
+  'ui.promptInput.context.start': '输入任务，或用 / 查看命令',
+  'ui.promptQueue.upHint': '按 ↑ 编辑排队消息',
+  'ui.promptQueue.previewLabel': '排队输入',
+  'ui.promptQueue.taskPreviewLabel': '后台通知',
+  'ui.promptQueue.moreTasksCompleted': '还有 {count} 个任务已完成',
+  // W2-S3 PR / Review / 安全 / 登录 / 顾问 4 命令（/review 暂缓）
+  'cmd.advisor.description': '配置 advisor 模型',
+  'cmd.security-review.description': '对当前分支的待提交变更进行安全审查',
+  'cmd.permissions.description': '管理工具权限的允许和拒绝规则',
+  'cmd.login.description': '显示 {product} 后端凭据配置指引',
+  // W2-S4 Plugin / Skill / IDE 5 命令（/plugin 暂缓）
+  'cmd.reload-plugins.description': '激活当前会话中待生效的插件变更',
+  'cmd.agents.description': '打开智能体视图或管理智能体配置',
+  'cmd.agents.view.shellOnly':
+    'Agent View 是全屏 Shell 仪表盘。请在终端运行 `mossen agents`。`/agents` 保留用于管理智能体配置。',
+  'cmd.bg.description': '在 Agent View 后台模式启动任务',
+  'ui.agentView.title': '智能体会话',
+  'ui.agentView.empty':
+    '暂无智能体会话\n  输入任务后按 Enter，或用 Shift+Enter 派发并打开新任务\n  Shell 中可用：`mossen --bg "<prompt>"`\n  智能体配置：`/agents library`\n  按 `?` 查看快捷键',
+  'ui.agentView.select': '选择',
+  'ui.agentView.peek': '打开',
+  'ui.agentView.attach': '打开',
+  'ui.agentView.reply': '回复面板',
+  'ui.agentView.stop': '停止',
+  'ui.agentView.dismiss': '隐藏',
+  'ui.agentView.confirmDismiss': '再按 Ctrl+X 隐藏',
+  'ui.agentView.close': '关闭',
+  'ui.agentView.dismissed': '已关闭智能体视图',
+  'ui.agentView.viewingMain': '正在查看主会话',
+  'ui.agentView.viewingAgent': '正在查看智能体会话',
+  'ui.agentView.activeSession': '个活跃会话',
+  'ui.agentView.activeSessions': '个活跃会话',
+  'ui.agentView.totalSession': '个会话',
+  'ui.agentView.totalSessions': '个会话',
+  'ui.agentView.groupAgents': '智能体',
+  'ui.agentView.groupRemoteAgents': '远程智能体',
+  'ui.agentView.groupLocalAgents': '本地智能体',
+  'ui.agentView.groupSupervisorJobs': '后台任务',
+  'ui.agentView.groupLiveLocalTasks': '当前进程任务',
+  'ui.agentView.typeShortcut': '输入',
+  'ui.agentView.taskShortcut': '任务',
+  'ui.agentView.filter': '过滤',
+  'ui.agentView.command': '命令',
+  'ui.agentView.dispatch': '派发',
+  'ui.agentView.dispatchAttach': '派发并打开',
+  'ui.agentView.attachNth': '打开行',
+  'ui.agentView.externalEditor': '编辑器',
+  'ui.agentView.dispatchHint':
+    '输入任务后按 Enter 可派发。用 agent:/status:/cwd:/# 过滤。斜杠只打开任务技能/模板。Shift+Enter 打开新任务；设置 VISUAL 或 EDITOR 后，Ctrl+G 可编辑派发提示词。',
+  'ui.agentView.inputPlaceholder': '启动一个后台任务',
+  'ui.agentView.rootBackHint': '已经在 Agent View 主界面。Enter/→ 打开所选任务通道；输入 /exit 关闭。',
+  'ui.agentView.dispatchDefaults': '派发默认值',
+  'ui.agentView.dispatchDefaultsSkipPermissions': '跳过权限',
+  'ui.agentView.lastRefresh': '最近刷新',
+  'ui.agentView.nextStep': '下一步',
+  'ui.agentView.nextEmpty': '输入任务即可启动后台任务；智能体配置请用 /agents library。',
+  'ui.agentView.nextFilter': '正在过滤列表；按 Esc 清空过滤。',
+  'ui.agentView.nextCommand': '用 Enter 或 Tab 选择技能/模板，补充参数后再按 Enter 派发为后台任务。',
+  'ui.agentView.nextDispatch': '按 Enter 派发，或 Shift+Enter 派发并打开新任务。',
+  'ui.agentView.nextNeedsInput': '按 Enter/→ 或 Space 打开任务通道并回复。',
+  'ui.agentView.nextRunning': '按 Enter/→/Space 打开任务通道，或 Ctrl+X 停止。',
+  'ui.agentView.nextFailed': '按 Space 查看详情，或在 Shell 中用 `mossen respawn <id>` 复活。',
+  'ui.agentView.nextTerminal':
+    '按 Space 回看，连按 Ctrl+X 从列表移除，或用 `mossen rm <id> --dry-run` 预览清理。',
+  'ui.agentView.nextLeader': '按 Enter/→ 回到主会话。',
+  'ui.agentView.nextShell': '按 Enter 查看 shell 输出；运行中可按 Ctrl+X 停止。',
+  'ui.agentView.nextLocalAgent': '按 Enter/→ 在主对话中查看这个本地智能体。',
+  'ui.agentView.nextGenericTask': '按 Enter 查看详情，或 ←/Esc 关闭 Agent View。',
+  'ui.agentView.density': '{groups} 个分组 · {rows} 个可见任务',
+  'ui.agentView.highDensityMode': '高密度视图：已隐藏低价值路径详情，保留状态、标题、摘要。',
+  'ui.agentView.groupCountActive': '{count} 活跃',
+  'ui.agentView.groupCountNeedsInput': '{count} 待输入',
+  'ui.agentView.groupCountFailed': '{count} 失败',
+  'ui.agentView.groupCountCompleted': '{count} 完成',
+  'ui.agentView.groupStagePinned': '已置顶',
+  'ui.agentView.groupStageNeedsInput': '需要输入',
+  'ui.agentView.groupStageReadyForReview': '等待查看',
+  'ui.agentView.groupStageWorking': '运行中',
+  'ui.agentView.groupStageCompleted': '已完成',
+  'ui.agentView.groupStageStoppedFailed': '已停止/失败',
+  'ui.agentView.moreCompleted': '还有 {count} 个已完成 · Ctrl+O 展开',
+  'ui.agentView.notification.title': 'Mossen Agent View',
+  'ui.agentView.notification.needsInput': '后台任务 {id} 需要你输入。',
+  'ui.agentView.resultPayload': '结果',
+  'ui.agentView.resultArtifacts': '制品',
+  'ui.agentView.resultRisks': '风险',
+  'ui.agentView.resultNextActions': '下一步',
+  'ui.agentView.dateToday': '今天',
+  'ui.agentView.dateYesterday': '昨天',
+  'ui.agentView.dateThisWeek': '本周',
+  'ui.agentView.dateOlder': '更早',
+  'ui.agentView.dateUnknown': '未知日期',
+  'ui.agentView.refreshNever': '从未',
+  'ui.agentView.refreshJustNow': '刚刚',
+  'ui.agentView.refreshSecondsAgo': '{seconds} 秒前',
+  'ui.agentView.dispatching': '正在派发后台任务...',
+  'ui.agentView.dispatchTooShort': '后台任务提示词太短。',
+  'ui.agentView.editorUnavailable':
+    'Agent View 尚未配置外部编辑器。请设置 VISUAL 或 EDITOR 后再按 Ctrl+G。',
+  'ui.agentView.noGroupShortcutTarget':
+    '当前智能体分组中没有第 {index} 行。',
+  'ui.agentView.stopRequestedSupervisorJob':
+    '已请求停止。2 秒内再次按 Ctrl+X 可从智能体视图移除该任务。',
+  'ui.agentView.removeSupervisorConfirm':
+    '2 秒内再次按 Ctrl+X 可从智能体视图移除该任务。任务文件和 transcript 会保留。',
+  'ui.agentView.removedSupervisorJob':
+    '已从智能体视图移除该任务。任务文件和 transcript 已保留。',
+  'ui.agentView.supervisorLoadError': 'Supervisor 列表加载失败',
+  'ui.agentView.noMatches': '没有匹配的智能体会话',
+  'ui.agentView.commandPending': '使用上方技能/模板面板，或按 Esc 回到任务派发。',
+  'ui.agentView.paletteTitle': 'Agent View 任务技能/模板',
+  'ui.agentView.paletteEmpty': '没有匹配的任务技能/模板',
+  'ui.agentView.paletteHint': '↑/↓ 选择 · Enter/Tab 插入 · 补充参数后 Enter 派发',
+  'ui.agentView.paletteKindSkill': '技能',
+  'ui.agentView.paletteKindTemplate': '模板',
+  'ui.agentView.paletteBlockedCommand':
+    '{command} 在 Agent View 中不可用。请直接输入任务，或从 / 选择技能/模板；普通斜杠命令请进入某个任务会话后使用。',
+  'ui.agentView.peekPending': 'Supervisor 预览将在 W283-G 开启。当前可先用 logs <id>。',
+  'ui.agentView.attachPending': 'Supervisor 接入将在 W283-H 开启。当前可先用 logs <id>。',
+  'ui.agentView.attachCommand':
+    '在另一个终端运行 `mossen attach {id}` 接入；退出该会话只会 detach，不会停止任务。',
+  'ui.agentView.detached': '已从任务 {id} detach，Agent View 已恢复。',
+  'ui.agentView.attachFailed': '接入任务 {id} 退出码为 {code}。',
+  'ui.agentView.attachConnecting': '正在接入 agent 终端…连按两次 Esc 可断开。',
+  'ui.agentView.attachEvicted':
+    '该任务已被另一个 dashboard 接管。按任意键返回任务列表。',
+  'ui.agentView.attachUnsupported':
+    '当前终端不支持原始模式。请在真实的交互终端中打开 Agent View。',
+  'ui.agentView.attachFailedGeneric': '接入失败，返回到 dashboard。',
+  'ui.agentView.attachExitedSplash':
+    'Agent View 会话结束 (exit {code})。按任意键返回 dashboard。',
+  'ui.agentView.pin': '置顶',
+  'ui.agentView.unpin': '取消置顶',
+  'ui.agentView.rename': '重命名',
+  'ui.agentView.renamePrompt': '重命名：',
+  'ui.agentView.reorder': '排序',
+  'ui.agentView.collapseGroup': '折叠分组',
+  'ui.agentView.definitions': '配置',
+  'ui.agentView.definitionsUnavailable':
+    '智能体配置可在 REPL 中用 /agents library 打开。',
+  'ui.agentView.help': '帮助',
+  'ui.agentView.helpText':
+    '主输入用于创建新任务。用 / 选择命令和技能，/exit 关闭，agent:/status:/cwd:/# 过滤，Enter/→/Space 打开任务通道，← 返回列表。✻ 表示进程存活，∙ 表示已停止/可恢复。Ctrl+T 置顶，Ctrl+R 重命名，Shift+↑/↓ 排序，Ctrl+O 折叠/展开分组，Ctrl+X 停止/移除。',
+  'ui.agentView.helpCreateTitle': '创建：',
+  'ui.agentView.helpCreate':
+    '输入任务即可派发；/ 打开命令和技能；Shift+Enter 派发并打开；设置 VISUAL 或 EDITOR 后，Ctrl+G 可编辑派发提示词。',
+  'ui.agentView.helpBrowseTitle': '浏览：',
+  'ui.agentView.helpBrowse':
+    '用 a:<agent>、s:<state>、s:blocked、#<number> 或 PR URL 过滤；Ctrl+O 切换当前分组折叠/展开。',
+  'ui.agentView.helpInteractTitle': '进入/回复：',
+  'ui.agentView.helpInteract':
+    'Enter/→/Space 打开任务通道。主界面输入框只用于创建新的后台任务。',
+  'ui.agentView.helpOrganizeTitle': '整理：',
+  'ui.agentView.helpOrganize':
+    'Ctrl+T 置顶，Ctrl+R 重命名，Shift+↑/↓ 排序，Ctrl+X 停止；再次按 Ctrl+X 可移除终态任务。',
+  'ui.agentView.helpShellTitle': 'Shell：',
+  'ui.agentView.helpShell':
+    '`mossen --bg`、`mossen agents`、`mossen wait <id>`、`mossen logs <id>`、`mossen rm <id> --dry-run` 与 TUI 对应。',
+  'ui.agentView.statusQueued': '排队中',
+  'ui.agentView.statusWorking': '运行中',
+  'ui.agentView.statusIdle': '空闲',
+  'ui.agentView.statusNeedsInput': '等待输入',
+  'ui.agentView.statusCompleted': '已完成',
+  'ui.agentView.statusFailed': '失败',
+  'ui.agentView.statusStopped': '已停止',
+  'ui.agentView.loading': '加载中',
+  'ui.agentView.back': '返回',
+  'ui.agentView.sendReply': '发送回复',
+  'ui.agentView.acceptSuggestion': '采用建议',
+  'ui.transcript.editor.rendering': '正在渲染 {count} 条消息...',
+  'ui.transcript.editor.opening': '正在用 {editor} 打开 {path}',
+  'ui.transcript.editor.unavailable':
+    '已写入 {path} · 编辑器不可用（{editor}）；可设置 VISUAL 或 EDITOR 指定编辑器。',
+  'ui.transcript.editor.renderFailed': '渲染失败：{message}',
+  'ui.transcript.footer.showing':
+    '正在显示详细 transcript · {toggleShortcut} 切换',
+  'ui.transcript.footer.searchNav': 'n/N 跳转匹配项',
+  'ui.transcript.footer.virtualNav':
+    '滚动 · home/end 顶部/底部 · {/} 用户提示 · ?/v 快捷键 · e 编辑器',
+  'ui.transcript.footer.collapse': '折叠',
+  'ui.transcript.footer.showAll': '显示全部',
+  'ui.transcript.help.title': 'Transcript 快捷键',
+  'ui.transcript.help.search': '/ 搜索 · n/N 下一个/上一个匹配',
+  'ui.transcript.help.promptJump': '{/} 上一个/下一个用户提示',
+  'ui.transcript.help.scroll': '↑/↓ 滚动 · home/end 顶部/底部 · [ 倒出到滚屏',
+  'ui.transcript.help.shortcuts': '? 或 v 切换这个快捷键面板',
+  'ui.transcript.help.editor': 'e 用 $VISUAL/$EDITOR 打开渲染后的 transcript',
+  'ui.hooks.stop.blockCapReached':
+    'Stop hook 阻断反馈已重复 {attempts}/{limit} 次。Mossen 已停止自动续跑以避免循环；请检查 hook 输出或调整 hook 后重试。',
+  'ui.agentView.detailStatus': '任务控制台',
+  'ui.agentView.detailStatusLine':
+    '状态 {status} · 模型 {model} · 智能体 {agent} · 权限 {permission}',
+  'ui.agentView.detailCwd': '工作目录',
+  'ui.agentView.detailSession': '会话',
+  'ui.agentView.detailControls':
+    '操作：←/Esc 返回 · Enter 发送回复 · Tab 采用建议回复 · 数字键选择选项。',
+  'ui.agentView.detailInputs': '最近输入',
+  'ui.agentView.detailOutput': '最近输出',
+  'ui.agentView.detailEvents': '最近事件',
+  'ui.agentView.detailReplyChannel': '回复通道',
+  'ui.agentView.pendingQuestion': '待回答问题',
+  'ui.agentView.recentInputs': '最近发送给该任务的消息',
+  'ui.agentView.recentOutput': '最近输出',
+  'ui.agentView.noRecentOutput': '暂无最近输出',
+  'ui.agentView.recentEvents': '最近事件',
+  'ui.agentView.replyPrompt': '回复：',
+  'ui.agentView.replyPlaceholder': '输入回复，或按选项键',
+  'ui.agentView.replySent': '已发送',
+  'ui.agentView.replyAcked': '已确认',
+  'ui.agentView.sendingReply': '正在发送回复...',
+  'cmd.ide.description': '管理 IDE 集成并显示状态',
+  'cmd.init-verifiers.description': '为自动验证代码变更创建验证者技能',
+  'cmd.add-dir.description': '添加新的工作目录',
+  // W2-S5 系统/杂项 1 命令（/context 推迟、/brief→D、/logout→D）
+  'cmd.btw.description': '快速问一个支线问题，不打断主对话',
+  'cmd.brief.description': '切换简洁模式',
+  'cmd.assistant.description': '连接到正在运行的助手会话',
+  'cmd.commit.description': '创建 git commit',
+  'cmd.commit-push-pr.description': '提交、推送并打开 PR',
+  'cmd.context.description': '显示当前上下文使用情况',
+  'cmd.context.visualDescription': '以彩色网格显示当前上下文使用情况',
+  'cmd.cost.description': '显示当前会话的总成本和耗时',
+  'cmd.extensions.description': '显示扩展安装命令',
+  'cmd.feedback.description': '提交关于 {product} 的反馈',
+  'cmd.heapdump.description': '将 JS 堆快照导出到 ~/Desktop',
+  'cmd.install-slack-app.description': '安装 {product} Slack 应用',
+  'cmd.logout.description': '清除当前后端的本地缓存认证状态',
+  'cmd.lsp.description': '检查并配置 Language Server Protocol 支持',
+  'cmd.memory-sidecar.description':
+    '浏览自动捕获的旁路记忆库（recall / health / retention / repair）',
+  'cmd.memory-sidecar.crossref':
+    '如要编辑手写的 mossen.md，请用 /memory。',
+  'cmd.model.description': '列出、切换并管理模型 profile',
+  'cmd.model.models.timeoutInvalid':
+    '--timeout 必须是正整数毫秒值，当前是 "{value}"。',
+  'cmd.model.models.providerDashscopeCodingTitle':
+    '服务商提示：这看起来是阿里云百炼 coding-plan endpoint。',
+  'cmd.model.models.providerDashscopeCodingBody':
+    '这个 endpoint 仍然可以用于聊天，但不提供 OpenAI-compatible 的 GET /models。',
+  'cmd.model.models.providerDashscopeStandardRoots':
+    '如果你的 key 属于标准百炼 Model Studio，可以单独配置一个使用官方 OpenAI-compatible baseURL 的 profile：',
+  'cmd.model.models.providerDashscopeRootChina':
+    '  中国（北京）：https://dashscope.aliyuncs.com/compatible-mode/v1',
+  'cmd.model.models.providerDashscopeRootSingapore':
+    '  新加坡：      https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+  'cmd.model.models.providerDashscopeRootUs':
+    '  美国（弗吉尼亚）：https://dashscope-us.aliyuncs.com/compatible-mode/v1',
+  'cmd.model.models.providerDashscopeCodingManual':
+    '如果你的 key 只适用于 coding-plan endpoint，请保留当前 baseURL，并用已知模型 ID 切换：',
+  'cmd.model.models.providerDashscope404Title':
+    '服务商提示：这个 DashScope endpoint 对 GET /models 返回了 404。',
+  'cmd.model.models.providerDashscope404Body':
+    '聊天请求仍可能可用。如果你需要模型发现，请确认 profile baseURL 是以 /compatible-mode/v1 结尾的 Model Studio OpenAI-compatible API 根地址，而不是 chat/completions 或 coding-plan endpoint。',
+  'cmd.model.models.providerMinimaxTitle':
+    '服务商提示：这看起来是 MiniMax OpenAI-compatible endpoint。',
+  'cmd.model.models.providerMinimaxBody':
+    '部分 MiniMax-compatible 账号或代理即使聊天请求可用，也不一定暴露 GET /models。',
+  'cmd.model.models.providerGlmTitle':
+    '服务商提示：这看起来是 GLM / 智谱 endpoint。',
+  'cmd.model.models.providerGlmBody':
+    'GLM-compatible 聊天 endpoint 不一定会为所有账号或 gateway 路径暴露 OpenAI-compatible GET /models。',
+  'cmd.model.models.providerDeepSeekTitle':
+    '服务商提示：这看起来是 DeepSeek endpoint。',
+  'cmd.model.models.providerDeepSeekBody':
+    'DeepSeek 聊天请求可能可用，但当前这个 baseURL 不一定暴露 GET /models。',
+  'cmd.model.models.providerDeepSeekOpenAiRoot':
+    '如果要使用 OpenAI-compatible 模型发现，请确认 baseURL 是服务商 API root，例如 https://api.deepseek.com/v1。messages-compatible 路径可能需要手动填写模型 ID。',
+  'cmd.model.models.providerMessagesCompatibleTitle':
+    '服务商提示：这个 profile 使用 messages-compatible 协议。',
+  'cmd.model.models.providerMessagesCompatibleBody':
+    'messages-compatible 服务商通常不实现 OpenAI 风格的 GET /models。请为这个 profile 使用已知模型 ID。',
+  'cmd.model.models.providerOpenAiCompatibleTitle':
+    '服务商提示：这个 OpenAI-compatible endpoint 没有暴露 GET /models。',
+  'cmd.model.models.providerOpenAiCompatibleBody':
+    '聊天可能仍然可用。请检查 baseURL 是否指向服务商 API root，而不是 chat/completions-only 路径、代理路由或账号专属 coding endpoint。',
+  'cmd.model.models.providerKnownModelManual':
+    '保留这个 baseURL，并通过已知模型 ID 切换：',
+  'cmd.model.models.reasonCurrentProfile': '当前 profile',
+  'cmd.model.models.reasonOnlyProfile': '唯一已配置 profile',
+  'cmd.model.models.reasonSuffix': '（{reason}）',
+  'cmd.model.models.usageTitle': '用法：',
+  'cmd.model.models.usageCommand':
+    '  /model models [PROFILE] [--refresh] [--timeout MS]',
+  'cmd.model.models.usageDefaultProfile':
+    '不传 PROFILE 时，Mossen 会优先使用当前会话正在使用的 profile。',
+  'cmd.model.models.usageDiscovery':
+    '这个命令会用已配置的 baseURL/apiKey 发现该服务商暴露的模型 ID。',
+  'cmd.model.models.usageOptional':
+    '这是可选能力；初始配置仍然使用 /model add ... --model MODEL_ID。',
+  'cmd.model.models.availableProfiles': '可用 profiles：{profiles}',
+  'cmd.model.models.noProfiles': '还没有配置 profile。',
+  'cmd.model.models.title': '模型发现：{name}{reason}',
+  'cmd.model.models.resultFailed': '结果：失败（{reason}）',
+  'cmd.model.models.url': 'URL：{url}',
+  'cmd.model.models.httpStatus': 'HTTP 状态：{status}',
+  'cmd.model.models.reason': '原因：{reason}',
+  'cmd.model.models.noProfileChange':
+    '这不会修改 profile，也不会影响聊天请求。',
+  'cmd.model.models.manualFallback':
+    '如果该服务商不提供 GET /models，请继续使用 /model use PROFILE MODEL_ID 或 /model update NAME --model MODEL_ID 手动切换。',
+  'cmd.model.models.source': '来源：{source}{status}',
+  'cmd.model.models.fetchedAt': '获取时间：{fetchedAt}',
+  'cmd.model.models.cache': '缓存：{cachePath}',
+  'cmd.model.models.currentDefault': '当前默认模型：{model}',
+  'cmd.model.models.modelsCount': '模型（{count}）：',
+  'cmd.model.models.more':
+    '  ... 还有 {count} 个；如需完整列表，请以服务商控制台为准。',
+  'cmd.model.models.useWithoutChanging': '不改设置，临时使用：',
+  'cmd.model.models.persistDefault': '持久化为该 profile 默认模型：',
+  'cmd.model.test.gatewayBlock':
+    '网关/WAF 拦截：chat endpoint 返回的是 HTML/拦截页，不是模型响应。这通常是代理或网关策略问题，不是 Mossen 改写了凭据。',
+  'cmd.model.test.gatewayBlockCheck':
+    '请检查代理/WAF 是否允许 POST /chat/completions、流式响应，以及代理侧配置的上游 key。',
+  'cmd.model.test.modelUnsupported':
+    '模型不受支持：chat endpoint 拒绝了模型 {model}。',
+  'cmd.model.test.modelUnsupportedModels':
+    '如果该服务商支持模型列表，可尝试 /model models {name} --refresh。',
+  'cmd.model.test.modelUnsupportedManual':
+    '或手动切换：/model use {name} MODEL_ID --persist',
+  'cmd.model.test.payloadRejected':
+    '请求体被拒绝：endpoint 可达，但服务商/代理拒绝了 chat 请求 payload。',
+  'cmd.model.test.payloadRejectedCheck':
+    '请检查模型 ID、tool/stream 支持、max token 限制，以及代理 payload 重写规则。',
+  'cmd.model.test.providerServerError':
+    '服务商/网关服务端错误：稍后重试；若持续出现，请检查代理上游日志。',
+  'api.provider.error.gatewayBlock':
+    'API Error: {name} 网关/WAF 拦截了请求（HTTP {status}）· baseURL={baseUrl} · 这不一定是凭据失败；请检查代理/WAF 是否允许 POST /chat/completions 和流式响应。· 服务商信息：{detail}',
+  'api.provider.error.unsupportedModel':
+    'API Error: {name} 拒绝了模型 {model}（HTTP {status}）· endpoint 可达，但该模型可能不存在或未对当前 key 开通。可运行 /model test <profile>，如支持也可运行 /model models <profile> --refresh。· 服务商信息：{detail}',
+  'api.provider.error.server':
+    'API Error: {name} 服务商/网关返回 HTTP {status} · 稍后重试；若持续出现，请检查代理上游日志。· 服务商信息：{detail}',
+  'api.provider.error.payloadRejected':
+    'API Error: {name} 拒绝了请求 payload（HTTP {status}）· 请检查模型 ID、tool/stream 支持、max token 限制，以及代理 payload 重写规则。· 服务商信息：{detail}',
+  'api.provider.error.client':
+    'API Error: {name} 服务商返回 HTTP {status} · 请检查 baseURL、模型 ID、provider 协议和代理路由。· 服务商信息：{detail}',
+  'cmd.output-style.description': '已弃用：请使用 /config 修改输出风格',
+  'cmd.privacy-settings.description': '查看当前后端的隐私和数据控制',
+  'cmd.proactive.description': '切换主动自主模式',
+  'cmd.project.description': '管理项目存储（清理会话并保留记忆）',
+  'cmd.rate-limit-options.description': '显示触发限流时的选项',
+  'cmd.release-notes.description': '查看发布说明',
+  'cmd.remote-env.description': '配置 teleport 会话的默认远程环境',
+  'cmd.review.description': '审查 pull request',
+  'cmd.session.description': '显示远程会话 URL 和二维码',
+  'cmd.tag.description': '切换当前会话的可搜索标签',
+  'cmd.thinkback-play.description': '播放 thinkback 动画',
+  'cmd.mobile.description': '显示下载移动端应用的二维码',
+  'cmd.pr-comments.description': '获取 GitHub pull request 评论',
+  'cmd.pr-comments.progress': '正在获取 PR 评论',
+  'cmd.chrome.installExtension.label': '安装 Chrome 扩展',
+  'cmd.copy.fullResponse.label': '完整回复',
+  'cmd.copy.alwaysFull.label': '总是复制完整回复',
+  'cmd.copy.alwaysFull.description':
+    '以后跳过这个选择器（可通过 /config 恢复）',
+  'cmd.thinkback.menu.play.label': '播放动画',
+  'cmd.thinkback.menu.play.description': '观看你的年度回顾',
+  'cmd.thinkback.menu.edit.label': '编辑内容',
+  'cmd.thinkback.menu.edit.description': '修改动画内容',
+  'cmd.thinkback.menu.fix.label': '修复错误',
+  'cmd.thinkback.menu.fix.description': '修复校验或渲染问题',
+  'cmd.thinkback.menu.regenerate.label': '重新生成',
+  'cmd.thinkback.menu.regenerate.description': '从头创建新的动画',
+  'cmd.thinkback.menu.start.label': '开始吧！',
+  'cmd.thinkback.menu.start.description': '生成你的个性化动画',
+
+  // --- ui.* ---
+  'ui.welcome.title': '欢迎使用 {product}',
+  'ui.status.version': '版本',
+  'ui.status.sessionName': '会话名称',
+  'ui.status.sessionId': '会话 ID',
+  'ui.stats.shots.one': '1 轮',
+  'ui.stats.shots.twoToFive': '2–5 轮',
+  'ui.stats.shots.sixToTen': '6–10 轮',
+  'ui.stats.shots.elevenPlus': '11+ 轮',
+  'ui.bypassPermissions.noExit': '否，退出',
+  'ui.bypassPermissions.yesAccept': '是，我接受',
+  'ui.idleReturn.continue': '继续这个会话',
+  'ui.idleReturn.newConversation': '作为新会话发送消息',
+  'ui.idleReturn.dontAskAgain': '不再询问',
+  'ui.channelDowngrade.allowDowngrade': '允许可能降级到稳定版本',
+  'ui.invalidConfig.chooseOption': '选择一个选项：',
+  'ui.invalidConfig.exitFixManually': '退出并手动修复',
+  'ui.invalidConfig.resetDefault': '重置为默认配置',
+  'ui.externalIncludes.allow': '是，允许外部导入',
+  'ui.externalIncludes.disable': '否，禁用外部导入',
+  'ui.teleport.validating': '正在验证会话',
+  'ui.teleport.fetchingLogs': '正在获取会话日志',
+  'ui.teleport.fetchingBranch': '正在获取分支信息',
+  'ui.teleport.checkingOut': '正在检出分支',
+  'ui.mcp.scope.project': '项目 MCP',
+  'ui.mcp.scope.user': '用户 MCP',
+  'ui.mcp.scope.local': '本地 MCP',
+  'ui.mcp.scope.enterprise': '企业 MCP',
+  'ui.mcp.scope.dynamic': '内置 MCP',
+  'ui.mcp.scope.alwaysAvailable': '始终可用',
+  'ui.memory.openAutoMemoryFolder': '打开自动记忆文件夹',
+  'ui.memory.openTeamMemoryFolder': '打开团队记忆文件夹',
+  'ui.worktreeExit.removeDirtyDescription': '所有变更和提交都会丢失。',
+  'ui.worktreeExit.removeCleanDescription': '清理 worktree 目录。',
+  'ui.worktreeExit.keepWorktreeAndTmux': '保留 worktree 和 tmux 会话',
+  'ui.worktreeExit.keepWorktreeAndTmuxDescription':
+    '保留在 {path}。可用以下命令重新连接：tmux attach -t {tmux}',
+  'ui.worktreeExit.keepWorktreeKillTmux': '保留 worktree，终止 tmux 会话',
+  'ui.worktreeExit.keepWorktreeKillTmuxDescription':
+    '保留位于 {path} 的 worktree，并终止 tmux 会话。',
+  'ui.worktreeExit.removeWorktreeAndTmux': '移除 worktree 和 tmux 会话',
+  'ui.worktreeExit.keepWorktree': '保留 worktree',
+  'ui.worktreeExit.keepWorktreeDescription': '保留在 {path}',
+  'ui.worktreeExit.removeWorktree': '移除 worktree',
+  'ui.agent.location.project': '项目（.mossen/agents/）',
+  'ui.agent.location.personal': '个人（~/.mossen/agents/）',
+  'ui.githubWorkflow.updateLatest': '将 workflow 文件更新到最新版本',
+  'ui.githubWorkflow.skipUpdate': '跳过 workflow 更新（只配置 secrets）',
+  'ui.githubWorkflow.exitNoChanges': '退出且不做任何变更',
+  'ui.permission.yes': '是',
+  'ui.permission.no': '否',
+  'ui.permission.acceptFeedbackPlaceholder': '并告诉助手下一步怎么做',
+  'ui.permission.rejectFeedbackPlaceholder': '并告诉助手哪里需要改',
+  'ui.permission.yesDontAskAgainFor': '是，并且不再为此询问',
+  'ui.permission.bashCommandPrefixPlaceholder':
+    '命令前缀（例如 npm run:*）',
+  'ui.permission.powerShellCommandPrefixPlaceholder':
+    '命令前缀（例如 Get-Process:*）',
+  'ui.permission.describeAllowPlaceholder': '描述允许的内容...',
+  'ui.computerUse.openAccessibility': '打开系统设置 → 辅助功能',
+  'ui.computerUse.openScreenRecording': '打开系统设置 → 屏幕录制',
+  'ui.computerUse.tryAgain': '重试',
+  'ctx.observability.worktree': 'Worktree',
+  'ctx.observability.originalCwd': '原始 cwd',
+  'ctx.observability.originalBranch': '原始分支',
+  'ctx.observability.autoCompact': '自动压缩',
+  'ctx.observability.autoCompact.enabled':
+    '已启用 @ 上下文使用 {percent}%（{tokens}）',
+  'ctx.observability.autoCompact.disabled': '已禁用',
+  'ctx.observability.recentCompact': '最近压缩',
+  'ctx.observability.recentCompact.messagesSince':
+    '上次压缩后已有 {count} 条消息',
+  'ctx.observability.recentCompact.none': '本会话没有压缩边界',
+  'ctx.observability.memorySources': '记忆来源',
+
+  // --- ui.taskSummary.* / ui.task.blockedByLabel (S3) ---
+  'ui.taskSummary.tasks': '个任务',
+  'ui.taskSummary.done': '已完成',
+  'ui.taskSummary.inProgress': '进行中',
+  'ui.taskSummary.open': '待处理',
+  'ui.taskSummary.pending': '待处理',
+  'ui.taskSummary.completed': '已完成',
+  'ui.task.blockedByLabel': '阻塞依赖',
+
+  // --- ui.taskActivity.* (S3 续) ---
+  'ui.taskActivity.stopping': '停止中',
+  'ui.taskActivity.awaitingApproval': '等待批准',
+  'ui.taskActivity.idle': '空闲',
+  'ui.taskActivity.working': '工作中',
+
+  // --- lang.* — /lang command + 语言偏好 (S4A) ---
+  'lang.cleared.message':
+    '已清除界面语言偏好。运行态界面会跟随你最近的对话语言或系统语言。',
+  'lang.current.label': '当前界面语言：{language}',
+  'lang.preference.label': '当前偏好：{preference}',
+  'lang.preference.auto': '自动',
+  'lang.usage.line': '用法：/lang [zh|中文|en|english|auto]',
+  'lang.usage.shortcut': '快捷用法：/lang toggle 会在中文和英文界面之间切换。',
+  'lang.usage.note':
+    '说明：/lang 只切换界面文案。模型回复会跟随当前对话，除非你在 /config 里单独设置回复语言。',
+  'lang.switched.message': '界面语言已切换为中文。模型回复仍会优先跟随当前对话语言。',
+
+  // --- ui.exit.* / ui.interrupted.* (S4B) ---
+  'ui.exit.goodbye1': '再见！',
+  'ui.exit.goodbye2': '回头见！',
+  'ui.exit.goodbye3': '拜！',
+  'ui.exit.goodbye4': '下次见！',
+  'ui.interrupted.label': '已中断 ',
+  'ui.interrupted.hint': '{product} 应该改做什么？',
+
+  // --- ui.compact.* (S4C) ---
+  'ui.compact.summarizedTitle': '对话已压缩',
+  'ui.compact.summarizedDetailUpTo': '已压缩到此处之前的 {count} 条消息',
+  'ui.compact.summarizedDetailFrom': '已压缩从此处开始的 {count} 条消息',
+  'ui.compact.contextLabel': '上下文：',
+  'ui.compact.summaryTitle': '压缩摘要',
+  'ui.compact.expandHistoryHint': '展开历史',
+  'ui.compact.expandHint': '展开',
+
+  // --- ui.plugin.dependencies.* — 插件启停依赖保护 ---
+  'ui.plugin.dependencies.disableBlocked':
+    '无法禁用“{plugin}”，因为已启用的插件依赖它：{dependents}。请先禁用这些插件。',
+  'ui.plugin.dependencies.enableMissing':
+    '无法启用“{plugin}”，因为“{requiredBy}”需要的依赖“{dependency}”未安装或未加载。',
+  'ui.plugin.dependencies.enableCycle':
+    '无法启用“{plugin}”，因为检测到插件依赖环：{chain}。',
+  'ui.plugin.dependencies.enableBlockedByPolicy':
+    '无法启用“{plugin}”，因为依赖“{dependency}”被策略阻止。',
+  'ui.plugin.dependencies.enabledSuffix':
+    '；同时启用了依赖：{dependencies}',
+
+  // W418 S2 — 旁路记忆捕获气泡
+  'ui.memory.toast.captured.prefix': '已记忆',
+  'ui.memory.toast.captured.batch': '另 {extra} 条',
+  'ui.memory.toast.captured.hint': '/memory-sidecar 管理',
+  'ui.memory.toast.captured.manualPrefix': '已保存',
+  // W418 S4 — 旁路记忆召回引用脚注
+  'ui.memory.recallCitation.header': '召回 {count} 条记忆',
+  'ui.memory.recallCitation.more': '...另有 {extra} 条',
+  // W418 S3 — /remember 命令
+  'cmd.remember.description': '直接写入一条记忆（绕开自动捕获过滤）',
+  'cmd.remember.usage': '用法：/remember <要记住的内容>',
+  'cmd.remember.empty': '内容为空 —— 请在 /remember 后输入要记住的文本。',
+  'cmd.remember.disabled': '旁路记忆系统未启用，请先开启。',
+  'cmd.remember.failed': '保存失败：{reason}',
+  'cmd.remember.success': '已写入 project 作用域记忆。',
+  // W419 — /undo 命令
+  'cmd.undo.description': '撤销最近一条已记忆的内容',
+  'cmd.undo.nothing': '没有可撤销的最近记忆。',
+  'cmd.undo.success': '已撤销：{id}',
+  'cmd.undo.notFound':
+    '该条记忆已不存在 —— 可能已经在 /memory-sidecar 里被删除。',
+  'cmd.undo.disabled': '旁路记忆系统未启用。',
+  'cmd.undo.failed': '撤销失败：{reason}',
+  'ui.memory.undoToast.removed': '已撤销',
+  'ui.memory.toast.captured.undoHint': '/undo 撤销',
+  // W433 — /memory-export
+  'cmd.memory-export.description':
+    '把记忆条目导出为当前目录的 markdown / JSON 文件',
+  'cmd.memory-export.usageInvalid':
+    '未知格式。用法：/memory-export [markdown|json]',
+  'cmd.memory-export.writing': '正在导出记忆…',
+  'cmd.memory-export.success': '已导出 {count} 条到 {path}',
+  'cmd.memory-export.empty':
+    '没有可导出的记忆条目（sidecar 可能为空或刚创建）。',
+  'cmd.memory-export.disabled': '旁路记忆系统未启用。',
+  'cmd.memory-export.failed': '导出失败：{reason}',
+  // W432 — /memory-review
+  'cmd.memory-review.description':
+    '列出最老的 archive 记忆条目，便于考虑清理',
+  'cmd.memory-review.pending': '正在扫描 archive…',
+  'cmd.memory-review.empty':
+    '没有 archive 条目（sidecar 可能为空或刚创建）。',
+  'cmd.memory-review.disabled': '旁路记忆系统未启用。',
+  'cmd.memory-review.failed': '复盘失败：{reason}',
+  'cmd.memory-review.heading':
+    '最老的 {count} 条 archive 记忆（按 createdAt 升序）',
+  'cmd.memory-review.footer':
+    '删除某一条：/memory-sidecar memory delete archive <id> --dry-run',
+  // W431 — 作用域含义标签
+  'ui.memory.scope.session': '当前会话 · 仅本会话',
+  'ui.memory.scope.project': 'project · 仅本项目可见',
+  'ui.memory.scope.workspace': 'workspace · 本工作区',
+  'ui.memory.scope.user': 'user · 所有项目可见（私有）',
+  'ui.memory.scope.team': 'team · 团队共享',
+  // W419b — /forget <id-prefix>
+  'cmd.forget.description':
+    '按 id 前缀精确删除一条 archive 记忆（用 /memory-review 查 id）',
+  'cmd.forget.usage': '用法：/forget <archive-event-id 前缀>',
+  'cmd.forget.tooShort': '前缀过短（至少 4 字符，例如 evt_a3f0）。',
+  'cmd.forget.noMatch': '没找到匹配 {prefix} 的 archive 条目。',
+  'cmd.forget.multipleMatches':
+    '找到 {count} 条候选（输入更长前缀以精确匹配）：',
+  'cmd.forget.tooManyMatches':
+    '有 {count} 条以该前缀开头 — 太多了，请输入更长前缀。',
+  'cmd.forget.success': '已撤销：{id}',
+  'cmd.forget.disabled': '旁路记忆系统未启用。',
+  'cmd.forget.failed': '撤销失败：{reason}',
+} as const satisfies Record<I18nKey, string>

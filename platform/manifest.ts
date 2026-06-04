@@ -1,0 +1,197 @@
+import type { PlatformCapabilityManifestEntry } from './runtimeTypes.js'
+
+export const PLATFORM_CAPABILITY_MANIFEST: PlatformCapabilityManifestEntry[] = [
+  {
+    id: 'provider',
+    title: 'Provider Runtime',
+    status: 'wired',
+    modules: [
+      'utils/customBackend.ts',
+      'services/api/client.ts',
+      'utils/model/providers.ts',
+    ],
+    validation: ['scripts/platform_check.ts', 'scripts/smoke_check.py'],
+  },
+  {
+    id: 'local-git',
+    title: 'Local Git Runtime',
+    status: 'wired',
+    modules: [
+      'platform/localGitRuntime.ts',
+      'commands/commit-push-pr.ts',
+      'utils/github/ghAuthStatus.ts',
+    ],
+    validation: ['scripts/platform_check.ts', 'scripts/smoke_check.py'],
+  },
+  {
+    id: 'direct-connect',
+    title: 'Direct Connect Runtime',
+    status: 'snapshot-missing',
+    modules: [
+      'server/createDirectConnectSession.ts',
+      'server/directConnectManager.ts',
+      'main.tsx',
+    ],
+    validation: ['scripts/platform_check.ts', 'scripts/smoke_check.py'],
+  },
+  {
+    id: 'ssh-remote',
+    title: 'SSH Remote Runtime',
+    status: 'snapshot-missing',
+    modules: ['main.tsx', 'ssh/createSSHSession.ts', 'utils/proxy.ts'],
+    validation: ['scripts/platform_check.ts', 'scripts/smoke_check.py'],
+  },
+  {
+    id: 'system-prompt',
+    title: 'System Prompt Pipeline',
+    status: 'wired',
+    modules: [
+      'constants/prompts.ts',
+      'utils/systemPrompt.ts',
+      'constants/systemPromptSections.ts',
+    ],
+    validation: ['scripts/platform_check.ts'],
+  },
+  {
+    id: 'memory',
+    title: 'Memory Layer',
+    status: 'wired',
+    modules: ['memdir/memdir.ts', 'memdir/memoryTypes.ts', 'bootstrap/state.ts'],
+    validation: ['scripts/platform_check.ts'],
+  },
+  {
+    id: 'compression',
+    title: 'Context Compression Pipeline',
+    status: 'wired',
+    modules: ['services/compact/compact.ts', 'bootstrap/state.ts'],
+    validation: ['scripts/platform_check.ts'],
+  },
+  {
+    id: 'skills',
+    title: 'Skill Runtime',
+    status: 'wired',
+    modules: ['skills/bundled/index.ts', 'skills/bundledSkills.ts', 'skills/loadSkillsDir.ts'],
+    validation: ['scripts/platform_check.ts', 'scripts/smoke_check.py'],
+  },
+  {
+    id: 'security',
+    title: 'Security Control Plane',
+    status: 'wired',
+    modules: [
+      'utils/permissions/permissionSetup.ts',
+      'utils/hooks.ts',
+      'query/stopHooks.ts',
+    ],
+    validation: ['scripts/platform_check.ts', 'scripts/smoke_check.py'],
+  },
+  {
+    id: 'plugins',
+    title: 'Plugin Runtime',
+    status: 'wired',
+    modules: [
+      'utils/plugins/pluginLoader.ts',
+      'services/plugins/pluginOperations.ts',
+      'state/AppStateStore.ts',
+    ],
+    validation: ['scripts/platform_check.ts', 'scripts/smoke_check.py'],
+  },
+  {
+    id: 'mcp',
+    title: 'MCP Runtime',
+    status: 'wired',
+    modules: [
+      'services/mcp/config.ts',
+      'services/mcp/useManageMCPConnections.ts',
+      'services/mcp/types.ts',
+    ],
+    validation: ['scripts/platform_check.ts', 'scripts/smoke_check.py'],
+  },
+  {
+    id: 'remote',
+    title: 'Remote Runtime',
+    status: 'wired',
+    modules: [
+      'utils/teleport.tsx',
+      'components/RemoteCallout.tsx',
+      'bootstrap/state.ts',
+    ],
+    validation: ['scripts/platform_check.ts', 'scripts/smoke_check.py'],
+  },
+  {
+    id: 'assistant',
+    title: 'Assistant Attach Runtime',
+    status: 'wired',
+    modules: [
+      'assistant/sessionDiscovery.ts',
+      'assistant/index.ts',
+      'bridge/initReplBridge.ts',
+    ],
+    validation: ['scripts/platform_check.ts', 'scripts/smoke_check.py'],
+  },
+  {
+    id: 'chrome',
+    title: 'Mossen In Chrome Runtime',
+    status: 'wired',
+    modules: [
+      'utils/mossenInChrome/setup.ts',
+      'utils/mossenInChrome/common.ts',
+      'components/MossenInChromeOnboarding.tsx',
+    ],
+    validation: ['scripts/platform_check.ts'],
+  },
+  {
+    id: 'voice',
+    title: 'Voice Runtime',
+    status: 'wired',
+    modules: [
+      'voice/voiceModeEnabled.ts',
+      'services/voiceStreamSTT.ts',
+      'commands/voice/voice.ts',
+    ],
+    validation: ['scripts/platform_check.ts'],
+  },
+  {
+    id: 'team-memory',
+    title: 'Team Memory Runtime',
+    status: 'wired',
+    modules: [
+      'memdir/teamMemPaths.ts',
+      'services/teamMemorySync/index.ts',
+      'services/teamMemorySync/watcher.ts',
+    ],
+    validation: ['scripts/platform_check.ts'],
+  },
+  {
+    id: 'agents',
+    title: 'Agent Runtime',
+    status: 'wired',
+    modules: [
+      'tools/AgentTool/loadAgentsDir.ts',
+      'utils/plugins/loadPluginAgents.ts',
+      'state/AppStateStore.ts',
+    ],
+    validation: ['scripts/platform_check.ts', 'scripts/smoke_check.py'],
+  },
+  {
+    id: 'sessions',
+    title: 'Session Runtime',
+    status: 'wired',
+    modules: [
+      'utils/sessionStorage.ts',
+      'utils/listSessionsImpl.ts',
+      'utils/conversationRecovery.ts',
+    ],
+    validation: ['scripts/platform_check.ts', 'scripts/smoke_check.py'],
+  },
+  {
+    id: 'swarm',
+    title: 'Swarm Runtime',
+    status: 'wired',
+    modules: [
+      'utils/teammate.ts',
+      'utils/swarm/reconnection.ts',
+      'state/AppStateStore.ts',
+    ],
+    validation: ['scripts/platform_check.ts'],
+  },
+]

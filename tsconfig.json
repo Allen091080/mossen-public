@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "allowImportingTsExtensions": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false,
+    "types": ["bun-types"],
+    "paths": {
+      "src/*": ["./*"]
+    },
+    "baseUrl": ".",
+    "lib": ["esnext", "dom", "dom.iterable"]
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    ".mossen",
+    ".mossensrc",
+    ".git",
+    "tmp",
+    "coverage",
+    "outputs",
+    "types/generated"
+  ]
+}

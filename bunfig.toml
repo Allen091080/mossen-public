@@ -1,0 +1,8 @@
+[define]
+"MACRO.VERSION" = "\"1.1.0\""
+"MACRO.BUILD_TIME" = "\"2026-04-18T00:00:00.000Z\""
+"MACRO.PACKAGE_URL" = "\"@mossen/mossen-code\""
+"MACRO.NATIVE_PACKAGE_URL" = "\"@mossen/mossen-code\""
+"MACRO.FEEDBACK_CHANNEL" = "\"https://github.com/mossen/mossen-code/issues\""
+"MACRO.ISSUES_EXPLAINER" = "\"open an issue at https://github.com/mossen/mossen-code/issues\""
+"MACRO.VERSION_CHANGELOG" = "\"\""
