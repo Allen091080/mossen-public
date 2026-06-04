@@ -268,9 +268,10 @@ function toCommand(wf: SavedWorkflow): Command {
     progressMessage: 'running workflow',
     contentLength: 0,
     async getPromptForCommand(args: string) {
-      const argLine = args.trim()
-        ? `\n\nCaller arguments: ${args.trim()}`
-        : ''
+      const trimmedArgs = args.trim()
+      const argLine = trimmedArgs
+        ? `\n\nCaller arguments:\n${trimmedArgs}\n\nPass the caller arguments as Workflow.args using the most specific structured value you can infer. Use real arrays, objects, numbers, booleans, or null where appropriate; do not JSON-encode those values into a string. Use a raw string only when no useful structure is clear.`
+        : ` Do not pass args; the workflow script should see args as undefined.`
       const scriptInstruction = wf.scriptPath
         ? `with scriptPath="${wf.scriptPath}"`
         : `with the bundled script named "${wf.name}" as its script input:\n\n${wf.source}`
@@ -280,8 +281,8 @@ function toCommand(wf: SavedWorkflow): Command {
           text:
             `Run the saved workflow "${wf.commandName}" by invoking the Workflow tool ` +
             scriptInstruction +
-            (argLine
-              ? `, passing the caller arguments as the workflow's args.`
+            (trimmedArgs
+              ? `, preserving caller input as structured Workflow.args.`
               : `.`) +
             argLine,
         },
