@@ -143,7 +143,15 @@ async function resolveNestedWorkflowSource(
       )
     }
     return {
-      source: readSourceFile(saved.scriptPath),
+      source:
+        saved.source ??
+        (saved.scriptPath
+          ? readSourceFile(saved.scriptPath)
+          : (() => {
+              throw new Error(
+                `workflow("${name}"): workflow has no source or scriptPath.`,
+              )
+            })()),
       label: saved.name,
     }
   }

@@ -32,6 +32,7 @@ import { isBareMode } from '../../utils/envUtils.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
 import { loadAllPluginsCacheOnly } from '../../utils/plugins/pluginLoader.js'
 import { isWorkflowRuntimeEnabled } from '../../utils/workflowAvailability.js'
+import { loadBundledWorkflows } from './bundled/index.js'
 import { extractMeta } from './engine/meta.js'
 
 /** Project-scoped saved workflows live here (relative to the project root). */
@@ -52,8 +53,9 @@ type SavedWorkflow = {
   name: string
   commandName: string
   description: string
-  scriptPath: string
-  scope: 'project' | 'user' | 'plugin'
+  scriptPath?: string
+  source?: string
+  scope: 'project' | 'user' | 'plugin' | 'bundled'
   plugin?: {
     name: string
     source: string
@@ -181,6 +183,16 @@ function readPluginWorkflowPath(
   return out
 }
 
+export function loadBundledWorkflowRefs(): SavedWorkflowRef[] {
+  return loadBundledWorkflows().map(wf => ({
+    name: wf.name,
+    commandName: wf.name,
+    description: wf.description,
+    source: wf.source,
+    scope: 'bundled',
+  }))
+}
+
 /**
  * Build the saved-workflow `prompt` command for a parsed entry. Running
  * `/<name>` instructs the model to execute the saved script via the Workflow
@@ -218,12 +230,15 @@ function toCommand(wf: SavedWorkflow): Command {
       const argLine = args.trim()
         ? `\n\nCaller arguments: ${args.trim()}`
         : ''
+      const scriptInstruction = wf.scriptPath
+        ? `with scriptPath="${wf.scriptPath}"`
+        : `with the bundled script named "${wf.name}" as its script input:\n\n${wf.source}`
       return [
         {
           type: 'text' as const,
           text:
             `Run the saved workflow "${wf.commandName}" by invoking the Workflow tool ` +
-            `with scriptPath="${wf.scriptPath}"` +
+            scriptInstruction +
             (argLine
               ? `, passing the caller arguments as the workflow's args.`
               : `.`) +
@@ -275,10 +290,18 @@ export function loadWorkflowCommandsFromSources(
   projectRoot: string,
   plugins: readonly WorkflowPluginRef[] = [],
 ): Command[] {
+  return getAllWorkflows(projectRoot, plugins).map(toCommand)
+}
+
+export function getAllWorkflows(
+  projectRoot: string,
+  plugins: readonly WorkflowPluginRef[] = [],
+): SavedWorkflowRef[] {
   return [
     ...loadSavedWorkflowsFrom(projectRoot),
     ...loadPluginWorkflowsFrom(plugins),
-  ].map(toCommand)
+    ...loadBundledWorkflowRefs(),
+  ]
 }
 
 async function loadEnabledWorkflowPlugins(): Promise<WorkflowPluginRef[]> {
@@ -299,10 +322,7 @@ export async function loadWorkflowRefsFromAllSources(
   projectRoot: string,
 ): Promise<SavedWorkflowRef[]> {
   const plugins = await loadEnabledWorkflowPlugins()
-  return [
-    ...loadSavedWorkflowsFrom(projectRoot),
-    ...loadPluginWorkflowsFrom(plugins),
-  ]
+  return getAllWorkflows(projectRoot, plugins)
 }
 
 export function resolveSavedWorkflow(
@@ -321,10 +341,7 @@ export function resolveWorkflowFromSources(
 ): SavedWorkflowRef | null {
   const wanted = name.trim()
   if (!wanted) return null
-  const workflows = [
-    ...loadSavedWorkflowsFrom(projectRoot),
-    ...loadPluginWorkflowsFrom(plugins),
-  ]
+  const workflows = getAllWorkflows(projectRoot, plugins)
   return (
     workflows.find(wf => wf.commandName === wanted) ??
     workflows.find(wf => wf.name === wanted) ??

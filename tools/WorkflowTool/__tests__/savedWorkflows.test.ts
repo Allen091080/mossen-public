@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   getProjectWorkflowsDir,
+  getAllWorkflows,
   isSavedWorkflowsEnabled,
+  loadBundledWorkflowRefs,
   loadPluginWorkflowsFrom,
   loadWorkflowCommandsFrom,
   loadWorkflowCommandsFromSources,
@@ -139,5 +141,29 @@ describe('savedWorkflows loader (S3)', () => {
     } finally {
       rmSync(pluginRoot, { recursive: true, force: true })
     }
+  })
+
+  test('bundled workflows are first-class workflow refs and commands', async () => {
+    const bundled = loadBundledWorkflowRefs()
+    expect(bundled.map(wf => wf.commandName)).toContain('project-scan')
+    expect(bundled.every(wf => wf.scope === 'bundled')).toBe(true)
+    expect(bundled.every(wf => typeof wf.source === 'string')).toBe(true)
+
+    const workflows = getAllWorkflows(root)
+    expect(workflows.map(wf => wf.commandName)).toContain('project-scan')
+    expect(resolveWorkflowFromSources(root, 'project-scan')?.source).toContain(
+      "name: 'project-scan'",
+    )
+
+    const command = loadWorkflowCommandsFromSources(root).find(
+      c => c.name === 'project-scan',
+    )
+    expect(command?.type).toBe('prompt')
+    const getPrompt = (command as unknown as {
+      getPromptForCommand: (a: string) => Promise<Array<{ type: string; text: string }>>
+    }).getPromptForCommand
+    const text = (await getPrompt('focus=tests')).map(b => b.text).join('')
+    expect(text).toContain('bundled script named "project-scan"')
+    expect(text).toContain('focus=tests')
   })
 })
