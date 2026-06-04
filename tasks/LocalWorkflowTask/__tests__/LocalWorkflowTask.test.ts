@@ -203,10 +203,33 @@ describe('LocalWorkflowTask pause/resume controls', () => {
     updateWorkflowTaskProgress(
       runId,
       {
+        kind: 'agent_queued',
+        agentNumber: 1,
+        label: 'Inspect',
+        phase: 'Plan',
+        queuedAt: 1000,
+        lastProgressAt: 1000,
+        promptPreview: 'inspect the repo',
+        agentType: 'reviewer',
+        model: 'model-a',
+        isolation: 'worktree',
+      },
+      setAppState,
+    )
+    updateWorkflowTaskProgress(
+      runId,
+      {
         kind: 'agent_start',
         agentNumber: 1,
         label: 'Inspect',
         phase: 'Plan',
+        queuedAt: 1000,
+        startedAt: 1010,
+        lastProgressAt: 1010,
+        promptPreview: 'inspect the repo',
+        agentType: 'reviewer',
+        model: 'model-a',
+        isolation: 'worktree',
       },
       setAppState,
     )
@@ -221,12 +244,21 @@ describe('LocalWorkflowTask pause/resume controls', () => {
         status: 'completed',
         tokens: 25,
         toolCalls: 2,
+        durationMs: 190,
+        queuedAt: 1000,
+        startedAt: 1010,
+        lastProgressAt: 1200,
+        promptPreview: 'inspect the repo',
+        agentType: 'reviewer',
+        model: 'model-a',
+        isolation: 'worktree',
       },
       setAppState,
     )
 
     const events = drainSdkEvents()
     expect(events.map(event => event.subtype)).toEqual([
+      'task_progress',
       'task_progress',
       'task_progress',
       'task_progress',
@@ -253,6 +285,12 @@ describe('LocalWorkflowTask pause/resume controls', () => {
         phaseTitle: 'Plan',
         phaseIndex: 1,
         state: 'start',
+        queuedAt: 1000,
+        lastProgressAt: 1000,
+        promptPreview: 'inspect the repo',
+        agentType: 'reviewer',
+        model: 'model-a',
+        isolation: 'worktree',
       },
     ])
     expect(progressEvents[2]?.workflow_progress).toEqual([
@@ -262,13 +300,38 @@ describe('LocalWorkflowTask pause/resume controls', () => {
         label: 'Inspect',
         phaseTitle: 'Plan',
         phaseIndex: 1,
-        state: 'completed',
-        tokens: 25,
-        toolCalls: 2,
+        state: 'start',
+        queuedAt: 1000,
+        startedAt: 1010,
+        lastProgressAt: 1010,
+        promptPreview: 'inspect the repo',
+        agentType: 'reviewer',
+        model: 'model-a',
+        isolation: 'worktree',
       },
     ])
-    expect(progressEvents[2]?.usage.total_tokens).toBe(25)
-    expect(progressEvents[2]?.usage.tool_uses).toBe(2)
+    expect(progressEvents[3]?.workflow_progress).toEqual([
+      {
+        type: 'workflow_agent',
+        index: 1,
+        label: 'Inspect',
+        phaseTitle: 'Plan',
+        phaseIndex: 1,
+        state: 'done',
+        tokens: 25,
+        toolCalls: 2,
+        durationMs: 190,
+        queuedAt: 1000,
+        startedAt: 1010,
+        lastProgressAt: 1200,
+        promptPreview: 'inspect the repo',
+        agentType: 'reviewer',
+        model: 'model-a',
+        isolation: 'worktree',
+      },
+    ])
+    expect(progressEvents[3]?.usage.total_tokens).toBe(25)
+    expect(progressEvents[3]?.usage.tool_uses).toBe(2)
     const task = state.tasks[runId] as LocalWorkflowTaskState
     expect(task.workflowProgress).toEqual([
       {
@@ -284,6 +347,12 @@ describe('LocalWorkflowTask pause/resume controls', () => {
         phaseTitle: 'Plan',
         phaseIndex: 1,
         state: 'start',
+        queuedAt: 1000,
+        lastProgressAt: 1000,
+        promptPreview: 'inspect the repo',
+        agentType: 'reviewer',
+        model: 'model-a',
+        isolation: 'worktree',
       },
       {
         type: 'workflow_agent',
@@ -291,14 +360,104 @@ describe('LocalWorkflowTask pause/resume controls', () => {
         label: 'Inspect',
         phaseTitle: 'Plan',
         phaseIndex: 1,
-        state: 'completed',
+        state: 'start',
+        queuedAt: 1000,
+        startedAt: 1010,
+        lastProgressAt: 1010,
+        promptPreview: 'inspect the repo',
+        agentType: 'reviewer',
+        model: 'model-a',
+        isolation: 'worktree',
+      },
+      {
+        type: 'workflow_agent',
+        index: 1,
+        label: 'Inspect',
+        phaseTitle: 'Plan',
+        phaseIndex: 1,
+        state: 'done',
         tokens: 25,
         toolCalls: 2,
+        durationMs: 190,
+        queuedAt: 1000,
+        startedAt: 1010,
+        lastProgressAt: 1200,
+        promptPreview: 'inspect the repo',
+        agentType: 'reviewer',
+        model: 'model-a',
+        isolation: 'worktree',
       },
     ])
-    expect(task.progressVersion).toBe(3)
+    expect(task.progressVersion).toBe(4)
     expect(task.totalToolCalls).toBe(2)
+    expect(task.agents[0]).toMatchObject({
+      status: 'completed',
+      agentType: 'reviewer',
+      model: 'model-a',
+      isolation: 'worktree',
+      durationMs: 190,
+    })
     expect(task.logs).toEqual(task.log)
+  })
+
+  test('updateWorkflowTaskProgress maps skipped agents to official error progress', () => {
+    const runId = 'wf_sdk_skipped_progress_test'
+    let state = {
+      tasks: {
+        [runId]: {
+          ...workflowTask(runId),
+          phases: ['Plan'],
+        },
+      },
+    } as unknown as AppState
+    const setAppState: SetAppState = updater => {
+      state = updater(state)
+    }
+
+    setIsInteractive(false)
+    updateWorkflowTaskProgress(
+      runId,
+      {
+        kind: 'agent_end',
+        agentNumber: 2,
+        label: 'Optional',
+        phase: 'Plan',
+        ok: false,
+        status: 'skipped',
+        tokens: 0,
+        toolCalls: 0,
+        durationMs: 5,
+        queuedAt: 2000,
+        startedAt: 2010,
+        lastProgressAt: 2015,
+      },
+      setAppState,
+    )
+
+    const [event] = drainSdkEvents().filter(
+      (
+        event,
+      ): event is Extract<ReturnType<typeof drainSdkEvents>[number], { subtype: 'task_progress' }> =>
+        event.subtype === 'task_progress',
+    )
+    expect(event?.workflow_progress).toEqual([
+      {
+        type: 'workflow_agent',
+        index: 2,
+        label: 'Optional',
+        phaseTitle: 'Plan',
+        phaseIndex: 1,
+        state: 'error',
+        tokens: 0,
+        toolCalls: 0,
+        queuedAt: 2000,
+        startedAt: 2010,
+        lastProgressAt: 2015,
+        skipped: true,
+        error: 'skipped by user',
+        durationMs: 5,
+      },
+    ])
   })
 
   test('seeded phase titles are not duplicated when the script enters the phase', () => {

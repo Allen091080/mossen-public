@@ -42,6 +42,18 @@ export type WorkflowAgentTaskProgress = {
   tokens: number
   toolCalls: number
   durationMs?: number
+  agentType?: string
+  model?: string
+  isolation?: 'worktree' | 'remote'
+  promptPreview?: string
+  queuedAt?: number
+  startedAt?: number
+  lastProgressAt?: number
+  remoteSessionId?: string
+  lastAttemptReason?: string
+  lastToolName?: string
+  lastToolSummary?: string
+  error?: string
 }
 
 export type LocalWorkflowTaskState = TaskStateBase & {
@@ -291,7 +303,8 @@ function workflowProgressForSdk(
           label: event.label,
           phaseTitle: event.phase,
           phaseIndex: phaseIndexFor(task, event.phase),
-          state: 'queued',
+          state: 'start',
+          ...workflowAgentProgressMetadata(event),
         },
       ]
     case 'agent_start':
@@ -303,6 +316,7 @@ function workflowProgressForSdk(
           phaseTitle: event.phase,
           phaseIndex: phaseIndexFor(task, event.phase),
           state: 'start',
+          ...workflowAgentProgressMetadata(event),
         },
       ]
     case 'agent_end':
@@ -313,15 +327,67 @@ function workflowProgressForSdk(
           label: event.label,
           phaseTitle: event.phase,
           phaseIndex: phaseIndexFor(task, event.phase),
-          state: event.status ?? (event.ok ? 'completed' : 'failed'),
+          state: workflowAgentSdkState(event),
           tokens: event.tokens,
           toolCalls: event.toolCalls ?? 0,
+          ...workflowAgentProgressMetadata(event),
+          ...workflowAgentSdkStatusMetadata(event),
           ...(event.durationMs !== undefined
             ? { durationMs: event.durationMs }
             : {}),
         },
       ]
   }
+}
+
+function workflowAgentProgressMetadata(
+  event: Extract<
+    WorkflowProgressEvent,
+    { kind: 'agent_queued' | 'agent_start' | 'agent_end' }
+  >,
+): Record<string, unknown> {
+  return {
+    ...(event.agentType ? { agentType: event.agentType } : {}),
+    ...(event.model ? { model: event.model } : {}),
+    ...(event.isolation ? { isolation: event.isolation } : {}),
+    ...(event.promptPreview ? { promptPreview: event.promptPreview } : {}),
+    ...(typeof event.queuedAt === 'number' ? { queuedAt: event.queuedAt } : {}),
+    ...(typeof event.startedAt === 'number' ? { startedAt: event.startedAt } : {}),
+    ...(typeof event.lastProgressAt === 'number'
+      ? { lastProgressAt: event.lastProgressAt }
+      : {}),
+    ...(event.remoteSessionId ? { remoteSessionId: event.remoteSessionId } : {}),
+    ...(event.lastAttemptReason
+      ? { lastAttemptReason: event.lastAttemptReason }
+      : {}),
+    ...(event.lastToolName ? { lastToolName: event.lastToolName } : {}),
+    ...(event.lastToolSummary ? { lastToolSummary: event.lastToolSummary } : {}),
+  }
+}
+
+function workflowAgentSdkState(
+  event: Extract<WorkflowProgressEvent, { kind: 'agent_end' }>,
+): 'done' | 'error' {
+  if (event.status === 'skipped' || event.status === 'failed' || !event.ok) {
+    return 'error'
+  }
+  return 'done'
+}
+
+function workflowAgentSdkStatusMetadata(
+  event: Extract<WorkflowProgressEvent, { kind: 'agent_end' }>,
+): Record<string, unknown> {
+  if (event.status === 'cached') return { cached: true }
+  if (event.status === 'skipped') {
+    return {
+      skipped: true,
+      error: event.error ?? 'skipped by user',
+    }
+  }
+  if (event.status === 'failed' || !event.ok) {
+    return { error: event.error ?? 'failed' }
+  }
+  return {}
 }
 
 function applyWorkflowProgress(
@@ -514,6 +580,7 @@ export function updateWorkflowTaskProgress(
             status: 'queued',
             tokens: 0,
             toolCalls: 0,
+            ...workflowAgentProgressMetadata(event),
           }),
           summary: `${event.label} queued`,
           ...logState,
@@ -533,6 +600,7 @@ export function updateWorkflowTaskProgress(
             status: 'running',
             tokens: 0,
             toolCalls: 0,
+            ...workflowAgentProgressMetadata(event),
           }),
           summary: event.label,
           ...logState,
@@ -556,6 +624,8 @@ export function updateWorkflowTaskProgress(
             status,
             tokens: event.tokens,
             toolCalls,
+            ...workflowAgentProgressMetadata(event),
+            ...(event.error ? { error: event.error } : {}),
             ...(event.durationMs !== undefined
               ? { durationMs: event.durationMs }
               : {}),

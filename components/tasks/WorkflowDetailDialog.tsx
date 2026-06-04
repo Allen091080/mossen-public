@@ -8,7 +8,7 @@ import type {
   LocalWorkflowTaskState,
   WorkflowAgentTaskProgress,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
-import { formatNumber } from '../../utils/format.js'
+import { formatDuration, formatNumber } from '../../utils/format.js'
 import { Byline } from '../design-system/Byline.js'
 import { Dialog } from '../design-system/Dialog.js'
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js'
@@ -61,12 +61,19 @@ function AgentRow({
       #{agent.agentNumber} {agent.phase ? `[${agent.phase}] ` : ''}
       {agent.label}{' '}
       <Text color={agentStatusColor(agent.status)}>{agent.status}</Text>
+      {agent.agentType ? <Text dimColor> · {agent.agentType}</Text> : null}
+      {agent.model ? <Text dimColor> · {agent.model}</Text> : null}
+      {agent.isolation ? <Text dimColor> · {agent.isolation}</Text> : null}
       {agent.tokens > 0 ? (
         <Text dimColor> · {formatNumber(agent.tokens)} tokens</Text>
       ) : null}
       {agent.toolCalls > 0 ? (
         <Text dimColor> · {formatNumber(agent.toolCalls)} tools</Text>
       ) : null}
+      {agent.durationMs !== undefined ? (
+        <Text dimColor> · {formatDuration(agent.durationMs)}</Text>
+      ) : null}
+      {agent.error ? <Text color="error"> · {agent.error}</Text> : null}
     </Text>
   )
 }

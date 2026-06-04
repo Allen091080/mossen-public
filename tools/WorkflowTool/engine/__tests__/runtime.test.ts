@@ -89,15 +89,32 @@ describe('runtime.agent', () => {
   test('emits agent_queued, agent_start, then agent_end', async () => {
     const { rt, events } = harness(okAgent())
     const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
-    await agent('task', { label: 'my-label', phase: 'Scan' })
+    await agent('task\nwith spacing', {
+      label: 'my-label',
+      phase: 'Scan',
+      model: 'workflow-model',
+      agentType: 'reviewer',
+      isolation: 'worktree',
+    })
     const kinds = events.map(e => e.kind)
     expect(kinds).toEqual(['agent_queued', 'agent_start', 'agent_end'])
     expect((events[0] as AgentQueuedEvent).label).toBe('my-label')
     expect((events[0] as AgentQueuedEvent).phase).toBe('Scan')
+    expect(events[0]).toMatchObject({
+      agentType: 'reviewer',
+      model: 'workflow-model',
+      isolation: 'worktree',
+      promptPreview: 'task with spacing',
+    })
+    expect(typeof (events[0] as AgentQueuedEvent).queuedAt).toBe('number')
+    expect(typeof (events[0] as AgentQueuedEvent).lastProgressAt).toBe('number')
     expect((events[1] as AgentStartEvent).label).toBe('my-label')
     expect((events[1] as AgentStartEvent).phase).toBe('Scan')
+    expect(typeof (events[1] as AgentStartEvent).startedAt).toBe('number')
     expect((events[2] as AgentEndEvent).ok).toBe(true)
     expect((events[2] as AgentEndEvent).tokens).toBe(10)
+    expect((events[2] as AgentEndEvent).model).toBe('workflow-model')
+    expect(typeof (events[2] as AgentEndEvent).lastProgressAt).toBe('number')
   })
 
   test('tracks live tool calls separately from agent count', async () => {
@@ -229,6 +246,7 @@ describe('runtime.agent', () => {
     expect(events.map(e => e.kind)).toEqual(['agent_queued', 'agent_end'])
     expect((events[0] as AgentQueuedEvent).agentNumber).toBe(1)
     expect((events[1] as AgentEndEvent).status).toBe('skipped')
+    expect((events[1] as AgentEndEvent).error).toBe('skipped by user')
   })
 
   test('waits for a paused workflow before starting a queued agent', async () => {
@@ -266,7 +284,12 @@ describe('runtime.agent', () => {
     let seenIsolation: unknown
     const { rt, events } = harness(async (_prompt, opts) => {
       seenIsolation = opts.isolation
-      return { value: 'remote-live', tokens: 1, ok: true }
+      return {
+        value: 'remote-live',
+        tokens: 1,
+        ok: true,
+        remoteSessionId: 'session_remote_runtime',
+      }
     })
     const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
 
@@ -279,6 +302,9 @@ describe('runtime.agent', () => {
       'agent_start',
       'agent_end',
     ])
+    expect((events.at(-1) as AgentEndEvent).remoteSessionId).toBe(
+      'session_remote_runtime',
+    )
   })
 
   test('retries the same agent when the runner reports retry_requested', async () => {

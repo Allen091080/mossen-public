@@ -386,6 +386,7 @@ describe('workflow remote agent helpers', () => {
 
     expect(seen[0]).toContain('do remote work')
     expect(result.value).toBe('remote done')
+    expect(result.remoteSessionId).toBe('session_remote_1')
   })
 
   test('fails fast when a remote workflow agent requires action', async () => {

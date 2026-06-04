@@ -30,6 +30,7 @@ import type {
   WorkflowAgentControlAction,
   AgentRunResult,
   ProgressSink,
+  WorkflowAgentProgressMeta,
   WorkflowPhaseInput,
   WorkflowPhaseMeta,
 } from './types.js'
@@ -152,6 +153,12 @@ export function deriveLabel(prompt: string): string {
   const firstLine = prompt.trim().split('\n')[0] ?? ''
   const trimmed = firstLine.slice(0, 48)
   return trimmed.length < firstLine.length ? `${trimmed}…` : trimmed || 'agent'
+}
+
+export function promptPreview(prompt: string): string | undefined {
+  const preview = prompt.replace(/\s+/g, ' ').trim()
+  if (!preview) return undefined
+  return preview.length > 400 ? `${preview.slice(0, 400)}…` : preview
 }
 
 export function resolvePhase(
@@ -335,6 +342,16 @@ export function createWorkflowRuntime(
       ...(effectiveModel ? { model: effectiveModel } : {}),
     }
     const hash = hashCall(prompt, effectiveOpts)
+    const preview = promptPreview(prompt)
+    const baseProgressMeta = (
+      extra: WorkflowAgentProgressMeta = {},
+    ): WorkflowAgentProgressMeta => ({
+      ...(opts.agentType ? { agentType: opts.agentType } : {}),
+      ...(effectiveModel ? { model: effectiveModel } : {}),
+      ...(opts.isolation ? { isolation: opts.isolation } : {}),
+      ...(preview ? { promptPreview: preview } : {}),
+      ...extra,
+    })
 
     const startedHit = journal?.startedHit(index, hash)
 
@@ -343,6 +360,7 @@ export function createWorkflowRuntime(
     if (cached) {
       agentCounter++
       const agentNumber = agentCounter
+      const now = Date.now()
       progress({
         kind: 'agent_end',
         label,
@@ -353,6 +371,12 @@ export function createWorkflowRuntime(
         tokens: cached.tokens,
         toolCalls: 0,
         durationMs: cached.durationMs ?? 0,
+        ...baseProgressMeta({
+          queuedAt: now,
+          startedAt: now,
+          lastProgressAt: now,
+          remoteSessionId: cached.remoteSessionId,
+        }),
       })
       return cached.ok ? cached.value : null
     }
@@ -360,6 +384,8 @@ export function createWorkflowRuntime(
     agentCounter++
     const agentNumber = agentCounter
     const agentStartedAt = Date.now()
+    let attemptQueuedAt = agentStartedAt
+    let attemptStartedAt = agentStartedAt
     if (startedHit) {
       progress({
         kind: 'log',
@@ -374,7 +400,21 @@ export function createWorkflowRuntime(
         agentNumber,
         opts: effectiveOpts,
       })
-      progress({ kind: 'agent_queued', label, phase, agentNumber })
+      attemptQueuedAt = Date.now()
+      const lastAttempt = retryableAttempts.at(-1)
+      progress({
+        kind: 'agent_queued',
+        label,
+        phase,
+        agentNumber,
+        ...baseProgressMeta({
+          queuedAt: attemptQueuedAt,
+          lastProgressAt: attemptQueuedAt,
+          ...(lastAttempt
+            ? { lastAttemptReason: retryableStatusReason(lastAttempt) }
+            : {}),
+        }),
+      })
 
       let result: AgentRunResult
       let skipped = false
@@ -382,6 +422,7 @@ export function createWorkflowRuntime(
         await waitForResume?.(agentNumber, { phase, label })
         result = await limiter.run(async () => {
           await waitForResume?.(agentNumber, { phase, label })
+          attemptStartedAt = Date.now()
           const control =
             getAgentControl?.(agentNumber, { phase, label }) ??
             (shouldSkipAgent?.(agentNumber, { phase, label }) ? 'skip' : null)
@@ -395,21 +436,39 @@ export function createWorkflowRuntime(
               status: 'skipped' as const,
             })
           }
-          progress({ kind: 'agent_start', label, phase, agentNumber })
+          progress({
+            kind: 'agent_start',
+            label,
+            phase,
+            agentNumber,
+            ...baseProgressMeta({
+              queuedAt: attemptQueuedAt,
+              startedAt: attemptStartedAt,
+              lastProgressAt: attemptStartedAt,
+            }),
+          })
           // A queued retry request means "run it now"; a running retry request
           // is handled by the per-agent abort controller in agentRunner.
           return runOneAgent(prompt, effectiveOpts, { agentNumber, phase, label })
         })
       } catch (err) {
+        const now = Date.now()
         progress({
           kind: 'agent_end',
           label,
           phase,
           agentNumber,
           ok: false,
+          status: 'failed',
+          error: err instanceof Error ? err.message : String(err),
           tokens: 0,
           toolCalls: 0,
-          durationMs: Date.now() - agentStartedAt,
+          durationMs: now - agentStartedAt,
+          ...baseProgressMeta({
+            queuedAt: attemptQueuedAt,
+            startedAt: attemptStartedAt,
+            lastProgressAt: now,
+          }),
         })
         throw err
       }
@@ -420,6 +479,12 @@ export function createWorkflowRuntime(
       ) {
         retryableAttempts.push(result.status)
         if (retryableAttempts.length >= retryAttemptLimit) {
+          const now = Date.now()
+          const error = formatWorkflowAgentAbandonedMessage({
+            attempts: retryableAttempts,
+            maxAttempts: retryAttemptLimit,
+            stallTimeoutMs: result.stallTimeoutMs,
+          })
           progress({
             kind: 'agent_end',
             label,
@@ -427,17 +492,18 @@ export function createWorkflowRuntime(
             agentNumber,
             ok: false,
             status: 'failed',
+            error,
             tokens: result.tokens,
             toolCalls: result.toolCalls ?? 0,
-            durationMs: result.durationMs ?? Date.now() - agentStartedAt,
-          })
-          throw new Error(
-            formatWorkflowAgentAbandonedMessage({
-              attempts: retryableAttempts,
-              maxAttempts: retryAttemptLimit,
-              stallTimeoutMs: result.stallTimeoutMs,
+            durationMs: result.durationMs ?? now - agentStartedAt,
+            ...baseProgressMeta({
+              queuedAt: attemptQueuedAt,
+              startedAt: attemptStartedAt,
+              lastProgressAt: now,
+              remoteSessionId: result.remoteSessionId,
             }),
-          )
+          })
+          throw new Error(error)
         }
         progress({
           kind: 'log',
@@ -459,6 +525,7 @@ export function createWorkflowRuntime(
       journal?.record(index, hash, result)
       const status =
         result.status ?? (skipped ? 'skipped' : result.ok ? 'completed' : 'failed')
+      const now = Date.now()
       progress({
         kind: 'agent_end',
         label,
@@ -466,9 +533,16 @@ export function createWorkflowRuntime(
         agentNumber,
         ok: result.ok,
         status,
+        ...(status === 'skipped' ? { error: 'skipped by user' } : {}),
         tokens: result.tokens,
         toolCalls: result.toolCalls ?? 0,
-        durationMs: result.durationMs ?? Date.now() - agentStartedAt,
+        durationMs: result.durationMs ?? now - agentStartedAt,
+        ...baseProgressMeta({
+          queuedAt: attemptQueuedAt,
+          startedAt: attemptStartedAt,
+          lastProgressAt: now,
+          remoteSessionId: result.remoteSessionId,
+        }),
       })
       return result.ok ? result.value : null
     }

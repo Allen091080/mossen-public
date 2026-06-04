@@ -506,6 +506,13 @@ function defaultRemoteSessionUrl(sessionId: string): string {
   return getRemoteSessionUrl(sessionId)
 }
 
+function withRemoteSessionId(
+  result: AgentRunResult,
+  remoteSessionId: string,
+): AgentRunResult {
+  return { ...result, remoteSessionId }
+}
+
 function deriveRemoteLabel(prompt: string): string {
   const firstLine = prompt.trim().split('\n')[0] ?? ''
   const trimmed = firstLine.slice(0, 48)
@@ -583,7 +590,10 @@ export async function runHostedRemoteWorkflowAgent(
         event => remoteMessageType(event) === 'result',
       )
       if (resultEvent) {
-        return coerceRemoteWorkflowAgentResult(events, opts, label)
+        return withRemoteSessionId(
+          coerceRemoteWorkflowAgentResult(events, opts, label),
+          launched.id,
+        )
       }
 
       if (page.sessionStatus === 'requires_action') {
@@ -595,7 +605,10 @@ export async function runHostedRemoteWorkflowAgent(
       if (page.sessionStatus === 'idle') {
         const text = extractRemoteResultText(events)
         if (text.trim()) {
-          return coerceRemoteWorkflowAgentResult(events, opts, label)
+          return withRemoteSessionId(
+            coerceRemoteWorkflowAgentResult(events, opts, label),
+            launched.id,
+          )
         }
         if (page.newEvents.length === 0) {
           idleEmptyPolls++

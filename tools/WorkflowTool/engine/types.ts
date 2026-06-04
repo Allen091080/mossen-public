@@ -37,33 +37,48 @@ export type AgentCallOptions = {
   agentType?: string
 }
 
+export type WorkflowAgentProgressMeta = {
+  agentType?: string
+  model?: string
+  isolation?: 'worktree' | 'remote'
+  promptPreview?: string
+  queuedAt?: number
+  startedAt?: number
+  lastProgressAt?: number
+  remoteSessionId?: string
+  lastAttemptReason?: string
+  lastToolName?: string
+  lastToolSummary?: string
+}
+
 /** A progress event emitted by the engine while a workflow runs. */
 export type WorkflowProgressEvent =
   | { kind: 'phase'; title: string }
   | { kind: 'log'; message: string }
-  | {
+  | ({
       kind: 'agent_queued'
       label: string
       phase: string | null
       agentNumber: number
-    }
-  | {
+    } & WorkflowAgentProgressMeta)
+  | ({
       kind: 'agent_start'
       label: string
       phase: string | null
       agentNumber: number
-    }
-  | {
+    } & WorkflowAgentProgressMeta)
+  | ({
       kind: 'agent_end'
       label: string
       phase: string | null
       agentNumber: number
       ok: boolean
       status?: 'completed' | 'failed' | 'skipped' | 'cached'
+      error?: string
       tokens: number
       toolCalls?: number
       durationMs?: number
-    }
+    } & WorkflowAgentProgressMeta)
 
 /** Sink the runtime uses to surface progress to the WorkflowTool call(). */
 export type ProgressSink = (event: WorkflowProgressEvent) => void
@@ -83,6 +98,8 @@ export type AgentRunResult = {
   stallTimeoutMs?: number
   /** Wall-clock time spent running this agent attempt. */
   durationMs?: number
+  /** Hosted remote session id for remote workflow agents. */
+  remoteSessionId?: string
 }
 
 export type WorkflowAgentControlAction = 'skip' | 'retry'
