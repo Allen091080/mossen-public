@@ -111,6 +111,29 @@ describe('journal onRecord sink (disk-persistence contract, S1)', () => {
     expect(seen).toEqual([0, 1])
   })
 
+  test('every started entry fires onStart exactly once', () => {
+    const seen: number[] = []
+    const j = createJournal(
+      'wf_test',
+      null,
+      undefined,
+      e => seen.push(e.agentNumber),
+    )
+    j.start(0, 'h0', {
+      label: 'scan',
+      phase: null,
+      agentNumber: 1,
+      opts: {},
+    })
+    j.start(1, 'h1', {
+      label: 'fix',
+      phase: 'Patch',
+      agentNumber: 2,
+      opts: { model: 'fast' },
+    })
+    expect(seen).toEqual([1, 2])
+  })
+
   test('onRecord payload matches the in-memory toData() entries', () => {
     const appended: string[] = []
     const j = createJournal('wf_test', null, e => appended.push(JSON.stringify(e)))
@@ -121,9 +144,16 @@ describe('journal onRecord sink (disk-persistence contract, S1)', () => {
 
   test('append-then-load round-trip reconstructs JournalData (jsonl format)', () => {
     // Simulate journalStore.appendJournalEntry: one JSON object per line.
-    const j = createJournal('wf_run', null, e => {
+    const appendLine = (e: unknown) => {
       const fs = require('node:fs') as typeof import('node:fs')
       fs.appendFileSync(file, `${JSON.stringify(e)}\n`, 'utf8')
+    }
+    const j = createJournal('wf_run', null, appendLine, appendLine)
+    j.start(0, 'ha', {
+      label: 'first',
+      phase: null,
+      agentNumber: 1,
+      opts: {},
     })
     j.record(0, 'ha', { value: 'first', tokens: 3, ok: true })
     j.record(1, 'hb', { value: 'second', tokens: 4, ok: false })
@@ -133,12 +163,17 @@ describe('journal onRecord sink (disk-persistence contract, S1)', () => {
       .split('\n')
       .filter(Boolean)
       .map(l => JSON.parse(l))
-    expect(entries).toHaveLength(2)
-    expect(entries[0]).toMatchObject({ index: 0, hash: 'ha', value: 'first', ok: true })
-    expect(entries[1]).toMatchObject({ index: 1, hash: 'hb', value: 'second', ok: false })
+    expect(entries).toHaveLength(3)
+    expect(entries[0]).toMatchObject({ kind: 'started', index: 0, hash: 'ha' })
+    expect(entries[1]).toMatchObject({ index: 0, hash: 'ha', value: 'first', ok: true })
+    expect(entries[2]).toMatchObject({ index: 1, hash: 'hb', value: 'second', ok: false })
 
     // Feed the reloaded entries back as `prior` → prefix cache hits.
-    const resumed = createJournal('wf_run', { runId: 'wf_run', entries })
+    const resumed = createJournal('wf_run', {
+      runId: 'wf_run',
+      entries: entries.filter(e => e.kind !== 'started'),
+      started: entries.filter(e => e.kind === 'started'),
+    })
     expect(resumed.lookup(0, 'ha')).toEqual({ value: 'first', tokens: 3, ok: true })
     expect(resumed.lookup(1, 'hb')).toEqual({ value: 'second', tokens: 4, ok: false })
     expect(resumed.hits()).toBe(2)

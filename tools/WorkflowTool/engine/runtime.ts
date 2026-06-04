@@ -121,6 +121,8 @@ export function createWorkflowRuntime(
       throw new Error("agent({isolation:'remote'}) is not available in this build")
     }
 
+    const startedHit = journal?.startedHit(index, hash)
+
     // Resume: replay a cached result if this call matches the prior run.
     const cached = journal?.lookup(index, hash)
     if (cached) {
@@ -139,7 +141,14 @@ export function createWorkflowRuntime(
 
     agentCounter++
     const agentNumber = agentCounter
+    if (startedHit) {
+      progress({
+        kind: 'log',
+        message: `workflow journal started hit respawn: agent #${startedHit.agentNumber} ${startedHit.label}`,
+      })
+    }
     for (;;) {
+      journal?.start(index, hash, { label, phase, agentNumber, opts })
       progress({ kind: 'agent_start', label, phase, agentNumber })
 
       let result: AgentRunResult

@@ -12,7 +12,7 @@ const workflows: Command = {
   type: 'local-jsx',
   name: 'workflows',
   description: t('cmd.workflows.description'),
-  argumentHint: '[<runId> | save <runId> [name] [--user]]',
+  argumentHint: '[<runId> | resume <runId> | save <runId> [name] [--user]]',
   isEnabled: () => (feature('WORKFLOW_SCRIPTS') ? isWorkflowRuntimeEnabled() : false),
   load: () => import('./workflows.js'),
 }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createLimiter } from '../concurrency.js'
 import { createBudget, BudgetExceededError } from '../budget.js'
-import { createJournal } from '../journal.js'
+import { createJournal, hashCall } from '../journal.js'
 import {
   createWorkflowRuntime,
   deriveLabel,
@@ -270,6 +270,42 @@ describe('runtime journal (resume)', () => {
     await a2('new') // diverges → live run (calls=3)
     expect(calls).toBe(3)
     expect(j2.hits()).toBe(1)
+  })
+
+  test('started-only prior entries respawn instead of replaying a cache hit', async () => {
+    let calls = 0
+    const counting: RunOneAgent = async () => {
+      calls++
+      return { value: `live-${calls}`, tokens: 2, ok: true }
+    }
+    const prior = {
+      runId: 'run-1',
+      entries: [],
+      started: [
+        {
+          kind: 'started' as const,
+          index: 0,
+          hash: hashCall('alpha', {}),
+          label: 'alpha',
+          phase: null,
+          agentNumber: 1,
+          opts: {},
+        },
+      ],
+    }
+    const journal = createJournal('run-2', prior)
+    const { rt, events } = harness(counting, { journal })
+    const agent = rt.scope.agent as (p: string) => Promise<unknown>
+
+    expect(await agent('alpha')).toBe('live-1')
+    expect(calls).toBe(1)
+    expect(journal.hits()).toBe(0)
+    expect(journal.startedHits()).toBe(1)
+    expect(events[0]).toEqual({
+      kind: 'log',
+      message: 'workflow journal started hit respawn: agent #1 alpha',
+    })
+    expect(events[1]).toMatchObject({ kind: 'agent_start', agentNumber: 1 })
   })
 })
 

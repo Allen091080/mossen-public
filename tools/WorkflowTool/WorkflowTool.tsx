@@ -19,6 +19,7 @@ import { createBudget } from './engine/budget.js'
 import { createJournal } from './engine/journal.js'
 import {
   appendJournalEntry,
+  appendJournalStartedEntry,
   finalizeRunMeta,
   initRunArtifacts,
   loadJournal,
@@ -276,8 +277,11 @@ export const WorkflowTool = buildTool({
     const budget = createBudget(null)
     // Journal persists each recorded entry to disk so resume works across
     // separate tool invocations (not just in-memory within one run).
-    const journal = createJournal(runId, prior, entry =>
-      appendJournalEntry(runId, entry),
+    const journal = createJournal(
+      runId,
+      prior,
+      entry => appendJournalEntry(runId, entry),
+      entry => appendJournalStartedEntry(runId, entry),
     )
     const runOneAgent = createWorkflowAgentRunner({
       toolUseContext,

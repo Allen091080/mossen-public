@@ -8,9 +8,10 @@
  * snapshotted to `<runDir>/script.js`. On resume we read the prior entries back
  * and feed them to createJournal() as the `prior` set.
  *
- * Format: one JSON object per line (JournalEntry). Append-only so a crash
- * mid-run still leaves a valid prefix — partial/corrupt trailing lines are
- * skipped on read.
+ * Format: one JSON object per line. Result rows keep the original JournalEntry
+ * shape; started rows carry `kind:"started"`. Append-only so a crash mid-run
+ * still leaves a valid prefix — partial/corrupt trailing lines are skipped on
+ * read.
  */
 
 import {
@@ -26,7 +27,11 @@ import {
 import { join } from 'node:path'
 import { getSessionId } from '../../../bootstrap/state.js'
 import { getProjectsDir } from '../../../utils/sessionStorage.js'
-import type { JournalData, JournalEntry } from './journal.js'
+import type {
+  JournalData,
+  JournalEntry,
+  JournalStartedEntry,
+} from './journal.js'
 
 const JOURNAL_FILE = 'journal.jsonl'
 const SCRIPT_FILE = 'script.js'
@@ -97,6 +102,21 @@ export function initRunArtifacts(
 
 /** Append one completed journal entry. Best-effort. */
 export function appendJournalEntry(runId: string, entry: JournalEntry): void {
+  appendJournalLine(runId, entry)
+}
+
+/** Append one started journal entry. Best-effort. */
+export function appendJournalStartedEntry(
+  runId: string,
+  entry: JournalStartedEntry,
+): void {
+  appendJournalLine(runId, entry)
+}
+
+function appendJournalLine(
+  runId: string,
+  entry: JournalEntry | JournalStartedEntry,
+): void {
   try {
     const dir = runDir(runId)
     ensureDir(dir)
@@ -130,19 +150,24 @@ export function loadJournal(runId: string): JournalData | null {
     const path = join(runDir(runId), JOURNAL_FILE)
     if (!existsSync(path)) return null
     const entries: JournalEntry[] = []
+    const started: JournalStartedEntry[] = []
     for (const line of readFileSync(path, 'utf8').split('\n')) {
       const trimmed = line.trim()
       if (!trimmed) continue
       try {
-        const parsed = JSON.parse(trimmed) as JournalEntry
+        const parsed = JSON.parse(trimmed) as JournalEntry | JournalStartedEntry
         if (typeof parsed.index === 'number' && typeof parsed.hash === 'string') {
-          entries.push(parsed)
+          if ('kind' in parsed && parsed.kind === 'started') {
+            started.push(parsed)
+          } else {
+            entries.push(parsed as JournalEntry)
+          }
         }
       } catch {
         // skip a torn trailing line from a crash mid-append
       }
     }
-    return { runId, entries }
+    return { runId, entries, ...(started.length ? { started } : {}) }
   } catch {
     return null
   }

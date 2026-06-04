@@ -17,6 +17,7 @@ import {
   getUserWorkflowsDir,
 } from '../../tools/WorkflowTool/savedWorkflows.js'
 import { isUltracodeActive, setUltracodeActive } from '../../bootstrap/state.js'
+import { WORKFLOW_TOOL_NAME } from '../../tools/WorkflowTool/constants.js'
 
 function statusGlyph(status: WorkflowRunMeta['status']): string {
   switch (status) {
@@ -113,6 +114,20 @@ function saveRun(args: string[]): string {
   }
 }
 
+function resumeRun(args: string[]): { message: string; nextInput?: string } {
+  const runId = args[0]
+  if (!runId) return { message: t('cmd.workflows.resumeUsage') }
+  const script = loadRunScript(runId)
+  if (script == null) return { message: t('cmd.workflows.notFound', { runId }) }
+  return {
+    message: t('cmd.workflows.resumeQueued', { runId }),
+    nextInput:
+      `Resume workflow run ${runId} using the ${WORKFLOW_TOOL_NAME} tool. ` +
+      `Call it with resumeFromRunId: "${runId}" and no new script so it reuses ` +
+      `the persisted script and journal. Do not repeat cached completed agent calls.`,
+  }
+}
+
 /** `ultracode [on|off]` — view or toggle standing orchestration mode (S6). */
 function ultracode(args: string[]): string {
   const arg = (args[0] ?? '').toLowerCase()
@@ -143,6 +158,17 @@ export async function call(
 
   if (tokens[0] === 'save') {
     onDone(saveRun(tokens.slice(1)))
+    return null
+  }
+
+  if (tokens[0] === 'resume') {
+    const result = resumeRun(tokens.slice(1))
+    onDone(result.message, {
+      display: 'system',
+      ...(result.nextInput
+        ? { nextInput: result.nextInput, submitNextInput: true }
+        : {}),
+    })
     return null
   }
 
