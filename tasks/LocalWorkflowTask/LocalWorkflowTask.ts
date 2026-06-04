@@ -52,6 +52,8 @@ export type LocalWorkflowTaskState = TaskStateBase & {
   phases: string[]
   agents: WorkflowAgentTaskProgress[]
   log: string[]
+  paused?: boolean
+  pauseStartedAt?: number
   error?: string
 }
 
@@ -61,11 +63,31 @@ const controlRequests = new Map<
 >()
 
 const agentControllers = new Map<string, Map<number, AbortController>>()
+const pausedWorkflowTasks = new Map<string, { startedAt: number }>()
+const pauseWaiters = new Map<
+  string,
+  Set<{
+    resolve: () => void
+    reject: (err: Error) => void
+    cleanup: () => void
+  }>
+>()
 
 const MAX_TASK_LOG_LINES = 200
 
 function appendLogLine(taskId: string, line: string): void {
   appendTaskOutput(taskId, `${line}\n`)
+}
+
+function releasePauseWaiters(taskId: string, err?: Error): void {
+  const waiters = pauseWaiters.get(taskId)
+  if (!waiters) return
+  pauseWaiters.delete(taskId)
+  for (const waiter of waiters) {
+    waiter.cleanup()
+    if (err) waiter.reject(err)
+    else waiter.resolve()
+  }
 }
 
 function progressLine(event: WorkflowProgressEvent): string {
@@ -152,7 +174,10 @@ export function registerWorkflowTask(params: {
     phases: [],
     agents: [],
     log: [],
+    paused: false,
   }
+  pausedWorkflowTasks.delete(params.runId)
+  releasePauseWaiters(params.runId)
   void initTaskOutput(params.runId)
   appendLogLine(params.runId, `workflow started: ${params.workflowName}`)
   registerTask(task, params.setAppState)
@@ -265,8 +290,104 @@ export function finishWorkflowTask(
     enqueueWorkflowNotification(taskForNotification, status)
     void evictTaskOutput(taskId)
   }
+  pausedWorkflowTasks.delete(taskId)
+  releasePauseWaiters(taskId, new Error(`workflow task ${status}`))
   controlRequests.delete(taskId)
   agentControllers.delete(taskId)
+}
+
+export function isWorkflowTaskPaused(taskId: string): boolean {
+  return pausedWorkflowTasks.has(taskId)
+}
+
+export function waitForWorkflowTaskResume(
+  taskId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!isWorkflowTaskPaused(taskId)) return Promise.resolve()
+  if (signal?.aborted) {
+    return Promise.reject(
+      signal.reason instanceof Error
+        ? signal.reason
+        : new Error(String(signal.reason ?? 'workflow aborted')),
+    )
+  }
+  return new Promise<void>((resolve, reject) => {
+    const waiterSet = pauseWaiters.get(taskId) ?? new Set()
+    let waiter: {
+      resolve: () => void
+      reject: (err: Error) => void
+      cleanup: () => void
+    }
+    const onAbort = () => {
+      waiterSet.delete(waiter)
+      if (waiterSet.size === 0) pauseWaiters.delete(taskId)
+      reject(
+        signal?.reason instanceof Error
+          ? signal.reason
+          : new Error(String(signal?.reason ?? 'workflow aborted')),
+      )
+    }
+    waiter = {
+      resolve,
+      reject,
+      cleanup: () => signal?.removeEventListener('abort', onAbort),
+    }
+    waiterSet.add(waiter)
+    pauseWaiters.set(taskId, waiterSet)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+export function pauseWorkflowTask(
+  taskId: string,
+  setAppState: SetAppState,
+): boolean {
+  const now = Date.now()
+  let paused = false
+  updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => {
+    if (task.status !== 'running' || task.paused) return task
+    paused = true
+    return {
+      ...task,
+      paused: true,
+      pauseStartedAt: now,
+      summary: 'paused',
+      log: [...task.log, 'workflow paused'].slice(-MAX_TASK_LOG_LINES),
+    }
+  })
+  if (!paused) return false
+  pausedWorkflowTasks.set(taskId, { startedAt: now })
+  appendLogLine(taskId, 'workflow paused')
+  return true
+}
+
+export function resumeWorkflowTask(
+  taskId: string,
+  setAppState: SetAppState,
+): boolean {
+  const now = Date.now()
+  let resumed = false
+  updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => {
+    if (task.status !== 'running' || !task.paused) return task
+    const startedAt =
+      task.pauseStartedAt ?? pausedWorkflowTasks.get(taskId)?.startedAt ?? now
+    const pausedFor = Math.max(0, now - startedAt)
+    resumed = true
+    return {
+      ...task,
+      paused: false,
+      pauseStartedAt: undefined,
+      totalPausedMs: (task.totalPausedMs ?? 0) + pausedFor,
+      summary: 'resumed',
+      log: [...task.log, 'workflow resumed'].slice(-MAX_TASK_LOG_LINES),
+    }
+  })
+  if (!resumed) return false
+  pausedWorkflowTasks.delete(taskId)
+  appendLogLine(taskId, 'workflow resumed')
+  releasePauseWaiters(taskId)
+  return true
 }
 
 export function killWorkflowTask(

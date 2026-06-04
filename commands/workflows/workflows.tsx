@@ -18,6 +18,10 @@ import {
 } from '../../tools/WorkflowTool/savedWorkflows.js'
 import { isUltracodeActive, setUltracodeActive } from '../../bootstrap/state.js'
 import { WORKFLOW_TOOL_NAME } from '../../tools/WorkflowTool/constants.js'
+import {
+  pauseWorkflowTask,
+  resumeWorkflowTask,
+} from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
 function statusGlyph(status: WorkflowRunMeta['status']): string {
   switch (status) {
@@ -128,6 +132,42 @@ function resumeRun(args: string[]): { message: string; nextInput?: string } {
   }
 }
 
+function pauseTaskRun(
+  runId: string | undefined,
+  context: LocalJSXCommandContext,
+): string {
+  if (!runId) return t('cmd.workflows.pauseUsage')
+  const task = context.getAppState().tasks?.[runId]
+  if (!task || task.type !== 'local_workflow') {
+    return t('cmd.workflows.notFound', { runId })
+  }
+  if (task.status !== 'running') {
+    return t('cmd.workflows.taskNotRunning', { runId })
+  }
+  const setAppState = context.setAppStateForTasks ?? context.setAppState
+  return pauseWorkflowTask(runId, setAppState)
+    ? t('cmd.workflows.paused', { runId })
+    : t('cmd.workflows.alreadyPaused', { runId })
+}
+
+function resumeTaskRun(
+  runId: string | undefined,
+  context: LocalJSXCommandContext,
+): string {
+  if (!runId) return t('cmd.workflows.resumeTaskUsage')
+  const task = context.getAppState().tasks?.[runId]
+  if (!task || task.type !== 'local_workflow') {
+    return t('cmd.workflows.notFound', { runId })
+  }
+  if (task.status !== 'running') {
+    return t('cmd.workflows.taskNotRunning', { runId })
+  }
+  const setAppState = context.setAppStateForTasks ?? context.setAppState
+  return resumeWorkflowTask(runId, setAppState)
+    ? t('cmd.workflows.resumed', { runId })
+    : t('cmd.workflows.notPaused', { runId })
+}
+
 /** `ultracode [on|off]` — view or toggle standing orchestration mode (S6). */
 function ultracode(args: string[]): string {
   const arg = (args[0] ?? '').toLowerCase()
@@ -146,7 +186,7 @@ function ultracode(args: string[]): string {
 
 export async function call(
   onDone: LocalJSXCommandOnDone,
-  _context: LocalJSXCommandContext,
+  context: LocalJSXCommandContext,
   args: string,
 ): Promise<null> {
   const tokens = args.trim().split(/\s+/).filter(Boolean)
@@ -169,6 +209,16 @@ export async function call(
         ? { nextInput: result.nextInput, submitNextInput: true }
         : {}),
     })
+    return null
+  }
+
+  if (tokens[0] === 'pause') {
+    onDone(pauseTaskRun(tokens[1], context), { display: 'system' })
+    return null
+  }
+
+  if (tokens[0] === 'resume-task') {
+    onDone(resumeTaskRun(tokens[1], context), { display: 'system' })
     return null
   }
 

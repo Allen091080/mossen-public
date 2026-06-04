@@ -28,6 +28,10 @@ function harness(
     runNestedWorkflow?: RunNestedWorkflow
     shouldSkipAgent?: (agentNumber: number) => boolean
     getAgentControl?: (agentNumber: number) => WorkflowAgentControlAction | null
+    waitForResume?: (
+      agentNumber: number,
+      meta: { phase: string | null; label: string },
+    ) => Promise<void>
   } = {},
 ) {
   const events: WorkflowProgressEvent[] = []
@@ -45,6 +49,7 @@ function harness(
       ? { shouldSkipAgent: opts.shouldSkipAgent }
       : {}),
     ...(opts.getAgentControl ? { getAgentControl: opts.getAgentControl } : {}),
+    ...(opts.waitForResume ? { waitForResume: opts.waitForResume } : {}),
   })
   return { rt, events, budget }
 }
@@ -79,13 +84,13 @@ describe('runtime.agent', () => {
 
   test('returns null when the agent result is not ok', async () => {
     const { rt } = harness(async () => ({ value: 'x', tokens: 5, ok: false }))
-    const agent = rt.scope.agent as (p: string) => Promise<unknown>
+    const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
     expect(await agent('task')).toBeNull()
   })
 
   test('throws once the budget is exhausted', async () => {
     const { rt } = harness(okAgent('x', 60), { total: 100 })
-    const agent = rt.scope.agent as (p: string) => Promise<unknown>
+    const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
     await agent('one') // spends 60
     await agent('two') // spends 60 → now at 120 ≥ 100
     await expect(agent('three')).rejects.toThrow(BudgetExceededError)
@@ -139,6 +144,37 @@ describe('runtime.agent', () => {
     expect(events.map(e => e.kind)).toEqual(['agent_queued', 'agent_end'])
     expect((events[0] as AgentQueuedEvent).agentNumber).toBe(1)
     expect((events[1] as AgentEndEvent).status).toBe('skipped')
+  })
+
+  test('waits for a paused workflow before starting a queued agent', async () => {
+    let paused = true
+    let releasePause!: () => void
+    const waitForResume = () =>
+      paused
+        ? new Promise<void>(resolve => {
+            releasePause = () => {
+              paused = false
+              resolve()
+            }
+          })
+        : Promise.resolve()
+    const { rt, events } = harness(okAgent('live'), { waitForResume })
+    const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
+
+    const pending = agent('task', { label: 'paused-agent' })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(events.map(e => e.kind)).toEqual(['agent_queued'])
+    expect((events[0] as AgentQueuedEvent).label).toBe('paused-agent')
+
+    releasePause()
+    expect(await pending).toBe('live')
+    expect(events.map(e => e.kind)).toEqual([
+      'agent_queued',
+      'agent_start',
+      'agent_end',
+    ])
   })
 
   test('rejects remote isolation instead of silently running locally', async () => {

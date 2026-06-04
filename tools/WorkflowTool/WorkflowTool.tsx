@@ -10,6 +10,7 @@ import {
   registerWorkflowAgentController,
   registerWorkflowTask,
   updateWorkflowTaskProgress,
+  waitForWorkflowTaskResume,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { WORKFLOW_TOOL_NAME } from './constants.js'
 import { WORKFLOW_TOOL_PROMPT } from './prompt.js'
@@ -166,6 +167,8 @@ function formatEvent(e: WorkflowProgressEvent): string | null {
       return `▶ phase: ${e.title}`
     case 'log':
       return e.message
+    case 'agent_queued':
+      return `  … #${e.agentNumber} ${e.label}${e.phase ? ` [${e.phase}]` : ''} queued`
     case 'agent_start':
       return `  ↳ #${e.agentNumber} ${e.label}${e.phase ? ` [${e.phase}]` : ''} …`
     case 'agent_end':
@@ -315,6 +318,8 @@ export const WorkflowTool = buildTool({
           ? {
               getAgentControl: (agentNumber: number) =>
                 consumeWorkflowAgentControl(runId, agentNumber),
+              waitForResume: () =>
+                waitForWorkflowTaskResume(runId, runAbort.signal),
             }
           : {}),
         runNestedWorkflow:

@@ -13,7 +13,7 @@
  *  - token budget enforcement (assertBudget before each spawn; record after)
  *  - a hard ceiling on total agents per run (runaway-loop backstop)
  *  - resume journal lookup/record
- *  - progress events (phase / log / agent_start / agent_end)
+ *  - progress events (phase / log / agent_queued / agent_start / agent_end)
  */
 
 import { assertBudget, type Budget } from './budget.js'
@@ -64,6 +64,10 @@ export type WorkflowRuntimeConfig = {
     agentNumber: number,
     meta: { phase: string | null; label: string },
   ) => WorkflowAgentControlAction | null
+  waitForResume?: (
+    agentNumber: number,
+    meta: { phase: string | null; label: string },
+  ) => Promise<void>
   maxAgents?: number
 }
 
@@ -94,6 +98,7 @@ export function createWorkflowRuntime(
     runNestedWorkflow,
     shouldSkipAgent,
     getAgentControl,
+    waitForResume,
     maxAgents = MAX_AGENTS_PER_RUN,
   } = config
 
@@ -155,7 +160,9 @@ export function createWorkflowRuntime(
       let result: AgentRunResult
       let skipped = false
       try {
-        result = await limiter.run(() => {
+        await waitForResume?.(agentNumber, { phase, label })
+        result = await limiter.run(async () => {
+          await waitForResume?.(agentNumber, { phase, label })
           const control =
             getAgentControl?.(agentNumber, { phase, label }) ??
             (shouldSkipAgent?.(agentNumber, { phase, label }) ? 'skip' : null)

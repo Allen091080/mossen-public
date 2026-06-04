@@ -223,6 +223,8 @@ type CategorizedListItems = {
 const WorkflowDetailDialog = feature('WORKFLOW_SCRIPTS') ? (require('./WorkflowDetailDialog.js') as typeof import('./WorkflowDetailDialog.js')).WorkflowDetailDialog : null;
 const workflowTaskModule = feature('WORKFLOW_SCRIPTS') ? require('src/tasks/LocalWorkflowTask/LocalWorkflowTask.js') as typeof import('src/tasks/LocalWorkflowTask/LocalWorkflowTask.js') : null;
 const killWorkflowTask = workflowTaskModule?.killWorkflowTask ?? null;
+const pauseWorkflowTask = workflowTaskModule?.pauseWorkflowTask ?? null;
+const resumeWorkflowTask = workflowTaskModule?.resumeWorkflowTask ?? null;
 const skipWorkflowAgent = workflowTaskModule?.skipWorkflowAgent ?? null;
 const retryWorkflowAgent = workflowTaskModule?.retryWorkflowAgent ?? null;
 // Relative path, not `src/...` path-mapping — Bun's DCE can statically
@@ -1371,7 +1373,7 @@ function BackgroundTasksDialogImpl({
         } : undefined} onAttach={agentView ? () => attachAgentTaskToMainView(task_0.id) : undefined} key={`teammate-${task_0.id}`} />;
       case 'local_workflow':
         if (!WorkflowDetailDialog) return null;
-        return <WorkflowDetailDialog workflow={task_0} onDone={onDone} onKill={isInterruptibleBackgroundStatus(task_0.status) && killWorkflowTask ? () => killWorkflowTask(task_0.id, setAppState) : undefined} onSkipAgent={isInterruptibleBackgroundStatus(task_0.status) && skipWorkflowAgent ? agentId => skipWorkflowAgent(task_0.id, agentId, setAppState) : undefined} onRetryAgent={isInterruptibleBackgroundStatus(task_0.status) && retryWorkflowAgent ? agentId_0 => retryWorkflowAgent(task_0.id, agentId_0, setAppState) : undefined} onBack={goBackToList} key={`workflow-${task_0.id}`} />;
+        return <WorkflowDetailDialog workflow={task_0} onDone={onDone} onKill={isInterruptibleBackgroundStatus(task_0.status) && killWorkflowTask ? () => killWorkflowTask(task_0.id, setAppState) : undefined} onPause={isInterruptibleBackgroundStatus(task_0.status) && pauseWorkflowTask ? () => pauseWorkflowTask(task_0.id, setAppState) : undefined} onResume={isInterruptibleBackgroundStatus(task_0.status) && resumeWorkflowTask ? () => resumeWorkflowTask(task_0.id, setAppState) : undefined} onSkipAgent={isInterruptibleBackgroundStatus(task_0.status) && skipWorkflowAgent ? agentId => skipWorkflowAgent(task_0.id, agentId, setAppState) : undefined} onRetryAgent={isInterruptibleBackgroundStatus(task_0.status) && retryWorkflowAgent ? agentId_0 => retryWorkflowAgent(task_0.id, agentId_0, setAppState) : undefined} onBack={goBackToList} key={`workflow-${task_0.id}`} />;
       case 'monitor_mcp':
         if (!MonitorMcpDetailDialog) return null;
         return <MonitorMcpDetailDialog task={task_0} onKill={isInterruptibleBackgroundStatus(task_0.status) && killMonitorMcp ? () => killMonitorMcp(task_0.id, setAppState) : undefined} onBack={goBackToList} key={`monitor-mcp-${task_0.id}`} />;

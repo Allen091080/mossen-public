@@ -25,6 +25,8 @@ type Props = {
     options?: { display?: CommandResultDisplay },
   ) => void
   onKill?: () => void
+  onPause?: () => void
+  onResume?: () => void
   onSkipAgent?: (agentId: string) => void
   onRetryAgent?: (agentId: string) => void
   onBack?: () => void
@@ -78,6 +80,8 @@ export function WorkflowDetailDialog({
   workflow,
   onDone,
   onKill,
+  onPause,
+  onResume,
   onSkipAgent,
   onRetryAgent,
   onBack,
@@ -107,6 +111,18 @@ export function WorkflowDetailDialog({
       onKill()
       return
     }
+    if (event.key === 'p' && workflow.status === 'running') {
+      if (workflow.paused && onResume) {
+        event.preventDefault()
+        onResume()
+        return
+      }
+      if (!workflow.paused && onPause) {
+        event.preventDefault()
+        onPause()
+        return
+      }
+    }
     if (event.key === 's' && runningAgent && onSkipAgent) {
       event.preventDefault()
       onSkipAgent(String(runningAgent.agentNumber))
@@ -118,10 +134,11 @@ export function WorkflowDetailDialog({
     }
   }
 
+  const displayStatus = workflow.paused ? 'paused' : workflow.status
   const subtitle = (
     <Text>
-      <Text color={getTaskStatusColor(workflow.status)}>
-        {getTaskStatusIcon(workflow.status)} {workflow.status}
+      <Text color={workflow.paused ? 'warning' : getTaskStatusColor(workflow.status)}>
+        {getTaskStatusIcon(workflow.status)} {displayStatus}
       </Text>
       <Text dimColor>
         {' '}
@@ -136,6 +153,12 @@ export function WorkflowDetailDialog({
       <KeyboardShortcutHint shortcut="Esc/Enter/Space" action="close" />
       {workflow.status === 'running' && onKill ? (
         <KeyboardShortcutHint shortcut="x" action="stop" />
+      ) : null}
+      {workflow.status === 'running' && workflow.paused && onResume ? (
+        <KeyboardShortcutHint shortcut="p" action="resume" />
+      ) : null}
+      {workflow.status === 'running' && !workflow.paused && onPause ? (
+        <KeyboardShortcutHint shortcut="p" action="pause" />
       ) : null}
       {runningAgent && onSkipAgent ? (
         <KeyboardShortcutHint shortcut="s" action="skip current agent" />
