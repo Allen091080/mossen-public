@@ -38,7 +38,7 @@ import { SearchBox } from '../SearchBox.js';
 import { isSupportedTerminal, hasAccessToIDEExtensionDiffFeature } from '../../utils/ide.js';
 import { getInitialSettings, getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js';
 import { getLocalizedText } from '../../utils/uiLanguage.js';
-import { getUserMsgOptIn, setUserMsgOptIn } from '../../bootstrap/state.js';
+import { getUserMsgOptIn, setUltracodeActive, setUserMsgOptIn } from '../../bootstrap/state.js';
 import { DEFAULT_OUTPUT_STYLE_NAME } from 'src/constants/outputStyles.js';
 import { isEnvTruthy, isRunningOnHomespace } from 'src/utils/envUtils.js';
 import type { LocalJSXCommandContext, CommandResultDisplay } from '../../commands.js';
@@ -341,6 +341,55 @@ function ConfigImpl({
       logMossenEvent('mossen.config.thinkingToggled', {
         enabled
       });
+    }
+  }, {
+    id: 'dynamicWorkflows',
+    label: getLocalizedText({ en: 'Dynamic workflows', zh: '动态工作流' }),
+    searchText: getLocalizedText({
+      en: 'Dynamic workflows workflow orchestration ultracode',
+      zh: '动态工作流 工作流 编排 ultracode',
+    }),
+    value: settingsData?.disableWorkflows === true || settingsData?.enableWorkflows === false ? false : true,
+    type: 'boolean' as const,
+    onChange(enabled: boolean) {
+      updateSettingsForSource('userSettings', {
+        disableWorkflows: enabled ? undefined : true,
+        enableWorkflows: undefined
+      });
+      setSettingsData(prev_6 => ({
+        ...prev_6,
+        disableWorkflows: enabled ? undefined : true,
+        enableWorkflows: undefined
+      }));
+      if (!enabled) {
+        setUltracodeActive(false);
+      }
+      setChanges(prev_7 => ({
+        ...prev_7,
+        [getLocalizedText({ en: 'Dynamic workflows', zh: '动态工作流' })]: enabled ? 'enabled' : 'disabled'
+      }));
+    }
+  }, {
+    id: 'workflowKeywordTriggerEnabled',
+    label: getLocalizedText({ en: 'Workflow keyword trigger', zh: '工作流关键词触发' }),
+    searchText: getLocalizedText({
+      en: 'Workflow keyword trigger ultracode workflow',
+      zh: '工作流关键词触发 ultracode workflow',
+    }),
+    value: settingsData?.workflowKeywordTriggerEnabled !== false,
+    type: 'boolean' as const,
+    onChange(enabled_0: boolean) {
+      updateSettingsForSource('userSettings', {
+        workflowKeywordTriggerEnabled: enabled_0 ? undefined : false
+      });
+      setSettingsData(prev_8 => ({
+        ...prev_8,
+        workflowKeywordTriggerEnabled: enabled_0 ? undefined : false
+      }));
+      setChanges(prev_9 => ({
+        ...prev_9,
+        [getLocalizedText({ en: 'Workflow keyword trigger', zh: '工作流关键词触发' })]: enabled_0 ? 'enabled' : 'disabled'
+      }));
     }
   },
   // Fast mode toggle (internal-only, eliminated from external builds)
@@ -1176,6 +1225,9 @@ function ConfigImpl({
       alwaysThinkingEnabled: iu?.alwaysThinkingEnabled,
       fastMode: iu?.fastMode,
       promptSuggestionEnabled: iu?.promptSuggestionEnabled,
+      disableWorkflows: iu?.disableWorkflows,
+      enableWorkflows: iu?.enableWorkflows,
+      workflowKeywordTriggerEnabled: iu?.workflowKeywordTriggerEnabled,
       autoUpdatesChannel: iu?.autoUpdatesChannel,
       minimumVersion: iu?.minimumVersion,
       language: iu?.language,
