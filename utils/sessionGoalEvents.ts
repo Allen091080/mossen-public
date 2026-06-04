@@ -37,6 +37,12 @@ export type SessionGoalEvent =
       pausedAt: string
     }
   | {
+      type: 'goal_blocked'
+      goalId: string
+      reason: string
+      blockedAt: string
+    }
+  | {
       type: 'goal_resumed'
       goalId: string
       resumedAt: string
@@ -95,6 +101,11 @@ export function getSessionGoalEventFromMessage(
     case 'goal_paused':
       return typeof record.cause === 'string' &&
         typeof record.pausedAt === 'string'
+        ? (event as SessionGoalEvent)
+        : null
+    case 'goal_blocked':
+      return typeof record.reason === 'string' &&
+        typeof record.blockedAt === 'string'
         ? (event as SessionGoalEvent)
         : null
     case 'goal_resumed':

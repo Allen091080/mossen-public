@@ -78,6 +78,35 @@ function ptyExitSignalName(signal: number): string | null {
   return PTY_EXIT_SIGNAL_NAMES[signal] ?? `SIG_${signal}`
 }
 
+function getAgentSupervisorPtyChildCommand(): {
+  command: string
+  argsPrefix: string[]
+} {
+  const harnessCommand =
+    process.env.MOSSEN_CODE_AGENT_SUPERVISOR_PTY_CHILD_COMMAND
+  if (process.env.MOSSEN_HARNESS === '1' && harnessCommand) {
+    let argsPrefix: string[] = []
+    const rawArgs =
+      process.env.MOSSEN_CODE_AGENT_SUPERVISOR_PTY_CHILD_ARGS_JSON
+    if (rawArgs) {
+      try {
+        const parsed = JSON.parse(rawArgs) as unknown
+        if (
+          Array.isArray(parsed) &&
+          parsed.every(item => typeof item === 'string')
+        ) {
+          argsPrefix = parsed
+        }
+      } catch {
+        argsPrefix = []
+      }
+    }
+    return { command: harnessCommand, argsPrefix }
+  }
+
+  return getAgentSupervisorSelfCommand()
+}
+
 export type LaunchAgentSupervisorBackgroundJobOptions = {
   prompt: string
   cwd?: string
@@ -340,9 +369,7 @@ export function startAgentSupervisorJobWorkerProcess(
     // node-pty failing to load, FFI dlopen mismatch, mossen TUI crash) goes
     // silently to /dev/null and the dashboard sees a "working" job whose
     // socket never came up. With these logs the next crash is grep-able.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fs = require('fs') as typeof import('fs')
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const path = require('path') as typeof import('path')
     const jobDir = path.dirname(getAgentSupervisorJobPaths(id).state)
     fs.mkdirSync(jobDir, { recursive: true, mode: 0o700 })
@@ -765,7 +792,7 @@ async function runAgentSupervisorPtyWorker(
   process.on('uncaughtException', crashHandler('uncaughtException'))
   process.on('unhandledRejection', crashHandler('unhandledRejection'))
 
-  const { command, argsPrefix } = getAgentSupervisorSelfCommand()
+  const { command, argsPrefix } = getAgentSupervisorPtyChildCommand()
   // Plain mossen TUI invocation — no --supervisor-job, no -p. The PTY-spawned
   // mossen renders interactively into the PTY just like a real terminal
   // session, accepts keystrokes from the attached dashboard, and writes its

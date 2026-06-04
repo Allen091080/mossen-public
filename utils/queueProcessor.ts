@@ -1,4 +1,5 @@
 import type { QueuedCommand } from '../types/textInputTypes.js'
+import type { QueuePriority } from '../types/textInputTypes.js'
 import {
   STATUS_TAG,
   SUMMARY_TAG,
@@ -17,6 +18,16 @@ type ProcessQueueParams = {
 
 type ProcessQueueResult = {
   processed: boolean
+}
+
+const PRIORITY_ORDER: Record<QueuePriority, number> = {
+  now: 0,
+  next: 1,
+  later: 2,
+}
+
+function priorityRank(cmd: QueuedCommand): number {
+  return PRIORITY_ORDER[cmd.priority ?? 'next']
 }
 
 /**
@@ -75,11 +86,13 @@ export function isPassiveCompletedBackgroundBashNotification(
  * one at a time so each goes through the executeInput path individually.
  * Bash commands need individual processing to preserve per-command error
  * isolation, exit codes, and progress UI. Other non-slash commands are
- * batched: all items **with the same mode** as the highest-priority item
- * are drained at once and passed as a single array to executeInput — each
- * becomes its own user message with its own UUID. Different modes
- * (e.g. prompt vs task-notification) are never mixed because they are
- * treated differently downstream.
+ * batched: all items with the same priority, mode, workload, and meta flag as
+ * the highest-priority item are drained at once and passed as a single array
+ * to executeInput — each becomes its own user message with its own UUID.
+ * Different modes (e.g. prompt vs task-notification), different priority
+ * levels (e.g. human `next` vs system `later`), and different automated
+ * workloads (e.g. cron vs goal) are never mixed because they are treated
+ * differently downstream.
  *
  * The caller is responsible for ensuring no query is currently running
  * and for calling this function again after each command completes
@@ -115,6 +128,7 @@ export function processQueueIfReady({
     const commands = dequeueAllMatching(
       cmd =>
         isMainThread(cmd) &&
+        priorityRank(cmd) === priorityRank(next) &&
         !isSlashCommand(cmd) &&
         isPassiveCompletedBackgroundBashNotification(cmd),
     )
@@ -123,11 +137,17 @@ export function processQueueIfReady({
 
   // Drain all non-slash-command items with the same mode at once.
   const targetMode = next.mode
+  const targetPriority = priorityRank(next)
+  const targetWorkload = next.workload
+  const targetIsMeta = next.isMeta === true
   const commands = dequeueAllMatching(
     cmd =>
       isMainThread(cmd) &&
       !isSlashCommand(cmd) &&
+      priorityRank(cmd) === targetPriority &&
       cmd.mode === targetMode &&
+      cmd.workload === targetWorkload &&
+      (cmd.isMeta === true) === targetIsMeta &&
       !isPassiveCompletedBackgroundBashNotification(cmd),
   )
   if (commands.length === 0) {

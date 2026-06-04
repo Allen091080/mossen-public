@@ -184,6 +184,7 @@ export async function attachToWorker(
     const socket = new Socket()
 
     let resolved = false
+    let pendingTerminalFrameResult: AttachResult | null = null
     // Detach scanner state machine. Two states:
     //   'normal' — no pending Esc.
     //   'esc'    — saw an Esc, waiting up to ESC_FLUSH_TIMEOUT_MS for the
@@ -249,6 +250,20 @@ export async function attachToWorker(
       }
       clearEscFlushTimer()
       resolveFn(result)
+    }
+
+    function finishAfterTerminalFrame(
+      result: AttachResult,
+      callbackResult?: void | Promise<void>,
+    ): void {
+      pendingTerminalFrameResult = result
+      if (callbackResult && typeof callbackResult.then === 'function') {
+        void callbackResult.finally(() => {
+          finish(result)
+        })
+        return
+      }
+      finish(result)
     }
 
     function handleStdinData(rawChunk: Buffer | string): void {
@@ -410,14 +425,10 @@ export async function attachToWorker(
           } else if (frame.type === ATTACH_FRAME_TYPE.EXIT) {
             const info = decodeExit(frame.payload)
             const code = info?.exitCode ?? 0
-            const exitPromise = options.onJobExit?.(code)
-            if (exitPromise && typeof exitPromise.then === 'function') {
-              void exitPromise.finally(() => {
-                finish({ reason: 'job_exited', exitCode: code })
-              })
-            } else {
-              finish({ reason: 'job_exited', exitCode: code })
-            }
+            finishAfterTerminalFrame(
+              { reason: 'job_exited', exitCode: code },
+              options.onJobExit?.(code),
+            )
             return
           } else if (frame.type === ATTACH_FRAME_TYPE.EVICT) {
             // W411: another dashboard took over this job. Splash the
@@ -425,14 +436,10 @@ export async function attachToWorker(
             // closing, then resolve with reason='evicted'. The shell
             // loop treats it like 'detached' (return to dashboard
             // list) but the splash text is different.
-            const evictPromise = options.onEvicted?.()
-            if (evictPromise && typeof evictPromise.then === 'function') {
-              void evictPromise.finally(() => {
-                finish({ reason: 'evicted', exitCode: null })
-              })
-            } else {
-              finish({ reason: 'evicted', exitCode: null })
-            }
+            finishAfterTerminalFrame(
+              { reason: 'evicted', exitCode: null },
+              options.onEvicted?.(),
+            )
             return
           }
           // PING / RESIZE from server → ignored on the client side.
@@ -458,6 +465,7 @@ export async function attachToWorker(
       })
     })
     socket.once('close', () => {
+      if (pendingTerminalFrameResult) return
       finish({ reason: 'job_exited', exitCode: null })
     })
 

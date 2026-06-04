@@ -50,6 +50,8 @@ function statusLabel(status: MossenGoalState['status']): string {
       return t('cmd.goal.status.value.completed')
     case 'paused':
       return t('cmd.goal.status.value.paused')
+    case 'blocked':
+      return t('cmd.goal.status.value.blocked')
     case 'failed':
       return t('cmd.goal.status.value.failed')
   }
@@ -63,6 +65,8 @@ function goalOutcomeLabel(goal: MossenGoalState): string {
       return t('cmd.goal.explain.outcome.completed')
     case 'paused':
       return t('cmd.goal.explain.outcome.paused')
+    case 'blocked':
+      return t('cmd.goal.explain.outcome.blocked')
     case 'max_turns':
       return t('cmd.goal.explain.outcome.maxTurns')
     case 'error':
@@ -128,7 +132,7 @@ function renderGoalHistoryTrailer(): string[] {
 }
 
 function renderStatus(goal: MossenGoalState | null): string {
-  if (!goal || (goal.status !== 'active' && goal.status !== 'paused')) {
+  if (!goal || (goal.status !== 'active' && goal.status !== 'paused' && goal.status !== 'blocked')) {
     const previous = goal
       ? [
           '',
@@ -149,7 +153,7 @@ function renderStatus(goal: MossenGoalState | null): string {
   }
 
   const nextAction =
-    goal.status === 'paused'
+    goal.status === 'paused' || goal.status === 'blocked'
       ? t('cmd.goal.status.nextPaused')
       : t('cmd.goal.status.nextActive')
 
@@ -305,7 +309,7 @@ export async function call(
   const previousGoal = getSessionGoalState()
   const replacementEvent =
     previousGoal &&
-    (previousGoal.status === 'active' || previousGoal.status === 'paused')
+    (previousGoal.status === 'active' || previousGoal.status === 'paused' || previousGoal.status === 'blocked')
       ? createSessionGoalEventMessage({
           type: 'goal_cleared',
           goalId: previousGoal.id,

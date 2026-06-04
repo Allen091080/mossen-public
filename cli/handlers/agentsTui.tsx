@@ -34,7 +34,10 @@ import { KeybindingSetup } from '../../keybindings/KeybindingProviderSetup.js'
 import {
   waitForAgentViewSessionEvent,
 } from '../../services/agentSupervisor/agentViewSession.js'
-import { attachToWorker } from '../../services/agentSupervisor/attachClient.js'
+import {
+  attachToWorker,
+  type AttachResult,
+} from '../../services/agentSupervisor/attachClient.js'
 import { reconcileDeadSupervisorJobs } from '../../services/agentSupervisor/recovery.js'
 import { AppStateProvider } from '../../state/AppState.js'
 import { t } from '../../utils/i18n/index.js'
@@ -103,6 +106,61 @@ let shellAgentViewDispatchDefaults: AgentViewDispatchDefaults | null = null
 type DashboardResolution =
   | { kind: 'done' }
   | { kind: 'session_event'; event: Awaited<ReturnType<typeof waitForAgentViewSessionEvent>> }
+
+async function waitForAgentViewAttachSplashKey(
+  timeoutMs = 5000,
+): Promise<void> {
+  await new Promise<void>(resolveFn => {
+    const stdinStream = process.stdin as NodeJS.ReadStream
+    const onKey = (): void => {
+      stdinStream.off('data', onKey)
+      resolveFn()
+    }
+    stdinStream.once('data', onKey)
+    setTimeout(() => {
+      stdinStream.off('data', onKey)
+      resolveFn()
+    }, timeoutMs)
+  })
+}
+
+async function showAgentViewAttachSplash(
+  message: string,
+  color = '33',
+): Promise<void> {
+  try {
+    process.stdout.write(`\r\n\x1b[${color}m── ${message} ──\x1b[0m\r\n`)
+  } catch {
+    // best-effort splash
+  }
+  await waitForAgentViewAttachSplashKey()
+}
+
+function formatAgentViewAttachResult(
+  result: AttachResult,
+  options: { exitSplashShown: boolean },
+): string | null {
+  if (result.reason === 'detached' || result.reason === 'evicted') return null
+  if (result.reason === 'job_exited') {
+    if (options.exitSplashShown) return null
+    return t('ui.agentView.attachExitedSplash', {
+      code: result.exitCode === null ? 'unknown' : String(result.exitCode),
+    })
+  }
+  if (result.reason === 'connect_failed') {
+    return t('ui.agentView.attachConnectFailed', {
+      message: result.error ?? t('ui.agentView.attachFailedGeneric'),
+    })
+  }
+  if (result.reason === 'aborted') {
+    return result.error?.includes('raw mode unsupported')
+      ? t('ui.agentView.attachUnsupported')
+      : t('ui.agentView.attachAborted', {
+        message: result.error ?? t('ui.agentView.attachFailedGeneric'),
+      })
+  }
+  return null
+}
 
 async function renderDashboardOnce(
   commands: Command[],
@@ -189,7 +247,8 @@ async function openAgentViewTui(): Promise<void> {
     // renderDashboardOnce.finish(). Run the bridge synchronously; stdio is
     // ours alone until the bridge resolves.
     try {
-      await attachToWorker({
+      let attachExitSplashShown = false
+      const attachResult = await attachToWorker({
         socketPath: event.req.socketPath,
         stdin: process.stdin as NodeJS.ReadStream,
         stdout: process.stdout as NodeJS.WriteStream,
@@ -211,28 +270,29 @@ async function openAgentViewTui(): Promise<void> {
         // close because the job ended. Wait for any keypress (or a short
         // timeout) before resolving, mirroring onJobExit semantics.
         onEvicted: async () => {
-          const message = t('ui.agentView.attachEvicted')
-          try {
-            process.stdout.write(
-              `\r\n\x1b[33m── ${message} ──\x1b[0m\r\n`,
-            )
-          } catch {
-            // best-effort splash
-          }
-          await new Promise<void>(resolveFn => {
-            const stdinStream = process.stdin as NodeJS.ReadStream
-            const onKey = (): void => {
-              stdinStream.off('data', onKey)
-              resolveFn()
-            }
-            stdinStream.once('data', onKey)
-            setTimeout(() => {
-              stdinStream.off('data', onKey)
-              resolveFn()
-            }, 5000)
-          })
+          await showAgentViewAttachSplash(t('ui.agentView.attachEvicted'))
+        },
+        onJobExit: async code => {
+          attachExitSplashShown = true
+          await showAgentViewAttachSplash(
+            t('ui.agentView.attachExitedSplash', {
+              code: String(code),
+            }),
+          )
         },
       })
+      const attachMessage = formatAgentViewAttachResult(attachResult, {
+        exitSplashShown: attachExitSplashShown,
+      })
+      if (attachMessage) {
+        await showAgentViewAttachSplash(
+          attachMessage,
+          attachResult.reason === 'connect_failed' ||
+            attachResult.reason === 'aborted'
+            ? '31'
+            : '33',
+        )
+      }
     } catch (bridgeError) {
       process.stderr.write(
         `Agent View attach failed: ${

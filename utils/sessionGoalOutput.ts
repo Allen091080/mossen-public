@@ -18,6 +18,7 @@ export type SessionGoalReasonKind =
   | 'continue'
   | 'completed'
   | 'paused'
+  | 'blocked'
   | 'max_turns'
   | 'error'
   | 'cleared'
@@ -41,6 +42,8 @@ export function formatSessionGoalReason(
       return t('cmd.goal.reason.completed', { reason: detail })
     case 'paused':
       return t('cmd.goal.reason.paused', { reason: detail })
+    case 'blocked':
+      return t('cmd.goal.reason.blocked', { reason: detail })
     case 'max_turns':
       return t('cmd.goal.reason.maxTurns', { reason: detail })
     case 'error':
@@ -58,6 +61,7 @@ export function getSessionGoalStateReasonKind(
   if (goal.status === 'paused') {
     return goal.lastEvaluatorStatus === 'error' ? 'error' : 'paused'
   }
+  if (goal.status === 'blocked') return 'blocked'
   if (goal.status === 'completed' || goal.lastEvaluatorStatus === 'met') {
     return 'completed'
   }
@@ -89,6 +93,8 @@ export function getSessionGoalEventReasonKind(
       return 'error'
     case 'goal_paused':
       return 'paused'
+    case 'goal_blocked':
+      return 'blocked'
     case 'goal_cleared':
       if (event.reason === 'condition_met') return 'completed'
       if (event.reason === 'turn_budget_exhausted') return 'max_turns'
@@ -110,6 +116,8 @@ export function formatSessionGoalEventReason(
       )
     case 'goal_paused':
       return formatSessionGoalReason('paused', event.cause)
+    case 'goal_blocked':
+      return formatSessionGoalReason('blocked', event.reason)
     case 'goal_cleared':
       return formatSessionGoalReason(
         getSessionGoalEventReasonKind(event),
@@ -148,6 +156,8 @@ export function summarizeSessionGoalEvent(event: SessionGoalEvent): string {
       return `goal cleared: ${formatSessionGoalEventReason(event)}; turns ${event.turnsUsed}, estimated tokens ${event.tokensUsed}`
     case 'goal_paused':
       return `goal paused: ${formatSessionGoalEventReason(event)}`
+    case 'goal_blocked':
+      return `goal blocked: ${formatSessionGoalEventReason(event)}`
     case 'goal_resumed':
       return 'goal resumed'
   }

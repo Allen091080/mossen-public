@@ -289,7 +289,7 @@ export type MossenGoalState = {
   lastEvaluatorStatus?: 'met' | 'not_met' | 'error' | 'max_turns' | 'deferred'
   evaluationFailureCount: number
   clearReason?: string
-  status: 'active' | 'paused' | 'cleared' | 'completed' | 'failed'
+  status: 'active' | 'paused' | 'blocked' | 'cleared' | 'completed' | 'failed'
 }
 
 // ALSO HERE - THINK THRICE BEFORE MODIFYING
@@ -1107,7 +1107,7 @@ export function setSessionGoalState(
   // Archive a goal being replaced mid-flight (active/paused) so the history
   // trail (G4) captures it too, not just user-cleared / completed goals.
   const previous = STATE.sessionGoal
-  if (previous && (previous.status === 'active' || previous.status === 'paused')) {
+  if (previous && (previous.status === 'active' || previous.status === 'paused' || previous.status === 'blocked')) {
     archiveSessionGoal({
       ...previous,
       updatedAt: now,
@@ -1172,8 +1172,23 @@ export function pauseSessionGoalState(
   return STATE.sessionGoal
 }
 
+export function blockSessionGoalState(reason: string): MossenGoalState | null {
+  if (!STATE.sessionGoal || STATE.sessionGoal.status !== 'active') return null
+  STATE.sessionGoal = {
+    ...STATE.sessionGoal,
+    updatedAt: new Date().toISOString(),
+    lastEvaluatorAt: new Date().toISOString(),
+    lastEvaluatorReason: reason,
+    status: 'blocked',
+  }
+  return STATE.sessionGoal
+}
+
 export function resumeSessionGoalState(): MossenGoalState | null {
-  if (!STATE.sessionGoal || STATE.sessionGoal.status !== 'paused') return null
+  if (
+    !STATE.sessionGoal ||
+    (STATE.sessionGoal.status !== 'paused' && STATE.sessionGoal.status !== 'blocked')
+  ) return null
   STATE.sessionGoal = {
     ...STATE.sessionGoal,
     updatedAt: new Date().toISOString(),

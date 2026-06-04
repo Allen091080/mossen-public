@@ -83,15 +83,21 @@ export function buildContextAwarePromptPlaceholder(
 
   const goal =
     args.sessionGoal &&
-    (args.sessionGoal.status === 'active' || args.sessionGoal.status === 'paused')
+    (args.sessionGoal.status === 'active' ||
+      args.sessionGoal.status === 'paused' ||
+      args.sessionGoal.status === 'blocked')
       ? formatShortContext(args.sessionGoal.text)
       : ''
   if (goal) {
+    const goalPlaceholderKey =
+      args.sessionGoal?.status === 'blocked'
+        ? 'ui.promptInput.context.goalBlocked'
+        : args.sessionGoal?.status === 'paused'
+          ? 'ui.promptInput.context.goalPaused'
+          : 'ui.promptInput.context.goalActive'
     return {
       placeholder: t(
-        args.sessionGoal?.status === 'paused'
-          ? 'ui.promptInput.context.goalPaused'
-          : 'ui.promptInput.context.goalActive',
+        goalPlaceholderKey,
         { goal },
         langOverride,
       ),

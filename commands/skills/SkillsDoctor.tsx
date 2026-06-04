@@ -27,7 +27,7 @@ function sourceLabel(cmd: SkillCommand): string {
   return cmd.loadedFrom ?? String(cmd.source ?? 'unknown')
 }
 
-function formatSkillsDoctor(commands: Command[]): string {
+export function formatSkillsDoctor(commands: Command[]): string {
   const skills = commands.filter(isSkillCommand)
   const bySource = new Map<string, number>()
   const duplicateNames = new Map<string, number>()

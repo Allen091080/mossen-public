@@ -12,6 +12,7 @@ import { removeAgentSupervisorJob, stopAgentSupervisorJob } from 'src/services/a
 import { moveAgentSupervisorJobOrder, renameAgentSupervisorJob, toggleAgentSupervisorPin } from 'src/services/agentSupervisor/organization.js';
 import { resolveAgentSupervisorPrStatuses, type AgentSupervisorPrStatus } from 'src/services/agentSupervisor/prStatus.js';
 import { readAgentSupervisorRoster } from 'src/services/agentSupervisor/roster.js';
+import { reconcileAgentSupervisorStaleProcesses } from 'src/services/agentSupervisor/daemon.js';
 import type { AgentSupervisorStatus } from 'src/services/agentSupervisor/schema.js';
 import { useAppState, useSetAppState } from 'src/state/AppState.js';
 import { enterTeammateView, exitTeammateView, stopOrDismissAgent } from 'src/state/teammateViewHelpers.js';
@@ -234,6 +235,11 @@ const MonitorMcpDetailDialog = feature('MONITOR_TOOL') ? (require('./MonitorMcpD
 
 const AGENT_VIEW_DISMISS_CONFIRM_WINDOW_MS = 2000;
 
+async function readAgentSupervisorRosterForDashboard(): Promise<Awaited<ReturnType<typeof readAgentSupervisorRoster>>> {
+  await reconcileAgentSupervisorStaleProcesses().catch(() => undefined);
+  return await readAgentSupervisorRoster();
+}
+
 // Helper to get filtered background tasks (excludes foregrounded local_agent)
 function getSelectableBackgroundTasks(tasks: Record<string, TaskState> | undefined, foregroundedTaskId: string | undefined, agentView = false): TaskState[] {
   const backgroundTasks = Object.values(tasks ?? {}).filter(task => agentView ? isAgentViewTaskState(task) : isBackgroundTask(task));
@@ -424,7 +430,7 @@ function BackgroundTasksDialogImpl({
     let timer: ReturnType<typeof setTimeout> | undefined;
     async function refresh(): Promise<void> {
       try {
-        const roster = await readAgentSupervisorRoster();
+        const roster = await readAgentSupervisorRosterForDashboard();
         if (cancelled) return;
         const nextRows = deriveSupervisorAgentViewItems(roster);
         const notificationMode = getAgentViewNotificationMode();
@@ -616,6 +622,50 @@ function BackgroundTasksDialogImpl({
     openSupervisorJobChannelFromAgentView(target.id);
     return true;
   };
+  const supervisorActionLabel = (
+    action: SupervisorListItem['primaryAction'],
+  ): string => {
+    switch (action.kind) {
+      case 'attach':
+        return t('ui.agentView.actionAttach');
+      case 'inspect':
+        return t('ui.agentView.actionInspect');
+      case 'peek':
+        return t('ui.agentView.actionPeek');
+      case 'reply':
+        return t('ui.agentView.actionReply');
+      case 'review':
+        return t('ui.agentView.actionReview');
+    }
+  };
+  const agentViewNextHint = (): string | null => {
+    if (!agentView) return null;
+    if (agentViewInputMode === 'filter') return t('ui.agentView.nextFilter');
+    if (agentViewInputMode === 'command') return t('ui.agentView.nextCommand');
+    if (agentViewInputMode === 'dispatch') return t('ui.agentView.nextDispatch');
+    if (!currentSelection) return t('ui.agentView.nextEmpty');
+    if (currentSelection.type === 'supervisor_agent') {
+      if (currentSelection.statusContext === 'blocked_question') {
+        return t('ui.agentView.nextNeedsInput');
+      }
+      if (currentSelection.statusContext === 'ready_result') {
+        return t('ui.agentView.nextReadyResult');
+      }
+      if (currentSelection.statusContext === 'running') {
+        return t('ui.agentView.nextRunning');
+      }
+      if (currentSelection.status === 'failed' || currentSelection.status === 'stopped') {
+        return t('ui.agentView.nextFailed');
+      }
+      return t('ui.agentView.nextTerminal');
+    }
+    if (currentSelection.type === 'leader') return t('ui.agentView.nextLeader');
+    if (currentSelection.type === 'local_bash') return t('ui.agentView.nextShell');
+    if (currentSelection.type === 'local_agent' || currentSelection.type === 'in_process_teammate') {
+      return t('ui.agentView.nextLocalAgent');
+    }
+    return t('ui.agentView.nextGenericTask');
+  };
 
   // Use configurable keybindings for standard navigation and confirm/cancel.
   // confirm:no is handled by Dialog's onCancel prop.
@@ -697,7 +747,7 @@ function BackgroundTasksDialogImpl({
         dangerouslySkipPermissions: agentViewDispatchDefaults?.dangerouslySkipPermissions ?? false,
         testMode: isEnvTruthy(process.env.MOSSEN_CODE_AGENT_SUPERVISOR_TEST_JOBS)
       });
-      const roster = await readAgentSupervisorRoster();
+      const roster = await readAgentSupervisorRosterForDashboard();
       const nextRows = deriveSupervisorAgentViewItems(roster);
       setAgentSupervisorRows(nextRows);
       setAgentSupervisorLastRefreshAt(Date.now());
@@ -715,7 +765,7 @@ function BackgroundTasksDialogImpl({
     }
   };
   const refreshSupervisorRowsOnce = async (): Promise<void> => {
-    const roster = await readAgentSupervisorRoster();
+    const roster = await readAgentSupervisorRosterForDashboard();
     setAgentSupervisorRows(deriveSupervisorAgentViewItems(roster));
     setAgentSupervisorLastRefreshAt(Date.now());
   };
@@ -1010,7 +1060,10 @@ function BackgroundTasksDialogImpl({
     if (e.key === ' ') {
       e.preventDefault();
       if (currentSelection_0.type === 'supervisor_agent') {
-        openSupervisorJobChannelFromAgentView(currentSelection_0.id);
+        setViewState({
+          mode: 'detail',
+          itemId: currentSelection_0.id
+        });
         return;
       }
       setViewState({
@@ -1348,9 +1401,17 @@ function BackgroundTasksDialogImpl({
   const agentViewHighDensity = agentView && shouldUseAgentViewHighDensity(supervisorJobs.length, terminalColumns);
   const agentViewDashboardHeight = agentView ? Math.max(8, terminalRows - 3) : undefined;
   const agentViewDispatchDefaultsLabel = agentView ? formatAgentViewDispatchDefaults(agentViewDispatchDefaults) : null;
+  const agentViewSelectionHint = agentViewNextHint();
   const actions = agentView ? [
-    <KeyboardShortcutHint key="enter" shortcut="Enter/→" action={t('ui.agentView.attach')} />,
-    <KeyboardShortcutHint key="space" shortcut="Space" action={t('ui.agentView.peek')} />,
+    ...(currentSupervisorSelection ? [
+      <KeyboardShortcutHint key="primary" shortcut={currentSupervisorSelection.primaryAction.shortcut} action={supervisorActionLabel(currentSupervisorSelection.primaryAction)} />,
+      ...(currentSupervisorSelection.secondaryAction ? [
+        <KeyboardShortcutHint key="secondary" shortcut={currentSupervisorSelection.secondaryAction.shortcut} action={supervisorActionLabel(currentSupervisorSelection.secondaryAction)} />,
+      ] : []),
+    ] : [
+      <KeyboardShortcutHint key="enter" shortcut="Enter/→" action={t('ui.agentView.attach')} />,
+      <KeyboardShortcutHint key="space" shortcut="Space" action={t('ui.agentView.peek')} />,
+    ]),
     <KeyboardShortcutHint key="stop" shortcut="Ctrl+X" action={agentDismissPending || supervisorDismissPending ? t('ui.agentView.confirmDismiss') : t('ui.agentView.stop')} />,
     <KeyboardShortcutHint key="help" shortcut="?" action={t('ui.agentView.help')} />,
   ] : [<KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />, <KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />, ...(currentSelection?.type === 'in_process_teammate' && isInterruptibleBackgroundStatus(currentSelection.status) ? [<KeyboardShortcutHint key="foreground" shortcut="f" action="foreground" />] : []), ...((currentSelection?.type === 'local_bash' || currentSelection?.type === 'local_agent' || currentSelection?.type === 'in_process_teammate' || currentSelection?.type === 'local_workflow' || currentSelection?.type === 'monitor_mcp' || currentSelection?.type === 'dream' || currentSelection?.type === 'remote_agent') && isInterruptibleBackgroundStatus(currentSelection.status) ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />] : []), ...(agentTasks.some(t => isInterruptibleBackgroundStatus(t.status)) ? [<KeyboardShortcutHint key="kill-all" shortcut={killAgentsShortcut} action="stop all agents" />] : []), <KeyboardShortcutHint key="esc" shortcut="←/Esc" action="close" />];
@@ -1481,6 +1542,7 @@ function BackgroundTasksDialogImpl({
             {agentSupervisorDispatching && <Text dimColor>{t('ui.agentView.dispatching')}</Text>}
             {agentSupervisorLoadError && <Text color="warning">{t('ui.agentView.supervisorLoadError')}: {agentSupervisorLoadError}</Text>}
             {agentSupervisorDispatchError && <Text color="warning">{agentSupervisorDispatchError}</Text>}
+            {agentViewSelectionHint && <Text dimColor wrap="truncate-end">{t('ui.agentView.nextStep')}: {agentViewSelectionHint}</Text>}
             {renderAgentViewInlineInput()}
             {agentViewHelpVisible && <Text dimColor wrap="truncate-end">{t('ui.agentView.lastRefresh')}: {formatAgentViewRefreshAge(agentSupervisorLastRefreshAt)}
               {agentViewDispatchDefaultsLabel ? <> · {t('ui.agentView.dispatchDefaults')}: {agentViewDispatchDefaultsLabel}</> : null}
@@ -1609,13 +1671,17 @@ function SupervisorAgentRow({
   selected?: boolean;
 }) {
   const prLabel = prStatus?.label ?? getSupervisorAgentPrStatus(item);
-  const pr = prLabel ? ` ${prLabel}` : '';
   const cwd = shortenPathForAgentView(item.cwd);
   const fallbackSummary = item.cwdAvailable ? cwd : `${cwd} · missing cwd`;
-  const rawSummary = item.lastSummaryLine?.trim() || fallbackSummary;
+  const rawSummary =
+    item.lastQuestionText?.trim() ||
+    item.resultSummary?.trim() ||
+    item.lastSummaryLine?.trim() ||
+    fallbackSummary;
   const summary = rawSummary.toLowerCase() === item.label.trim().toLowerCase() ? '' : rawSummary;
   const statusLabel = agentViewStatusLabel(item.status);
-  const activity = summary ? `${statusLabel} · ${summary}` : statusLabel;
+  const actionHint = `${item.primaryAction.shortcut} ${supervisorRowActionLabel(item.primaryAction.kind)}`;
+  const activity = [statusLabel, actionHint, summary].filter(Boolean).join(' · ');
   const rowColor = color ?? highlightColor;
   const processShape = item.processAlive ? '✻ ' : '∙ ';
   const titlePrefix = `${processShape}${item.pinned ? '★ ' : ''}`;
@@ -1627,13 +1693,37 @@ function SupervisorAgentRow({
   const ageWidth = age ? visualWidth(age) + 1 : 0;
   const titleTextWidth = Math.max(8, titleWidth - prDotWidth);
   const title = padVisualEnd(truncateVisual(`${titlePrefix}${item.label}`, titleTextWidth), titleTextWidth);
-  const rightMeta = pr ? truncateVisual(pr.trim(), 14) : '';
+  const rightMetaParts = [
+    prLabel,
+    item.resultBadge,
+    item.agent ? `@${item.agent}` : null,
+    item.model,
+  ].filter((part): part is string => Boolean(part));
+  const rightMeta = rightMetaParts.length > 0
+    ? truncateVisual(rightMetaParts.join(' · '), compact ? 18 : 30)
+    : '';
   const metaWidth = rightMeta ? visualWidth(rightMeta) + 1 : 0;
   const summaryWidth = Math.max(12, maxActivityWidth - titleWidth - ageWidth - metaWidth - prDotWidth - 2);
   const summaryText = truncateVisual(activity, summaryWidth);
   const rowWithoutAge = `${title} ${summaryText}${rightMeta ? ` ${rightMeta}` : ''}`;
   const spacer = age ? ' '.repeat(Math.max(1, maxActivityWidth - prDotWidth - visualWidth(rowWithoutAge) - visualWidth(age))) : '';
   return <Text color={rowColor} dimColor={!rowColor && !selected} inverse={selected}>{prStatus && <PrStatusDot status={prStatus.state} />}{rowWithoutAge}{spacer}{age}</Text>;
+}
+function supervisorRowActionLabel(
+  kind: SupervisorListItem['primaryAction']['kind'],
+): string {
+  switch (kind) {
+    case 'attach':
+      return t('ui.agentView.actionAttach');
+    case 'inspect':
+      return t('ui.agentView.actionInspect');
+    case 'peek':
+      return t('ui.agentView.actionPeek');
+    case 'reply':
+      return t('ui.agentView.actionReply');
+    case 'review':
+      return t('ui.agentView.actionReview');
+  }
 }
 function PrStatusDot({ status }: { status: AgentSupervisorPrStatus['state'] }) {
   if (status === 'checks_running') return <Text color="warning">● </Text>;

@@ -208,6 +208,13 @@ function shouldReconcileProcess(state: AgentSupervisorJobState): boolean {
   return state.process.alive && !isProcessAlive(state.process.pid)
 }
 
+function statusAfterStaleProcess(
+  status: AgentSupervisorJobState['status'],
+): AgentSupervisorJobState['status'] {
+  if (status === 'working' || status === 'queued') return 'failed'
+  return status
+}
+
 export async function reconcileAgentSupervisorStaleProcesses(
   options: { force?: boolean; ignoreClockJumpGrace?: boolean } = {},
 ): Promise<{
@@ -267,6 +274,7 @@ export async function reconcileAgentSupervisorStaleProcesses(
       return {
         ...current,
         updatedAt: now,
+        status: statusAfterStaleProcess(current.status),
         process: {
           ...current.process,
           alive: false,
@@ -277,7 +285,10 @@ export async function reconcileAgentSupervisorStaleProcesses(
           {
             ts: now,
             source: 'lifecycle',
-            message: 'Recorded process liveness was stale; marked process as not alive.',
+            message:
+              current.status === 'working' || current.status === 'queued'
+                ? 'Recorded process liveness was stale; marked active job as failed.'
+                : 'Recorded process liveness was stale; marked process as not alive.',
           },
         ],
       }

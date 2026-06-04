@@ -13,13 +13,47 @@ export type SupervisorAgentViewItem = {
   cwd: string
   updatedAt: number
   lastSummaryLine: string | null
+  promptPreview: string | null
+  model: string | null
+  permissionMode: string | null
+  effort: string | null
+  lastQuestionText: string | null
+  lastQuestionOptionCount: number
+  lastQuestionSuggestedReply: string | null
+  resultSummary: string | null
+  resultArtifactCount: number
+  resultRiskCount: number
+  resultNextActionCount: number
   pinned: boolean
   order: number
   agent: string | null
   processAlive: boolean
   directoryName: string
   cwdAvailable: boolean
+  primaryAction: SupervisorAgentViewAction
+  secondaryAction: SupervisorAgentViewAction | null
+  statusContext: SupervisorAgentStatusContext
+  resultBadge: string | null
 }
+
+export type SupervisorAgentViewActionKind =
+  | 'attach'
+  | 'inspect'
+  | 'peek'
+  | 'reply'
+  | 'review'
+
+export type SupervisorAgentViewAction = {
+  kind: SupervisorAgentViewActionKind
+  label: string
+  shortcut: string
+}
+
+export type SupervisorAgentStatusContext =
+  | 'blocked_question'
+  | 'ready_result'
+  | 'running'
+  | 'terminal'
 
 export type SupervisorAgentViewGroup = {
   key: string
@@ -68,6 +102,14 @@ export function getSupervisorAgentGroupStage(
 const PR_REFERENCE_PATTERN =
   /(?:https?:\/\/[^\s)]+\/(?:pull|merge_requests|(?:-|repos\/[^/]+\/[^/]+\/pulls))\/(\d+)\b|\b(?:PR|pull request|merge request)\s*#?(\d+)\b)/i
 
+const ACTIONS: Record<SupervisorAgentViewActionKind, SupervisorAgentViewAction> = {
+  attach: { kind: 'attach', label: 'attach', shortcut: 'Enter/→' },
+  inspect: { kind: 'inspect', label: 'inspect', shortcut: 'Space' },
+  peek: { kind: 'peek', label: 'peek', shortcut: 'Space' },
+  reply: { kind: 'reply', label: 'reply', shortcut: 'Space' },
+  review: { kind: 'review', label: 'review', shortcut: 'Space' },
+}
+
 function timestamp(value: string): number {
   const parsed = Date.parse(value)
   return Number.isFinite(parsed) ? parsed : 0
@@ -97,6 +139,8 @@ function rosterJobToItem(job: AgentSupervisorRosterJob): SupervisorAgentViewItem
   const cwdAvailable = existsSync(job.cwd)
   const parts = job.cwd.split('/').filter(Boolean)
   const directoryName = parts.at(-1) ?? job.cwd
+  const actionModel = getSupervisorAgentActionModel(job)
+  const resultBadge = getSupervisorAgentResultBadge(job)
   return {
     id: job.id,
     type: 'supervisor_agent',
@@ -105,13 +149,104 @@ function rosterJobToItem(job: AgentSupervisorRosterJob): SupervisorAgentViewItem
     cwd: job.cwd,
     updatedAt: timestamp(job.lastUpdatedAt),
     lastSummaryLine: job.lastSummaryLine,
+    promptPreview: job.promptPreview ?? null,
+    model: job.model ?? null,
+    permissionMode: job.permissionMode ?? null,
+    effort: job.effort ?? null,
+    lastQuestionText: job.lastQuestionText ?? null,
+    lastQuestionOptionCount: job.lastQuestionOptionCount ?? 0,
+    lastQuestionSuggestedReply: job.lastQuestionSuggestedReply ?? null,
+    resultSummary: job.resultSummary ?? null,
+    resultArtifactCount: job.resultArtifactCount ?? 0,
+    resultRiskCount: job.resultRiskCount ?? 0,
+    resultNextActionCount: job.resultNextActionCount ?? 0,
     pinned: job.pinned,
     order: job.order,
     agent: job.agent,
     processAlive: job.processAlive ?? false,
     directoryName: cwdAvailable ? directoryName : `${directoryName} (missing)`,
     cwdAvailable,
+    primaryAction: actionModel.primaryAction,
+    secondaryAction: actionModel.secondaryAction,
+    statusContext: actionModel.statusContext,
+    resultBadge,
   }
+}
+
+export function getSupervisorAgentActionModel(
+  job: Pick<
+    AgentSupervisorRosterJob,
+    | 'lastQuestionText'
+    | 'resultArtifactCount'
+    | 'resultNextActionCount'
+    | 'resultRiskCount'
+    | 'resultSummary'
+    | 'status'
+  >,
+): {
+  primaryAction: SupervisorAgentViewAction
+  secondaryAction: SupervisorAgentViewAction | null
+  statusContext: SupervisorAgentStatusContext
+} {
+  if (job.status === 'needs_input' || job.lastQuestionText) {
+    return {
+      primaryAction: ACTIONS.reply,
+      secondaryAction: ACTIONS.attach,
+      statusContext: 'blocked_question',
+    }
+  }
+  if (job.status === 'working' || job.status === 'queued') {
+    return {
+      primaryAction: ACTIONS.attach,
+      secondaryAction: ACTIONS.peek,
+      statusContext: 'running',
+    }
+  }
+  const hasResult = Boolean(
+    job.resultSummary ||
+      (job.resultArtifactCount ?? 0) > 0 ||
+      (job.resultRiskCount ?? 0) > 0 ||
+      (job.resultNextActionCount ?? 0) > 0,
+  )
+  if (job.status === 'idle') {
+    return {
+      primaryAction: hasResult ? ACTIONS.review : ACTIONS.peek,
+      secondaryAction: ACTIONS.attach,
+      statusContext: hasResult ? 'ready_result' : 'running',
+    }
+  }
+  if (job.status === 'completed') {
+    return {
+      primaryAction: hasResult ? ACTIONS.review : ACTIONS.inspect,
+      secondaryAction: null,
+      statusContext: hasResult ? 'ready_result' : 'terminal',
+    }
+  }
+  return {
+    primaryAction: ACTIONS.inspect,
+    secondaryAction: null,
+    statusContext: 'terminal',
+  }
+}
+
+export function getSupervisorAgentResultBadge(
+  job: Pick<
+    AgentSupervisorRosterJob,
+    'resultArtifactCount' | 'resultNextActionCount' | 'resultRiskCount' | 'resultSummary'
+  >,
+): string | null {
+  const parts: string[] = []
+  if (job.resultSummary) parts.push('result')
+  if ((job.resultArtifactCount ?? 0) > 0) {
+    parts.push(`${job.resultArtifactCount} artifact${job.resultArtifactCount === 1 ? '' : 's'}`)
+  }
+  if ((job.resultRiskCount ?? 0) > 0) {
+    parts.push(`${job.resultRiskCount} risk${job.resultRiskCount === 1 ? '' : 's'}`)
+  }
+  if ((job.resultNextActionCount ?? 0) > 0) {
+    parts.push(`${job.resultNextActionCount} next`)
+  }
+  return parts.length > 0 ? parts.join(' · ') : null
 }
 
 export function deriveSupervisorAgentViewItems(
@@ -223,6 +358,17 @@ export function filterSupervisorAgentViewItems(
       item.directoryName,
       item.agent ?? '',
       item.lastSummaryLine ?? '',
+      item.promptPreview ?? '',
+      item.model ?? '',
+      item.permissionMode ?? '',
+      item.effort ?? '',
+      item.lastQuestionText ?? '',
+      item.lastQuestionSuggestedReply ?? '',
+      item.resultSummary ?? '',
+      item.resultBadge ?? '',
+      item.primaryAction.label,
+      item.primaryAction.shortcut,
+      item.secondaryAction?.label ?? '',
     ]
       .join('\n')
       .toLowerCase()

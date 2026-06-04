@@ -19,7 +19,7 @@ const GOAL_INLINE_TEXT_GRAPHEMES = 32;
 
 export type GoalOverlayDisplayState = Extract<
   MossenGoalState['status'],
-  'active' | 'paused' | 'completed' | 'failed'
+  'active' | 'paused' | 'blocked' | 'completed' | 'failed'
 >;
 
 export function isGoalOverlayEligible(
@@ -28,6 +28,7 @@ export function isGoalOverlayEligible(
   return (
     goal?.status === 'active' ||
     goal?.status === 'paused' ||
+    goal?.status === 'blocked' ||
     goal?.status === 'completed' ||
     goal?.status === 'failed'
   );
@@ -67,6 +68,7 @@ export function formatGoalOverlayStatus(
   goal: MossenGoalState & { status: GoalOverlayDisplayState },
 ): string {
   if (goal.status === 'paused') return t('ui.goalOverlay.statusPaused');
+  if (goal.status === 'blocked') return t('ui.goalOverlay.statusBlocked');
   if (goal.status === 'completed') return t('ui.goalOverlay.statusCompleted');
   if (goal.status === 'failed') return t('ui.goalOverlay.statusFailed');
   return t('ui.goalOverlay.statusActive');
@@ -76,6 +78,7 @@ export function formatGoalOverlayNextAction(
   goal: MossenGoalState & { status: GoalOverlayDisplayState },
 ): string {
   if (goal.status === 'paused') return t('ui.goalOverlay.nextPaused');
+  if (goal.status === 'blocked') return t('ui.goalOverlay.nextBlocked');
   if (goal.status === 'completed') return t('ui.goalOverlay.nextCompleted');
   if (goal.status === 'failed') return t('ui.goalOverlay.nextFailed');
   return t('ui.goalOverlay.nextActive');
@@ -166,7 +169,7 @@ export function GoalOverlayInline({
 }: {
   goal: MossenGoalState & { status: GoalOverlayDisplayState };
 }): React.ReactNode {
-  const borderColor = goal.status === 'paused'
+  const borderColor = goal.status === 'paused' || goal.status === 'blocked'
     ? 'warning'
     : goal.status === 'failed'
       ? 'error'
@@ -188,7 +191,7 @@ export function GoalOverlay({
   now: number;
 }): React.ReactNode {
   const rows = buildGoalOverlayRows(goal, now);
-  const borderColor = goal.status === 'paused'
+  const borderColor = goal.status === 'paused' || goal.status === 'blocked'
     ? 'warning'
     : goal.status === 'failed'
       ? 'error'

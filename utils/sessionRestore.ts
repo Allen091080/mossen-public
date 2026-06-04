@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import { dirname } from 'path'
 import {
+  blockSessionGoalState,
   clearSessionGoalState,
   completeSessionGoalState,
   getMainLoopModelOverride,
@@ -164,6 +165,9 @@ function restoreSessionGoalFromTranscript(messages?: Message[]): void {
           break
         case 'goal_paused':
           pauseSessionGoalState(goalEvent.cause)
+          break
+        case 'goal_blocked':
+          blockSessionGoalState(goalEvent.reason)
           break
         case 'goal_resumed':
           resumeSessionGoalState()

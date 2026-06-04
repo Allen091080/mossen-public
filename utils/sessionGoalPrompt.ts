@@ -34,6 +34,7 @@ export function getActiveSessionGoalPromptSection(): string | null {
     `Goal: ${text}`,
     criteria ? `Success criteria: ${criteria}` : null,
     `Turns since goal was set: ${goal.turnCount}`,
+    'Use get_goal if you need current goal state. When the objective is actually achieved and no required work remains, call update_goal with status "complete". Only use status "blocked" after the same blocking condition repeats across at least three consecutive goal turns and further progress is impossible without user input or an external-state change.',
   ]
     .filter((line): line is string => line !== null)
     .join('\n')

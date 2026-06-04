@@ -20,6 +20,9 @@ type Props = {
 }
 
 const REFRESH_MS = 2000
+const PEEK_OUTPUT_LINE_LIMIT = 6
+const PEEK_INPUT_LINE_LIMIT = 3
+const PEEK_EVENT_LINE_LIMIT = 8
 
 function formatDiagnostics(snapshot: AgentSupervisorPeekSnapshot): string | null {
   const {
@@ -51,6 +54,13 @@ function formatDetailValue(value: string | null | undefined): string {
   return value?.trim() || '—'
 }
 
+function formatResultArtifact(
+  artifact: NonNullable<AgentSupervisorPeekSnapshot['resultPayload']>['artifacts'][number],
+): string {
+  const target = artifact.url ?? artifact.path
+  return target ? `${artifact.label}: ${target}` : artifact.label
+}
+
 export function AgentSupervisorDetailDialog({
   jobId,
   onBack,
@@ -64,6 +74,7 @@ export function AgentSupervisorDetailDialog({
   const [sending, setSending] = useState(false)
   const [lastSentReply, setLastSentReply] = useState<string | null>(null)
   const [lastSentReplyAcked, setLastSentReplyAcked] = useState(false)
+  const [activityLogVisible, setActivityLogVisible] = useState(false)
   const { columns: terminalColumns } = useTerminalSize()
 
   useEffect(() => {
@@ -144,6 +155,11 @@ export function AgentSupervisorDetailDialog({
   }
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.ctrl && e.key === 'e') {
+      e.preventDefault()
+      setActivityLogVisible(value => !value)
+      return
+    }
     if (e.key === 'escape' || (e.key === 'left' && reply.length === 0)) {
       e.preventDefault()
       onBack()
@@ -247,16 +263,23 @@ export function AgentSupervisorDetailDialog({
   const inputLines = snapshot?.inputLines ?? []
   const outputLines = snapshot?.outputLines ?? []
   const eventLines = snapshot?.eventLines ?? []
+  const recentInputLines = inputLines.slice(-PEEK_INPUT_LINE_LIMIT)
+  const recentOutputLines = outputLines.slice(-PEEK_OUTPUT_LINE_LIMIT)
+  const recentEventLines = eventLines.slice(-PEEK_EVENT_LINE_LIMIT)
   const resultPayload = snapshot?.resultPayload ?? null
   const diagnostics = snapshot ? formatDiagnostics(snapshot) : null
   const title = snapshot
-    ? `${snapshot.job.id} · ${snapshot.job.status} · ${snapshot.job.title}`
+    ? `${t('ui.agentView.peekPanel')} · ${snapshot.job.status} · ${snapshot.job.title}`
     : `${jobId} · ${t('ui.agentView.loading')}`
   const inputGuide = () => (
     <Byline>
       <KeyboardShortcutHint shortcut="←/Esc" action={t('ui.agentView.back')} />
       <KeyboardShortcutHint shortcut="Enter" action={t('ui.agentView.sendReply')} />
       <KeyboardShortcutHint shortcut="Tab" action={t('ui.agentView.acceptSuggestion')} />
+      <KeyboardShortcutHint
+        shortcut="Ctrl+E"
+        action={activityLogVisible ? t('ui.agentView.hideActivity') : t('ui.agentView.showActivity')}
+      />
     </Byline>
   )
 
@@ -279,49 +302,40 @@ export function AgentSupervisorDetailDialog({
     <Box flexDirection="column" tabIndex={0} autoFocus onKeyDown={handleKeyDown}>
       <Dialog title={title} onCancel={onBack} color="background" inputGuide={inputGuide}>
         <Box flexDirection="column">
-          {snapshot && (
-            <Box flexDirection="column" marginBottom={1}>
-              <Text bold>{t('ui.agentView.detailStatus')}</Text>
-              <Text dimColor wrap="truncate-end">
-                {t('ui.agentView.detailStatusLine', {
-                  status: snapshot.job.status,
-                  model: formatDetailValue(snapshot.job.model),
-                  agent: formatDetailValue(snapshot.job.agent),
-                  permission: formatDetailValue(snapshot.job.permissionMode),
-                })}
-              </Text>
-              <Text dimColor wrap="truncate-end">
-                {t('ui.agentView.detailCwd')}: {snapshot.job.cwd}
-              </Text>
-              <Text dimColor wrap="truncate-end">
-                {t('ui.agentView.detailSession')}: {formatDetailValue(snapshot.job.sessionId)}
-              </Text>
-              <Text dimColor>{t('ui.agentView.detailControls')}</Text>
-            </Box>
-          )}
+          <Box flexDirection="column" marginBottom={1}>
+            <Text bold>{t('ui.agentView.detailStatus')}</Text>
+            <Text dimColor wrap="truncate-end">
+              {t('ui.agentView.detailStatusLine', {
+                status: snapshot.job.status,
+                model: formatDetailValue(snapshot.job.model),
+                agent: formatDetailValue(snapshot.job.agent),
+                permission: formatDetailValue(snapshot.job.permissionMode),
+              })}
+            </Text>
+            <Text dimColor wrap="truncate-end">
+              {t('ui.agentView.detailCwd')}: {snapshot.job.cwd}
+            </Text>
+            <Text dimColor wrap="truncate-end">
+              {t('ui.agentView.detailSession')}: {formatDetailValue(snapshot.job.sessionId)} · {t('ui.agentView.detailControls')}
+            </Text>
+          </Box>
           {snapshot?.lastQuestion && (
             <Box flexDirection="column" marginBottom={1}>
               <Text bold>{t('ui.agentView.pendingQuestion')}</Text>
               <Text wrap="wrap">{snapshot.lastQuestion.text}</Text>
               {snapshot.lastQuestion.options.length > 0 && (
                 <Text dimColor>
+                  {t('ui.agentView.questionOptions')}: {' '}
                   {snapshot.lastQuestion.options
                     .map(option => `${option.key}: ${option.label}`)
                     .join(' · ')}
                 </Text>
               )}
-            </Box>
-          )}
-          {inputLines.length > 0 && (
-            <Box flexDirection="column" marginBottom={1}>
-              <Text bold dimColor>
-                {t('ui.agentView.detailInputs')}
-              </Text>
-              {inputLines.map((line, index) => (
-                <Text key={`input-${index}`} dimColor wrap="truncate-end">
-                  › {line}
+              {snapshot.lastQuestion.suggestedReply && (
+                <Text dimColor wrap="truncate-end">
+                  {t('ui.agentView.suggestedReply')}: {snapshot.lastQuestion.suggestedReply}
                 </Text>
-              ))}
+              )}
             </Box>
           )}
           {resultPayload && (
@@ -330,7 +344,7 @@ export function AgentSupervisorDetailDialog({
               <Text wrap="wrap">{resultPayload.summary}</Text>
               {resultPayload.artifacts.length > 0 && (
                 <Text dimColor wrap="truncate-end">
-                  {t('ui.agentView.resultArtifacts')}: {resultPayload.artifacts.map(item => item.label).join(' · ')}
+                  {t('ui.agentView.resultArtifacts')}: {resultPayload.artifacts.map(formatResultArtifact).join(' · ')}
                 </Text>
               )}
               {resultPayload.risks.length > 0 && (
@@ -345,11 +359,9 @@ export function AgentSupervisorDetailDialog({
               )}
             </Box>
           )}
-          <Text bold dimColor>
-            {t('ui.agentView.detailOutput')}
-          </Text>
-          {outputLines.length > 0 ? (
-            outputLines.map((line, index) => (
+          <Text bold>{t('ui.agentView.detailOutput')}</Text>
+          {recentOutputLines.length > 0 ? (
+            recentOutputLines.map((line, index) => (
               <Text key={`out-${index}`} wrap="truncate-end">
                 {line}
               </Text>
@@ -357,18 +369,43 @@ export function AgentSupervisorDetailDialog({
           ) : (
             <Text dimColor>{t('ui.agentView.noRecentOutput')}</Text>
           )}
-          {eventLines.length > 0 && (
+          {recentInputLines.length > 0 && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold dimColor>
+                {t('ui.agentView.detailInputs')}
+              </Text>
+              {recentInputLines.map((line, index) => (
+                <Text key={`input-${index}`} dimColor wrap="truncate-end">
+                  › {line}
+                </Text>
+              ))}
+            </Box>
+          )}
+          {eventLines.length > 0 && !activityLogVisible && (
+            <Box marginTop={1}>
+              <Text dimColor>
+                {t('ui.agentView.activityLogCollapsed', { count: eventLines.length })}
+              </Text>
+            </Box>
+          )}
+          {activityLogVisible && eventLines.length > 0 && (
             <Box flexDirection="column" marginTop={1}>
               <Text bold dimColor>
                 {t('ui.agentView.detailEvents')}
               </Text>
-              {eventLines.map((line, index) => (
+              {recentEventLines.map((line, index) => (
                 <Text key={`event-${index}`} dimColor wrap="truncate-end">
                   {line}
                 </Text>
               ))}
             </Box>
           )}
+          {activityLogVisible && eventLines.length === 0 && (
+            <Box marginTop={1}>
+              <Text dimColor>{t('ui.agentView.noRecentEvents')}</Text>
+            </Box>
+          )}
+          {diagnostics && <Text color="warning">{diagnostics}</Text>}
           <Box marginTop={1}>
             <Text dimColor>{t('ui.agentView.detailReplyChannel')} · {t('ui.agentView.replyPrompt')} </Text>
             <TextInput
@@ -384,6 +421,7 @@ export function AgentSupervisorDetailDialog({
               placeholder={t('ui.agentView.replyPlaceholder')}
             />
           </Box>
+          <Text dimColor>{t('ui.agentView.replySelectedJobOnly', { jobId: snapshot.job.id })}</Text>
           {lastSentReply && (
             <Text dimColor>
               {t('ui.agentView.replySent')}
@@ -391,7 +429,6 @@ export function AgentSupervisorDetailDialog({
             </Text>
           )}
           {sending && <Text dimColor>{t('ui.agentView.sendingReply')}</Text>}
-          {diagnostics && <Text color="warning">{diagnostics}</Text>}
           {error && <Text color="warning">{error}</Text>}
         </Box>
       </Dialog>

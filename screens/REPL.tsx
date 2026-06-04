@@ -392,10 +392,14 @@ function TranscriptHelpPanel(): React.ReactNode {
 
 function getGoalFooterStatus(): string | undefined {
   const goal = getSessionGoalState();
-  if (!goal || (goal.status !== 'active' && goal.status !== 'paused')) {
+  if (!goal || (goal.status !== 'active' && goal.status !== 'paused' && goal.status !== 'blocked')) {
     return undefined;
   }
-  const status = goal.status === 'paused' ? 'paused' : 'active';
+  const status = goal.status === 'blocked'
+    ? 'blocked'
+    : goal.status === 'paused'
+      ? 'paused'
+      : 'active';
   const tokens = formatTokens(goal.tokenEstimate ?? 0);
   return `Goal ${status} · ${goal.turnCount}/${goal.turnBudget} · ~${tokens}`;
 }
@@ -2880,16 +2884,21 @@ export function REPL({
       setMessages(prev => [...prev, ...sessionGoalEventMessages, createSystemMessage(formatSessionGoalActionReason(sessionGoalAction), 'info')]);
     } else if (sessionGoalAction.type === 'continue') {
       setMessages(prev => [...prev, ...sessionGoalEventMessages, createSystemMessage(formatSessionGoalActionReason(sessionGoalAction), 'info')]);
-      if (getCommandQueueLength() === 0) {
-        enqueue({
-          mode: 'prompt',
-          value: sessionGoalAction.prompt,
-          isMeta: true,
-          skipSlashCommands: true,
-          priority: 'later',
-          workload: 'goal'
-        });
-      }
+      removeByFilter(
+        cmd =>
+          cmd.workload === 'goal' &&
+          cmd.isMeta === true &&
+          typeof cmd.value === 'string' &&
+          cmd.value.includes('<session-goal-continuation>'),
+      );
+      enqueue({
+        mode: 'prompt',
+        value: sessionGoalAction.prompt,
+        isMeta: true,
+        skipSlashCommands: true,
+        priority: 'later',
+        workload: 'goal'
+      });
     } else if (sessionGoalAction.type === 'max_turns') {
       setMessages(prev => [...prev, ...sessionGoalEventMessages, createSystemMessage(formatSessionGoalActionReason(sessionGoalAction), 'warning')]);
     } else if (sessionGoalAction.type === 'paused') {

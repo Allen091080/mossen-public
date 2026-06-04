@@ -48,6 +48,7 @@ import {
   enqueue,
   hasCommandsInQueue,
   peek,
+  removeByFilter,
   subscribeToCommandQueue,
   getCommandsByMaxPriority,
 } from 'src/utils/messageQueueManager.js'
@@ -2522,6 +2523,13 @@ function runHeadlessStreaming(
             }
           }
           if (sessionGoalAction.type === 'continue') {
+            removeByFilter(
+              cmd =>
+                cmd.workload === 'goal' &&
+                cmd.isMeta === true &&
+                typeof cmd.value === 'string' &&
+                cmd.value.includes('<session-goal-continuation>'),
+            )
             enqueue({
               mode: 'prompt',
               value: sessionGoalAction.prompt,

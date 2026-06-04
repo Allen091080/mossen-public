@@ -82,6 +82,13 @@ function truncate(text: string, maxChars: number): string {
   return `${text.slice(0, Math.max(0, maxChars - 1))}…`
 }
 
+function escapeXmlText(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
 function parseBoundedInt(value: string | undefined, fallback: number): number {
   if (!value) return fallback
   const parsed = Number(value)
@@ -176,13 +183,27 @@ export function buildSessionGoalContinuationPrompt(
   goal: MossenGoalState,
   reason: string,
 ): string {
+  const remainingTurns = Math.max(0, goal.turnBudget - goal.turnCount)
+  const tokenBudget = goal.tokenBudget ?? 'none'
+  const remainingTokens =
+    goal.tokenBudget !== undefined && goal.tokenBudget !== null
+      ? Math.max(0, goal.tokenBudget - (goal.tokenEstimate ?? 0))
+      : 'unbounded'
   return [
     '<session-goal-continuation>',
-    'The active session goal is not met yet. Continue working toward it without waiting for another user prompt.',
-    `Goal: ${goal.text}`,
+    'The active session goal is still active. Continue working toward it without waiting for another user prompt.',
+    '<objective>',
+    escapeXmlText(goal.text),
+    '</objective>',
     `Evaluator reason: ${truncate(reason, MAX_REASON_CHARS)}`,
-    `Turns remaining: ${Math.max(0, goal.turnBudget - goal.turnCount)}`,
-    'Pick the next concrete action, run the needed checks, and stop only when the goal is met or you are genuinely blocked.',
+    `Turns remaining: ${remainingTurns}`,
+    `Estimated tokens used: ${goal.tokenEstimate ?? 0}`,
+    `Token budget: ${tokenBudget}`,
+    `Tokens remaining: ${remainingTokens}`,
+    'Pick the next concrete action and run the needed checks.',
+    'When the objective is actually achieved and no required work remains, call update_goal with status "complete".',
+    'Only call update_goal with status "blocked" after the same blocking condition has repeated for at least three consecutive goal turns and you are truly at an impasse.',
+    'Do not mark the goal complete merely because you are stopping, approaching a turn cap, or reporting partial progress.',
     '</session-goal-continuation>',
   ].join('\n')
 }
@@ -191,10 +212,16 @@ export function buildSessionGoalStartPrompt(goal: MossenGoalState): string {
   return [
     '<session-goal-start>',
     'The user set this session goal. Start working toward it now.',
-    `Goal: ${goal.text}`,
+    '<objective>',
+    escapeXmlText(goal.text),
+    '</objective>',
+    `Turn budget: ${goal.turnBudget}`,
+    goal.tokenBudget ? `Token budget: ${goal.tokenBudget}` : null,
+    'When the objective is actually achieved and no required work remains, call update_goal with status "complete".',
+    'Only call update_goal with status "blocked" after repeated identical blocking conditions make further progress impossible without user input or an external-state change.',
     'Use normal safety, permission, and tool rules. Do not treat this goal as permission escalation.',
     '</session-goal-start>',
-  ].join('\n')
+  ].filter((line): line is string => line !== null).join('\n')
 }
 
 function parseEvaluatorResponse(text: string): GoalEvaluatorResponse | null {
