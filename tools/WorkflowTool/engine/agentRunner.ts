@@ -16,6 +16,7 @@
 import type { CanUseToolFn } from '../../../hooks/useCanUseTool.js'
 import type { ToolUseContext, Tools } from '../../../Tool.js'
 import type { Message } from '../../../types/message.js'
+import { createChildAbortController } from '../../../utils/abortController.js'
 import type { ModelAlias } from '../../../utils/model/aliases.js'
 import { assembleToolPool } from '../../../tools.js'
 import { createUserMessage, extractTextContent } from '../../../utils/messages.js'
@@ -43,6 +44,10 @@ import {
   validateAgainstSchema,
 } from './schemaValidate.js'
 import type { AgentCallOptions, AgentRunResult } from './types.js'
+import {
+  WORKFLOW_AGENT_RETRY_ABORT_REASON,
+  WORKFLOW_AGENT_SKIP_ABORT_REASON,
+} from './types.js'
 import type { RunOneAgent } from './runtime.js'
 
 /** How many times to re-prompt an agent whose output fails schema validation. */
@@ -69,6 +74,10 @@ export type WorkflowAgentRunnerDeps = {
    * inherit the parent turn's controller (foreground behaviour).
    */
   abortController?: AbortController
+  registerAgentController?: (
+    agentNumber: number,
+    controller: AbortController,
+  ) => () => void
 }
 
 function resolveAgentDefinition(
@@ -132,7 +141,13 @@ async function cleanupWorkflowAgentWorktree(
 export function createWorkflowAgentRunner(
   deps: WorkflowAgentRunnerDeps,
 ): RunOneAgent {
-  const { toolUseContext, canUseTool, runId, abortController } = deps
+  const {
+    toolUseContext,
+    canUseTool,
+    runId,
+    abortController,
+    registerAgentController,
+  } = deps
 
   /** Run a single agent turn to completion; return its final text + tokens. */
   async function runOnce(
@@ -142,6 +157,7 @@ export function createWorkflowAgentRunner(
     model: ModelAlias | undefined,
     label: string,
     worktreePath: string | undefined,
+    agentAbortController: AbortController | undefined,
   ): Promise<{ text: string; tokens: number }> {
     const startTime = Date.now()
     const agentId = createAgentId()
@@ -164,7 +180,9 @@ export function createWorkflowAgentRunner(
         worktreePath,
         // Thread the (optionally unlinked) abort controller so background runs'
         // subagents survive the originating tool call returning.
-        override: abortController ? { agentId, abortController } : { agentId },
+        override: agentAbortController
+          ? { agentId, abortController: agentAbortController }
+          : { agentId },
         transcriptSubdir: `workflows/${runId}`,
       })
     const stream = worktreePath
@@ -197,6 +215,12 @@ export function createWorkflowAgentRunner(
     meta: { agentNumber: number; phase: string | null; label: string },
   ): Promise<AgentRunResult> {
     const agentDefinition = resolveAgentDefinition(toolUseContext, opts.agentType)
+    const agentAbortController = abortController
+      ? createChildAbortController(abortController)
+      : undefined
+    const unregisterAgentController = agentAbortController
+      ? registerAgentController?.(meta.agentNumber, agentAbortController)
+      : undefined
     const worktreeInfo =
       opts.isolation === 'worktree'
         ? await createAgentWorktree(
@@ -224,6 +248,7 @@ export function createWorkflowAgentRunner(
           model,
           meta.label,
           worktreeInfo?.worktreePath,
+          agentAbortController,
         )
         return { value: text, tokens, ok: true }
       }
@@ -242,6 +267,7 @@ export function createWorkflowAgentRunner(
           model,
           meta.label,
           worktreeInfo?.worktreePath,
+          agentAbortController,
         )
         totalTokens += tokens
         try {
@@ -262,7 +288,23 @@ export function createWorkflowAgentRunner(
           'Return corrected JSON only.'
       }
       throw new WorkflowSchemaError(meta.label, lastDetail)
+    } catch (err) {
+      if (agentAbortController?.signal.aborted) {
+        if (agentAbortController.signal.reason === WORKFLOW_AGENT_SKIP_ABORT_REASON) {
+          return { value: null, tokens: 0, ok: false, status: 'skipped' }
+        }
+        if (agentAbortController.signal.reason === WORKFLOW_AGENT_RETRY_ABORT_REASON) {
+          return {
+            value: null,
+            tokens: 0,
+            ok: false,
+            status: 'retry_requested',
+          }
+        }
+      }
+      throw err
     } finally {
+      unregisterAgentController?.()
       await cleanupWorkflowAgentWorktree(worktreeInfo)
     }
   }

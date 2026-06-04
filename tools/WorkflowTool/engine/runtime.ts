@@ -22,6 +22,7 @@ import { hashCall, type Journal } from './journal.js'
 import { parallel as parallelPrim, pipeline as pipelinePrim } from './orchestration.js'
 import type {
   AgentCallOptions,
+  WorkflowAgentControlAction,
   AgentRunResult,
   ProgressSink,
 } from './types.js'
@@ -55,6 +56,14 @@ export type WorkflowRuntimeConfig = {
   runOneAgent: RunOneAgent
   journal?: Journal
   runNestedWorkflow?: RunNestedWorkflow
+  shouldSkipAgent?: (
+    agentNumber: number,
+    meta: { phase: string | null; label: string },
+  ) => boolean
+  getAgentControl?: (
+    agentNumber: number,
+    meta: { phase: string | null; label: string },
+  ) => WorkflowAgentControlAction | null
   maxAgents?: number
 }
 
@@ -83,6 +92,8 @@ export function createWorkflowRuntime(
     runOneAgent,
     journal,
     runNestedWorkflow,
+    shouldSkipAgent,
+    getAgentControl,
     maxAgents = MAX_AGENTS_PER_RUN,
   } = config
 
@@ -125,29 +136,64 @@ export function createWorkflowRuntime(
 
     agentCounter++
     const agentNumber = agentCounter
-    progress({ kind: 'agent_start', label, phase, agentNumber })
+    for (;;) {
+      progress({ kind: 'agent_start', label, phase, agentNumber })
 
-    let result: AgentRunResult
-    try {
-      result = await limiter.run(() =>
-        runOneAgent(prompt, opts, { agentNumber, phase, label }),
-      )
-    } catch (err) {
-      progress({ kind: 'agent_end', label, phase, agentNumber, ok: false, tokens: 0 })
-      throw err
+      let result: AgentRunResult
+      let skipped = false
+      try {
+        result = await limiter.run(() => {
+          const control =
+            getAgentControl?.(agentNumber, { phase, label }) ??
+            (shouldSkipAgent?.(agentNumber, { phase, label }) ? 'skip' : null)
+          if (control === 'skip') {
+            skipped = true
+            return Promise.resolve({
+              value: null,
+              tokens: 0,
+              ok: false,
+              status: 'skipped' as const,
+            })
+          }
+          // A queued retry request means "run it now"; a running retry request
+          // is handled by the per-agent abort controller in agentRunner.
+          return runOneAgent(prompt, opts, { agentNumber, phase, label })
+        })
+      } catch (err) {
+        progress({
+          kind: 'agent_end',
+          label,
+          phase,
+          agentNumber,
+          ok: false,
+          tokens: 0,
+        })
+        throw err
+      }
+
+      if (result.status === 'retry_requested') {
+        progress({
+          kind: 'log',
+          message: `retrying agent #${agentNumber}: ${label}`,
+        })
+        continue
+      }
+
+      budget.add(result.tokens)
+      journal?.record(index, hash, result)
+      const status =
+        result.status ?? (skipped ? 'skipped' : result.ok ? 'completed' : 'failed')
+      progress({
+        kind: 'agent_end',
+        label,
+        phase,
+        agentNumber,
+        ok: result.ok,
+        status,
+        tokens: result.tokens,
+      })
+      return result.ok ? result.value : null
     }
-
-    budget.add(result.tokens)
-    journal?.record(index, hash, result)
-    progress({
-      kind: 'agent_end',
-      label,
-      phase,
-      agentNumber,
-      ok: result.ok,
-      tokens: result.tokens,
-    })
-    return result.ok ? result.value : null
   }
 
   function phase(title: string): void {

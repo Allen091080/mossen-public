@@ -4,7 +4,13 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod/v4'
 import { buildTool } from 'src/Tool.js'
 import { getProjectRoot } from '../../bootstrap/state.js'
-import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
+import {
+  consumeWorkflowAgentControl,
+  finishWorkflowTask,
+  registerWorkflowAgentController,
+  registerWorkflowTask,
+  updateWorkflowTaskProgress,
+} from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { WORKFLOW_TOOL_NAME } from './constants.js'
 import { WORKFLOW_TOOL_PROMPT } from './prompt.js'
 import { extractMeta } from './engine/meta.js'
@@ -25,8 +31,8 @@ import { createWorkflowAgentRunner } from './engine/agentRunner.js'
 import { runSandbox } from './engine/sandbox.js'
 import type { WorkflowProgressEvent } from './engine/types.js'
 import {
-  loadSavedWorkflowsFrom,
-  resolveSavedWorkflow,
+  loadWorkflowRefsFromAllSources,
+  resolveWorkflowFromAllSources,
 } from './savedWorkflows.js'
 import type { WorkflowRuntime } from './engine/runtime.js'
 
@@ -114,18 +120,20 @@ function readSourceFile(scriptPath: string): string {
   }
 }
 
-function resolveNestedWorkflowSource(
+async function resolveNestedWorkflowSource(
   nameOrRef: string | { scriptPath: string },
-): { source: string; label: string } {
+): Promise<{ source: string; label: string }> {
   if (typeof nameOrRef === 'string') {
     const name = nameOrRef.trim()
     if (!name) {
       throw new Error('workflow(name) requires a non-empty workflow name.')
     }
     const root = getProjectRoot()
-    const saved = resolveSavedWorkflow(root, name)
+    const saved = await resolveWorkflowFromAllSources(root, name)
     if (!saved) {
-      const available = loadSavedWorkflowsFrom(root).map(wf => wf.name)
+      const available = (await loadWorkflowRefsFromAllSources(root)).map(
+        wf => wf.commandName,
+      )
       throw new Error(
         `workflow("${name}"): no workflow with that name. Available: ${
           available.length ? available.join(', ') : '(none)'
@@ -160,7 +168,7 @@ function formatEvent(e: WorkflowProgressEvent): string | null {
     case 'agent_start':
       return `  ↳ #${e.agentNumber} ${e.label}${e.phase ? ` [${e.phase}]` : ''} …`
     case 'agent_end':
-      return `  ✓ #${e.agentNumber} ${e.label} (${e.ok ? 'ok' : 'failed'}, ~${e.tokens} tok)`
+      return `  ✓ #${e.agentNumber} ${e.label} (${e.status ?? (e.ok ? 'ok' : 'failed')}, ~${e.tokens} tok)`
     default:
       return null
   }
@@ -244,9 +252,24 @@ export const WorkflowTool = buildTool({
       : toolUseContext.abortController
 
     const log: string[] = []
+    const setTaskState =
+      toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
+    if (background) {
+      registerWorkflowTask({
+        runId,
+        workflowName: meta.name,
+        description: meta.description,
+        toolUseId: toolUseContext.toolUseId,
+        abortController: runAbort,
+        setAppState: setTaskState,
+      })
+    }
     const progress = (e: WorkflowProgressEvent) => {
       const line = formatEvent(e)
       if (line) log.push(line)
+      if (background) {
+        updateWorkflowTaskProgress(runId, e, setTaskState)
+      }
     }
 
     const limiter = createLimiter(defaultConcurrency())
@@ -261,6 +284,14 @@ export const WorkflowTool = buildTool({
       canUseTool,
       runId,
       ...(background ? { abortController: runAbort } : {}),
+      ...(background
+        ? {
+            registerAgentController: (
+              agentNumber: number,
+              controller: AbortController,
+            ) => registerWorkflowAgentController(runId, agentNumber, controller),
+          }
+        : {}),
     })
     const runtimes: WorkflowRuntime[] = []
     const createRuntimeFor = (
@@ -276,11 +307,17 @@ export const WorkflowTool = buildTool({
         args: workflowArgs,
         runOneAgent,
         journal: useJournal ? journal : undefined,
+        ...(background
+          ? {
+              getAgentControl: (agentNumber: number) =>
+                consumeWorkflowAgentControl(runId, agentNumber),
+            }
+          : {}),
         runNestedWorkflow:
           depth >= MAX_NESTED_WORKFLOW_DEPTH
             ? undefined
             : async (nameOrRef, nestedArgs) => {
-                const nested = resolveNestedWorkflowSource(nameOrRef)
+                const nested = await resolveNestedWorkflowSource(nameOrRef)
                 const { meta: nestedMeta } = extractMeta(nested.source)
                 progress({
                   kind: 'log',
@@ -326,37 +363,25 @@ export const WorkflowTool = buildTool({
             agentCount: agentCount(),
             tokensSpent: budget.spent(),
           })
-          enqueueSdkEvent({
-            type: 'system',
-            subtype: 'task_notification',
-            task_id: runId,
-            tool_use_id: toolUseContext.toolUseId,
-            status: 'completed',
-            output_file: runLogPath(runId),
-            summary: `Workflow "${meta.name}" completed — ${agentCount()} agent(s), ~${budget.spent()} tokens.`,
-            usage: {
-              total_tokens: budget.spent(),
-              tool_uses: agentCount(),
-              duration_ms: 0,
-            },
+          finishWorkflowTask(runId, 'completed', setTaskState, {
+            agentCount: agentCount(),
+            tokensSpent: budget.spent(),
           })
         })
         .catch((err: unknown) => {
+          const killed =
+            runAbort.signal.aborted &&
+            runAbort.signal.reason === 'workflow_killed'
           saveRunLog(runId, log)
           finalizeRunMeta(runId, {
             status: 'failed',
             agentCount: agentCount(),
             tokensSpent: budget.spent(),
           })
-          enqueueSdkEvent({
-            type: 'system',
-            subtype: 'task_notification',
-            task_id: runId,
-            tool_use_id: toolUseContext.toolUseId,
-            status: 'failed',
-            output_file: runLogPath(runId),
-            summary: `Workflow "${meta.name}" failed: ${(err as Error).message}`,
-            usage: { total_tokens: budget.spent(), tool_uses: agentCount(), duration_ms: 0 },
+          finishWorkflowTask(runId, killed ? 'killed' : 'failed', setTaskState, {
+            agentCount: agentCount(),
+            tokensSpent: budget.spent(),
+            error: killed ? undefined : (err as Error).message,
           })
         })
 

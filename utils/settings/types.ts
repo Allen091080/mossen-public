@@ -772,6 +772,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'When false, workflow/ultrawork/ultracode prompt keywords do not trigger Workflow reminders. Defaults to true.',
         ),
+      skipWorkflowUsageWarning: z
+        .boolean()
+        .optional()
+        .describe(
+          'When true, suppress the dynamic workflow usage warning in the Workflow permission review.',
+        ),
       reasoningProfile: z
         .enum(['fast', 'standard', 'deep'])
         .optional()

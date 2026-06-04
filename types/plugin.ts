@@ -61,6 +61,8 @@ export type LoadedPlugin = {
   agentsPaths?: string[] // Additional agent paths from manifest
   skillsPath?: string
   skillsPaths?: string[] // Additional skill paths from manifest
+  workflowsPath?: string
+  workflowsPaths?: string[] // Additional workflow paths from manifest
   outputStylesPath?: string
   outputStylesPaths?: string[] // Additional output style paths from manifest
   hooksConfig?: HooksSettings
@@ -73,6 +75,7 @@ export type PluginComponent =
   | 'commands'
   | 'agents'
   | 'skills'
+  | 'workflows'
   | 'hooks'
   | 'output-styles'
 

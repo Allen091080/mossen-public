@@ -1346,6 +1346,8 @@ async function validatePluginPaths(
  * ├── agents/              # Optional: Custom AI agents
  * │   ├── reviewer.md      # Code review agent
  * │   └── optimizer.md     # Performance optimization agent
+ * ├── workflows/           # Optional: Dynamic workflow scripts
+ * │   └── release.js       # /plugin:release workflow command
  * └── hooks/               # Optional: Hook configurations
  *     └── hooks.json       # Hook definitions
  * ```
@@ -1354,6 +1356,7 @@ async function validatePluginPaths(
  * - Manifest: Loaded from plugin.json if present, otherwise creates default
  * - Commands: Sets commandsPath if commands/ directory exists
  * - Agents: Sets agentsPath if agents/ directory exists
+ * - Workflows: Sets workflowsPath if workflows/ directory exists
  * - Hooks: Loads from hooks/hooks.json if present
  *
  * The function is tolerant of missing components - a plugin can have
@@ -1398,12 +1401,14 @@ export async function createPluginFromPath(
     agentsDirExists,
     skillsDirExists,
     rootSkillExists,
+    workflowsDirExists,
     outputStylesDirExists,
   ] = await Promise.all([
     !manifest.commands ? pathExists(join(pluginPath, 'commands')) : false,
     !manifest.agents ? pathExists(join(pluginPath, 'agents')) : false,
     !manifest.skills ? pathExists(join(pluginPath, 'skills')) : false,
     !manifest.skills ? pathExists(join(pluginPath, 'SKILL.md')) : false,
+    !manifest.workflows ? pathExists(join(pluginPath, 'workflows')) : false,
     !manifest.outputStyles
       ? pathExists(join(pluginPath, 'output-styles'))
       : false,
@@ -1608,13 +1613,41 @@ export async function createPluginFromPath(
     }
   }
 
-  // Step 4d: Register output-styles directory if detected
+  // Step 4d: Register workflows directory if detected
+  const workflowsPath = join(pluginPath, 'workflows')
+  if (workflowsDirExists) {
+    plugin.workflowsPath = workflowsPath
+  }
+
+  // Step 4e: Process additional workflow paths from manifest
+  if (manifest.workflows) {
+    const workflowPaths = Array.isArray(manifest.workflows)
+      ? manifest.workflows
+      : [manifest.workflows]
+
+    const validPaths = await validatePluginPaths(
+      workflowPaths,
+      pluginPath,
+      manifest.name,
+      source,
+      'workflows',
+      'Workflow',
+      'specified in manifest but',
+      errors,
+    )
+
+    if (validPaths.length > 0) {
+      plugin.workflowsPaths = validPaths
+    }
+  }
+
+  // Step 4f: Register output-styles directory if detected
   const outputStylesPath = join(pluginPath, 'output-styles')
   if (outputStylesDirExists) {
     plugin.outputStylesPath = outputStylesPath
   }
 
-  // Step 4e: Process additional output style paths from manifest
+  // Step 4g: Process additional output style paths from manifest
   if (manifest.outputStyles) {
     const outputStylePaths = Array.isArray(manifest.outputStyles)
       ? manifest.outputStyles
@@ -2680,6 +2713,28 @@ async function finishLoadingPluginFromPath(
       logForDebugging(`Plugin ${entry.name} has no entry.skills defined`)
     }
 
+    // Process workflows from marketplace entry
+    if (entry.workflows) {
+      const workflowPaths = Array.isArray(entry.workflows)
+        ? entry.workflows
+        : [entry.workflows]
+
+      const validPaths = await validatePluginPaths(
+        workflowPaths,
+        pluginPath,
+        entry.name,
+        pluginId,
+        'workflows',
+        'Workflow',
+        'from marketplace entry',
+        errors,
+      )
+
+      if (validPaths.length > 0) {
+        plugin.workflowsPaths = validPaths
+      }
+    }
+
     // Process output styles from marketplace entry
     if (entry.outputStyles) {
       const outputStylePaths = Array.isArray(entry.outputStyles)
@@ -2712,15 +2767,16 @@ async function finishLoadingPluginFromPath(
     (entry.commands ||
       entry.agents ||
       entry.skills ||
+      entry.workflows ||
       entry.hooks ||
       entry.outputStyles)
   ) {
-    // In non-strict mode with plugin.json, marketplace entries for commands/agents/skills/hooks/outputStyles are conflicts
+    // In non-strict mode with plugin.json, marketplace entries for commands/agents/skills/workflows/hooks/outputStyles are conflicts
     const error = new Error(
-      `Plugin ${entry.name} has both plugin.json and marketplace manifest entries for commands/agents/skills/hooks/outputStyles. This is a conflict.`,
+      `Plugin ${entry.name} has both plugin.json and marketplace manifest entries for commands/agents/skills/workflows/hooks/outputStyles. This is a conflict.`,
     )
     logForDebugging(
-      `Plugin ${entry.name} has both plugin.json and marketplace manifest entries for commands/agents/skills/hooks/outputStyles. This is a conflict.`,
+      `Plugin ${entry.name} has both plugin.json and marketplace manifest entries for commands/agents/skills/workflows/hooks/outputStyles. This is a conflict.`,
       { level: 'error' },
     )
     logError(error)
@@ -2731,7 +2787,7 @@ async function finishLoadingPluginFromPath(
     })
     return null
   } else if (hasManifest) {
-    // Has plugin.json - marketplace can supplement commands/agents/skills/hooks/outputStyles
+    // Has plugin.json - marketplace can supplement commands/agents/skills/workflows/hooks/outputStyles
 
     // Supplement commands from marketplace entry
     if (entry.commands) {
@@ -2901,6 +2957,31 @@ async function finishLoadingPluginFromPath(
 
       if (validPaths.length > 0) {
         plugin.skillsPaths = [...(plugin.skillsPaths || []), ...validPaths]
+      }
+    }
+
+    // Supplement workflows from marketplace entry
+    if (entry.workflows) {
+      const workflowPaths = Array.isArray(entry.workflows)
+        ? entry.workflows
+        : [entry.workflows]
+
+      const validPaths = await validatePluginPaths(
+        workflowPaths,
+        pluginPath,
+        entry.name,
+        pluginId,
+        'workflows',
+        'Workflow',
+        'from marketplace entry',
+        errors,
+      )
+
+      if (validPaths.length > 0) {
+        plugin.workflowsPaths = [
+          ...(plugin.workflowsPaths || []),
+          ...validPaths,
+        ]
       }
     }
 

@@ -50,6 +50,7 @@ export type WorkflowProgressEvent =
       phase: string | null
       agentNumber: number
       ok: boolean
+      status?: 'completed' | 'failed' | 'skipped'
       tokens: number
     }
 
@@ -63,4 +64,11 @@ export type AgentRunResult = {
   /** Output tokens attributed to this run (best-effort). */
   tokens: number
   ok: boolean
+  /** Internal control result for user-driven workflow task controls. */
+  status?: 'completed' | 'failed' | 'skipped' | 'retry_requested'
 }
+
+export type WorkflowAgentControlAction = 'skip' | 'retry'
+
+export const WORKFLOW_AGENT_SKIP_ABORT_REASON = 'workflow_agent_skipped'
+export const WORKFLOW_AGENT_RETRY_ABORT_REASON = 'workflow_agent_retry'

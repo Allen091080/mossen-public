@@ -507,6 +507,30 @@ const PluginManifestSkillsSchema = lazySchema(() =>
 )
 
 /**
+ * Schema for additional workflow definitions in plugin manifest.
+ *
+ * Allows plugins to specify workflow script files or directories beyond those
+ * in the standard workflows/ directory. Workflow command names are read from
+ * each script's `export const meta` block.
+ */
+const PluginManifestWorkflowsSchema = lazySchema(() =>
+  z.object({
+    workflows: z.union([
+      RelativePath().describe(
+        'Path to additional workflow script or directory (in addition to those in the workflows/ directory, if it exists), relative to the plugin root',
+      ),
+      z
+        .array(
+          RelativePath().describe(
+            'Path to additional workflow script or directory (in addition to those in the workflows/ directory, if it exists), relative to the plugin root',
+          ),
+        )
+        .describe('List of paths to additional workflow scripts or directories'),
+    ]),
+  }),
+)
+
+/**
  * Schema for additional output style definitions in plugin manifest
  *
  * Allows plugins to specify extra output style files or directories beyond those in the
@@ -901,6 +925,7 @@ export const PluginManifestSchema = lazySchema(() =>
     ...PluginManifestCommandsSchema().partial().shape,
     ...PluginManifestAgentsSchema().partial().shape,
     ...PluginManifestSkillsSchema().partial().shape,
+    ...PluginManifestWorkflowsSchema().partial().shape,
     ...PluginManifestOutputStylesSchema().partial().shape,
     ...PluginManifestChannelsSchema().partial().shape,
     ...PluginManifestMcpServerSchema().partial().shape,

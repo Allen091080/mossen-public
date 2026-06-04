@@ -9,7 +9,10 @@ import {
   type RunOneAgent,
   type RunNestedWorkflow,
 } from '../runtime.js'
-import type { WorkflowProgressEvent } from '../types.js'
+import type {
+  WorkflowAgentControlAction,
+  WorkflowProgressEvent,
+} from '../types.js'
 
 type AgentStartEvent = Extract<WorkflowProgressEvent, { kind: 'agent_start' }>
 type AgentEndEvent = Extract<WorkflowProgressEvent, { kind: 'agent_end' }>
@@ -22,6 +25,8 @@ function harness(
     maxAgents?: number
     args?: unknown
     runNestedWorkflow?: RunNestedWorkflow
+    shouldSkipAgent?: (agentNumber: number) => boolean
+    getAgentControl?: (agentNumber: number) => WorkflowAgentControlAction | null
   } = {},
 ) {
   const events: WorkflowProgressEvent[] = []
@@ -35,6 +40,10 @@ function harness(
     journal: opts.journal,
     maxAgents: opts.maxAgents,
     runNestedWorkflow: opts.runNestedWorkflow,
+    ...(opts.shouldSkipAgent
+      ? { shouldSkipAgent: opts.shouldSkipAgent }
+      : {}),
+    ...(opts.getAgentControl ? { getAgentControl: opts.getAgentControl } : {}),
   })
   return { rt, events, budget }
 }
@@ -108,6 +117,52 @@ describe('runtime.agent', () => {
     const parallel = rt.scope.parallel as (t: Array<() => Promise<unknown>>) => Promise<unknown[]>
     await parallel(Array.from({ length: 6 }, (_, i) => () => agent(`t${i}`)))
     expect(peak).toBeLessThanOrEqual(2)
+  })
+
+  test('skips an agent before execution when a control request exists', async () => {
+    let calls = 0
+    const { rt, events, budget } = harness(
+      async () => {
+        calls++
+        return { value: 'live', tokens: 20, ok: true }
+      },
+      { shouldSkipAgent: agentNumber => agentNumber === 1 },
+    )
+    const agent = rt.scope.agent as (p: string) => Promise<unknown>
+
+    expect(await agent('task')).toBeNull()
+    expect(calls).toBe(0)
+    expect(budget.spent()).toBe(0)
+    expect((events[1] as AgentEndEvent).status).toBe('skipped')
+  })
+
+  test('retries the same agent when the runner reports retry_requested', async () => {
+    let calls = 0
+    const { rt, events, budget } = harness(async () => {
+      calls++
+      if (calls === 1) {
+        return {
+          value: null,
+          tokens: 0,
+          ok: false,
+          status: 'retry_requested',
+        }
+      }
+      return { value: 'second try', tokens: 11, ok: true }
+    })
+    const agent = rt.scope.agent as (p: string) => Promise<unknown>
+
+    expect(await agent('task')).toBe('second try')
+    expect(calls).toBe(2)
+    expect(rt.agentCount()).toBe(1)
+    expect(budget.spent()).toBe(11)
+    expect(events.map(e => e.kind)).toEqual([
+      'agent_start',
+      'log',
+      'agent_start',
+      'agent_end',
+    ])
+    expect((events.at(-1) as AgentEndEvent).status).toBe('completed')
   })
 })
 

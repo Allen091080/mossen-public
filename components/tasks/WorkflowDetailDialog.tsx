@@ -1,6 +1,199 @@
 import React from 'react'
-import { Text } from '../../ink.js'
+import type { ReadonlyDeep as DeepImmutable } from 'type-fest'
+import type { CommandResultDisplay } from '../../commands.js'
+import { useElapsedTime } from '../../hooks/useElapsedTime.js'
+import type { KeyboardEvent } from '../../ink/events/keyboard-event.js'
+import { Box, Text } from '../../ink.js'
+import type {
+  LocalWorkflowTaskState,
+  WorkflowAgentTaskProgress,
+} from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { formatNumber } from '../../utils/format.js'
+import { Byline } from '../design-system/Byline.js'
+import { Dialog } from '../design-system/Dialog.js'
+import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js'
+import {
+  getTaskStatusColor,
+  getTaskStatusIcon,
+} from './taskStatusUtils.js'
 
-export function WorkflowDetailDialog(): React.ReactNode {
-  return <Text>Workflow task details are unavailable in this build.</Text>
+type Props = {
+  key?: React.Key
+  workflow: DeepImmutable<LocalWorkflowTaskState>
+  onDone: (
+    result?: string,
+    options?: { display?: CommandResultDisplay },
+  ) => void
+  onKill?: () => void
+  onSkipAgent?: (agentId: string) => void
+  onRetryAgent?: (agentId: string) => void
+  onBack?: () => void
+}
+
+function agentStatusColor(
+  status: WorkflowAgentTaskProgress['status'],
+): 'success' | 'error' | 'warning' | 'background' {
+  switch (status) {
+    case 'completed':
+      return 'success'
+    case 'failed':
+      return 'error'
+    case 'skipped':
+    case 'retry_requested':
+      return 'warning'
+    case 'running':
+      return 'background'
+  }
+}
+
+function AgentRow({
+  agent,
+}: {
+  key?: React.Key
+  agent: DeepImmutable<WorkflowAgentTaskProgress>
+}): React.ReactNode {
+  return (
+    <Text wrap="truncate-end">
+      #{agent.agentNumber} {agent.phase ? `[${agent.phase}] ` : ''}
+      {agent.label}{' '}
+      <Text color={agentStatusColor(agent.status)}>{agent.status}</Text>
+      {agent.tokens > 0 ? (
+        <Text dimColor> · {formatNumber(agent.tokens)} tokens</Text>
+      ) : null}
+    </Text>
+  )
+}
+
+function pickRunningAgent(
+  workflow: DeepImmutable<LocalWorkflowTaskState>,
+): WorkflowAgentTaskProgress | undefined {
+  return workflow.agents.find(agent => agent.status === 'running') as
+    | WorkflowAgentTaskProgress
+    | undefined
+}
+
+export function WorkflowDetailDialog({
+  workflow,
+  onDone,
+  onKill,
+  onSkipAgent,
+  onRetryAgent,
+  onBack,
+}: Props): React.ReactNode {
+  const elapsedTime = useElapsedTime(
+    workflow.startTime,
+    workflow.status === 'running',
+    1000,
+    workflow.totalPausedMs ?? 0,
+  )
+  const runningAgent = pickRunningAgent(workflow)
+  const handleClose = () =>
+    onDone('Workflow details dismissed', { display: 'system' })
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (event.key === ' ') {
+      event.preventDefault()
+      handleClose()
+      return
+    }
+    if (event.key === 'left' && onBack) {
+      event.preventDefault()
+      onBack()
+      return
+    }
+    if (event.key === 'x' && workflow.status === 'running' && onKill) {
+      event.preventDefault()
+      onKill()
+      return
+    }
+    if (event.key === 's' && runningAgent && onSkipAgent) {
+      event.preventDefault()
+      onSkipAgent(String(runningAgent.agentNumber))
+      return
+    }
+    if (event.key === 'r' && runningAgent && onRetryAgent) {
+      event.preventDefault()
+      onRetryAgent(String(runningAgent.agentNumber))
+    }
+  }
+
+  const subtitle = (
+    <Text>
+      <Text color={getTaskStatusColor(workflow.status)}>
+        {getTaskStatusIcon(workflow.status)} {workflow.status}
+      </Text>
+      <Text dimColor>
+        {' '}
+        · {elapsedTime} · {formatNumber(workflow.tokensSpent)} tokens ·{' '}
+        {workflow.agentCount} {workflow.agentCount === 1 ? 'agent' : 'agents'}
+      </Text>
+    </Text>
+  )
+  const inputGuide = () => (
+    <Byline>
+      {onBack ? <KeyboardShortcutHint shortcut="←" action="go back" /> : null}
+      <KeyboardShortcutHint shortcut="Esc/Enter/Space" action="close" />
+      {workflow.status === 'running' && onKill ? (
+        <KeyboardShortcutHint shortcut="x" action="stop" />
+      ) : null}
+      {runningAgent && onSkipAgent ? (
+        <KeyboardShortcutHint shortcut="s" action="skip current agent" />
+      ) : null}
+      {runningAgent && onRetryAgent ? (
+        <KeyboardShortcutHint shortcut="r" action="retry current agent" />
+      ) : null}
+    </Byline>
+  )
+
+  return (
+    <Box flexDirection="column" tabIndex={0} autoFocus onKeyDown={handleKeyDown}>
+      <Dialog
+        title={`Workflow: ${workflow.workflowName}`}
+        subtitle={subtitle}
+        onCancel={handleClose}
+        color="background"
+        inputGuide={inputGuide}
+      >
+        <Box flexDirection="column">
+          <Text wrap="wrap">{workflow.description}</Text>
+          {workflow.currentPhase ? (
+            <Text>
+              <Text bold>Current phase:</Text> {workflow.currentPhase}
+            </Text>
+          ) : null}
+          {workflow.agents.length > 0 ? (
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold dimColor>
+                Agents
+              </Text>
+              {workflow.agents.map(agent => (
+                <AgentRow key={agent.agentNumber} agent={agent} />
+              ))}
+            </Box>
+          ) : null}
+          {workflow.log.length > 0 ? (
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold dimColor>
+                Recent progress
+              </Text>
+              {workflow.log.slice(-8).map((line, index) => (
+                <Text key={`${index}-${line}`} dimColor wrap="truncate-end">
+                  {line}
+                </Text>
+              ))}
+            </Box>
+          ) : null}
+          {workflow.error ? (
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold color="error">
+                Error
+              </Text>
+              <Text color="error" wrap="wrap">
+                {workflow.error}
+              </Text>
+            </Box>
+          ) : null}
+        </Box>
+      </Dialog>
+    </Box>
+  )
 }

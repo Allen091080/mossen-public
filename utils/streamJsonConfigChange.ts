@@ -99,6 +99,7 @@ const ALLOWED_CONFIG_CHANGE_KEYS = {
   includeGitInstructions: booleanSetting(),
   language: nullableStringSetting(),
   reasoningProfile: enumSetting(['fast', 'standard', 'deep']),
+  skipWorkflowUsageWarning: booleanSetting(),
   spinnerTipsEnabled: booleanSetting(),
   syntaxHighlightingDisabled: booleanSetting(),
   terminalTitleFromRename: booleanSetting(),

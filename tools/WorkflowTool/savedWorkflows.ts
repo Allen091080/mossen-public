@@ -14,11 +14,23 @@
  * permission + opt-in path as any other Workflow invocation.
  */
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { feature } from 'bun:bundle'
 import type { Command } from '../../commands.js'
+import { getInlinePlugins } from '../../bootstrap/state.js'
+import type { LoadedPlugin, PluginManifest } from '../../types/plugin.js'
+import { logForDebugging } from '../../utils/debug.js'
+import { isBareMode } from '../../utils/envUtils.js'
+import { getPluginErrorMessage } from '../../types/plugin.js'
+import { loadAllPluginsCacheOnly } from '../../utils/plugins/pluginLoader.js'
 import { isWorkflowRuntimeEnabled } from '../../utils/workflowAvailability.js'
 import { extractMeta } from './engine/meta.js'
 
@@ -38,12 +50,29 @@ export function isSavedWorkflowsEnabled(): boolean {
 
 type SavedWorkflow = {
   name: string
+  commandName: string
   description: string
   scriptPath: string
-  scope: 'project' | 'user'
+  scope: 'project' | 'user' | 'plugin'
+  plugin?: {
+    name: string
+    source: string
+    repository: string
+    manifest: PluginManifest
+  }
 }
 
 export type SavedWorkflowRef = SavedWorkflow
+
+export type WorkflowPluginRef = Pick<
+  LoadedPlugin,
+  | 'name'
+  | 'source'
+  | 'repository'
+  | 'manifest'
+  | 'workflowsPath'
+  | 'workflowsPaths'
+>
 
 /** Read + meta-parse every `*.js` in a dir. Bad files are skipped, not fatal. */
 function readWorkflowDir(
@@ -65,6 +94,7 @@ function readWorkflowDir(
       const { meta } = extractMeta(source)
       out.push({
         name: meta.name,
+        commandName: meta.name,
         description: meta.description,
         scriptPath,
         scope,
@@ -77,6 +107,80 @@ function readWorkflowDir(
   return out
 }
 
+function normalizePathForDedupe(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
+}
+
+function readPluginWorkflowFile(
+  scriptPath: string,
+  plugin: WorkflowPluginRef,
+): SavedWorkflow | null {
+  try {
+    const source = readFileSync(scriptPath, 'utf8')
+    const { meta } = extractMeta(source)
+    return {
+      name: meta.name,
+      commandName: `${plugin.name}:${meta.name}`,
+      description: meta.description,
+      scriptPath,
+      scope: 'plugin',
+      plugin: {
+        name: plugin.name,
+        source: plugin.source,
+        repository: plugin.repository,
+        manifest: plugin.manifest,
+      },
+    }
+  } catch {
+    return null
+  }
+}
+
+function readPluginWorkflowPath(
+  workflowPath: string,
+  plugin: WorkflowPluginRef,
+  loadedPaths: Set<string>,
+): SavedWorkflow[] {
+  let stat
+  try {
+    stat = statSync(workflowPath)
+  } catch {
+    return []
+  }
+
+  if (stat.isFile()) {
+    if (!workflowPath.endsWith('.js')) return []
+    const dedupe = normalizePathForDedupe(workflowPath)
+    if (loadedPaths.has(dedupe)) return []
+    loadedPaths.add(dedupe)
+    const wf = readPluginWorkflowFile(workflowPath, plugin)
+    return wf ? [wf] : []
+  }
+
+  if (!stat.isDirectory()) return []
+  let entries: string[]
+  try {
+    entries = readdirSync(workflowPath).filter(f => f.endsWith('.js'))
+  } catch {
+    return []
+  }
+
+  const out: SavedWorkflow[] = []
+  for (const file of entries) {
+    const scriptPath = join(workflowPath, file)
+    const dedupe = normalizePathForDedupe(scriptPath)
+    if (loadedPaths.has(dedupe)) continue
+    loadedPaths.add(dedupe)
+    const wf = readPluginWorkflowFile(scriptPath, plugin)
+    if (wf) out.push(wf)
+  }
+  return out
+}
+
 /**
  * Build the saved-workflow `prompt` command for a parsed entry. Running
  * `/<name>` instructs the model to execute the saved script via the Workflow
@@ -85,16 +189,29 @@ function readWorkflowDir(
 function toCommand(wf: SavedWorkflow): Command {
   return {
     type: 'prompt',
-    name: wf.name,
+    name: wf.commandName,
     description: wf.description,
     hasUserSpecifiedDescription: true,
     // 'managed' = a non-skill, non-plugin command loaded from disk; `kind:
     // 'workflow'` badges it as workflow-backed in autocomplete.
-    loadedFrom: 'managed',
+    loadedFrom: wf.scope === 'plugin' ? 'plugin' : 'managed',
     kind: 'workflow',
     // Map the saved scope onto the command settings-source enum so listing /
     // dedupe treat project-scoped workflows like other project-sourced commands.
-    source: wf.scope === 'project' ? 'projectSettings' : 'userSettings',
+    source:
+      wf.scope === 'plugin'
+        ? 'plugin'
+        : wf.scope === 'project'
+          ? 'projectSettings'
+          : 'userSettings',
+    ...(wf.plugin
+      ? {
+          pluginInfo: {
+            pluginManifest: wf.plugin.manifest,
+            repository: wf.plugin.repository,
+          },
+        }
+      : {}),
     progressMessage: 'running workflow',
     contentLength: 0,
     async getPromptForCommand(args: string) {
@@ -105,7 +222,7 @@ function toCommand(wf: SavedWorkflow): Command {
         {
           type: 'text' as const,
           text:
-            `Run the saved workflow "${wf.name}" by invoking the Workflow tool ` +
+            `Run the saved workflow "${wf.commandName}" by invoking the Workflow tool ` +
             `with scriptPath="${wf.scriptPath}"` +
             (argLine
               ? `, passing the caller arguments as the workflow's args.`
@@ -136,6 +253,58 @@ export function loadSavedWorkflowsFrom(projectRoot: string): SavedWorkflowRef[] 
   return [...project, ...user]
 }
 
+export function loadPluginWorkflowsFrom(
+  plugins: readonly WorkflowPluginRef[],
+): SavedWorkflowRef[] {
+  const out: SavedWorkflowRef[] = []
+  for (const plugin of plugins) {
+    const loadedPaths = new Set<string>()
+    if (plugin.workflowsPath) {
+      out.push(
+        ...readPluginWorkflowPath(plugin.workflowsPath, plugin, loadedPaths),
+      )
+    }
+    for (const workflowPath of plugin.workflowsPaths ?? []) {
+      out.push(...readPluginWorkflowPath(workflowPath, plugin, loadedPaths))
+    }
+  }
+  return out
+}
+
+export function loadWorkflowCommandsFromSources(
+  projectRoot: string,
+  plugins: readonly WorkflowPluginRef[] = [],
+): Command[] {
+  return [
+    ...loadSavedWorkflowsFrom(projectRoot),
+    ...loadPluginWorkflowsFrom(plugins),
+  ].map(toCommand)
+}
+
+async function loadEnabledWorkflowPlugins(): Promise<WorkflowPluginRef[]> {
+  if (isBareMode() && getInlinePlugins().length === 0) {
+    return []
+  }
+
+  const { enabled, errors } = await loadAllPluginsCacheOnly()
+  if (errors.length > 0) {
+    logForDebugging(
+      `Plugin loading errors: ${errors.map(e => getPluginErrorMessage(e)).join(', ')}`,
+    )
+  }
+  return enabled.filter(p => p.workflowsPath || p.workflowsPaths?.length)
+}
+
+export async function loadWorkflowRefsFromAllSources(
+  projectRoot: string,
+): Promise<SavedWorkflowRef[]> {
+  const plugins = await loadEnabledWorkflowPlugins()
+  return [
+    ...loadSavedWorkflowsFrom(projectRoot),
+    ...loadPluginWorkflowsFrom(plugins),
+  ]
+}
+
 export function resolveSavedWorkflow(
   projectRoot: string,
   name: string,
@@ -145,12 +314,41 @@ export function resolveSavedWorkflow(
   return loadSavedWorkflowsFrom(projectRoot).find(wf => wf.name === wanted) ?? null
 }
 
+export function resolveWorkflowFromSources(
+  projectRoot: string,
+  name: string,
+  plugins: readonly WorkflowPluginRef[] = [],
+): SavedWorkflowRef | null {
+  const wanted = name.trim()
+  if (!wanted) return null
+  const workflows = [
+    ...loadSavedWorkflowsFrom(projectRoot),
+    ...loadPluginWorkflowsFrom(plugins),
+  ]
+  return (
+    workflows.find(wf => wf.commandName === wanted) ??
+    workflows.find(wf => wf.name === wanted) ??
+    null
+  )
+}
+
+export async function resolveWorkflowFromAllSources(
+  projectRoot: string,
+  name: string,
+): Promise<SavedWorkflowRef | null> {
+  const wanted = name.trim()
+  if (!wanted) return null
+  const plugins = await loadEnabledWorkflowPlugins()
+  return resolveWorkflowFromSources(projectRoot, wanted, plugins)
+}
+
 /**
  * Load saved workflows from project + user scope as slash commands. Returns []
  * when the WORKFLOW_SCRIPTS feature is off (no orchestration → no saved
  * workflows). Production entry point used by the command registry.
  */
-export function getWorkflowCommands(projectRoot: string): Command[] {
+export async function getWorkflowCommands(projectRoot: string): Promise<Command[]> {
   if (!isSavedWorkflowsEnabled()) return []
-  return loadWorkflowCommandsFrom(projectRoot)
+  const plugins = await loadEnabledWorkflowPlugins()
+  return loadWorkflowCommandsFromSources(projectRoot, plugins)
 }

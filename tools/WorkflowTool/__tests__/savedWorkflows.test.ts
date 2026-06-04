@@ -5,7 +5,10 @@ import { join } from 'node:path'
 import {
   getProjectWorkflowsDir,
   isSavedWorkflowsEnabled,
+  loadPluginWorkflowsFrom,
   loadWorkflowCommandsFrom,
+  loadWorkflowCommandsFromSources,
+  resolveWorkflowFromSources,
   resolveSavedWorkflow,
   getWorkflowCommands,
   PROJECT_WORKFLOWS_SUBDIR,
@@ -92,9 +95,9 @@ describe('savedWorkflows loader (S3)', () => {
     expect(loadWorkflowCommandsFrom(root)).toEqual([])
   })
 
-  test('gated wrapper returns [] when the feature is off, delegates when on', () => {
+  test('gated wrapper returns [] when the feature is off, delegates when on', async () => {
     writeFileSync(join(wfDir, 'g.js'), META('gated', 'g'))
-    const gatedResult = getWorkflowCommands(root)
+    const gatedResult = await getWorkflowCommands(root)
     if (isSavedWorkflowsEnabled()) {
       // Feature on → wrapper must equal the ungated core.
       expect(gatedResult.map(c => c.name)).toContain('gated')
@@ -103,6 +106,38 @@ describe('savedWorkflows loader (S3)', () => {
       // would have found the file.
       expect(gatedResult).toEqual([])
       expect(loadWorkflowCommandsFrom(root).some(c => c.name === 'gated')).toBe(true)
+    }
+  })
+
+  test('plugin workflow dirs become plugin-namespaced commands', async () => {
+    const pluginRoot = mkdtempSync(join(tmpdir(), 'wf-plugin-'))
+    const pluginWfDir = join(pluginRoot, 'workflows')
+    mkdirSync(pluginWfDir, { recursive: true })
+    writeFileSync(join(pluginWfDir, 'release.js'), META('release', 'Ship it'))
+
+    try {
+      const plugin = {
+        name: 'shipmate',
+        source: 'shipmate@inline',
+        repository: 'shipmate@inline',
+        manifest: { name: 'shipmate' },
+        workflowsPath: pluginWfDir,
+      }
+      const workflows = loadPluginWorkflowsFrom([plugin])
+      expect(workflows.map(wf => wf.commandName)).toEqual(['shipmate:release'])
+
+      const commands = loadWorkflowCommandsFromSources(root, [plugin])
+      const command = commands.find(c => c.name === 'shipmate:release')
+      expect(command).toBeDefined()
+      expect((command as { loadedFrom?: string }).loadedFrom).toBe('plugin')
+      expect((command as { kind?: string }).kind).toBe('workflow')
+
+      const resolved = resolveWorkflowFromSources(root, 'shipmate:release', [
+        plugin,
+      ])
+      expect(resolved?.scriptPath).toBe(join(pluginWfDir, 'release.js'))
+    } finally {
+      rmSync(pluginRoot, { recursive: true, force: true })
     }
   })
 })

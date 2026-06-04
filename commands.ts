@@ -441,9 +441,8 @@ const loadAllCommands = memoize(async (cwd: string): Promise<Command[]> => {
   ] = await Promise.all([
     getSkills(cwd),
     getPluginCommands(),
-    // S3: saved workflows (.mossen/workflows/*.js) become slash commands.
-    // Synchronous disk read wrapped in resolve to keep the Promise.all shape.
-    Promise.resolve(getWorkflowCommands(cwd)),
+    // Saved/plugin workflows become slash commands.
+    getWorkflowCommands(cwd),
   ])
 
   return [
