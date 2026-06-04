@@ -4,9 +4,9 @@
  * This is the bridge from the workflow engine to Mossen's real subagent system:
  * each agent() call resolves an agent definition, assembles that agent's own
  * tool pool, runs it to completion via runAgent(), and returns the final text —
- * or, when a JSON Schema was supplied, a parsed-and-validated object (retrying
- * with the validation errors fed back, matching the public contract's
- * "model retries on mismatch" guarantee).
+ * or, when a JSON Schema was supplied, injects a schema-specific
+ * StructuredOutput tool and returns the tool-provided object (retrying when the
+ * agent fails to call the tool or the result is rejected).
  *
  * The pure parse/validate/retry-decision logic lives in schemaValidate.ts and
  * is unit-tested there; this module is the thin I/O-bound wiring that can only
@@ -38,7 +38,10 @@ import {
 } from '../../AgentTool/loadAgentsDir.js'
 import { GENERAL_PURPOSE_AGENT } from '../../AgentTool/built-in/generalPurposeAgent.js'
 import {
-  extractJson,
+  createSyntheticOutputTool,
+  SYNTHETIC_OUTPUT_TOOL_NAME,
+} from '../../SyntheticOutputTool/SyntheticOutputTool.js'
+import {
   formatIssues,
   stripLiteralThinking,
   validateAgainstSchema,
@@ -99,10 +102,58 @@ function resolveAgentDefinition(
 
 function buildSchemaInstruction(schema: Record<string, unknown>): string {
   return (
-    '\n\nIMPORTANT: Respond with ONLY a single JSON value conforming to this ' +
-    'JSON Schema. No prose, no explanation, no markdown fences — raw JSON only.\n\n' +
+    `\n\nIMPORTANT: Complete this task by calling the ${SYNTHETIC_OUTPUT_TOOL_NAME} ` +
+    'tool exactly once with data conforming to this JSON Schema. Do not return ' +
+    'the structured result as prose or raw JSON text.\n\n' +
     `JSON Schema:\n${JSON.stringify(schema, null, 2)}`
   )
+}
+
+export function withStructuredOutputTool(
+  availableTools: Tools,
+  schema: Record<string, unknown>,
+  label: string,
+): Tools {
+  const created = createSyntheticOutputTool(schema)
+  if ('error' in created) {
+    throw new WorkflowSchemaError(label, `invalid schema: ${created.error}`)
+  }
+  return [
+    ...availableTools.filter(tool => tool.name !== SYNTHETIC_OUTPUT_TOOL_NAME),
+    created.tool,
+  ]
+}
+
+export function withStructuredOutputAllowed(
+  agentDefinition: AgentDefinition,
+): AgentDefinition {
+  const tools = agentDefinition.tools
+  if (
+    tools === undefined ||
+    (tools.length === 1 && tools[0] === '*') ||
+    tools.includes(SYNTHETIC_OUTPUT_TOOL_NAME)
+  ) {
+    return agentDefinition
+  }
+  return {
+    ...agentDefinition,
+    tools: [...tools, SYNTHETIC_OUTPUT_TOOL_NAME],
+  }
+}
+
+export function extractStructuredOutputFromMessages(
+  messages: Message[],
+): unknown | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (
+      message?.type === 'attachment' &&
+      message.attachment?.type === 'structured_output'
+    ) {
+      return message.attachment.data
+    }
+  }
+  return undefined
 }
 
 function workflowAgentWorktreeSlug(runId: string, agentNumber: number): string {
@@ -158,7 +209,7 @@ export function createWorkflowAgentRunner(
     label: string,
     worktreePath: string | undefined,
     agentAbortController: AbortController | undefined,
-  ): Promise<{ text: string; tokens: number }> {
+  ): Promise<{ text: string; tokens: number; structuredOutput?: unknown }> {
     const startTime = Date.now()
     const agentId = createAgentId()
     const promptMessages: Message[] = [createUserMessage({ content: promptText })]
@@ -191,6 +242,7 @@ export function createWorkflowAgentRunner(
     for await (const message of stream) {
       messages.push(message)
     }
+    const structuredOutput = extractStructuredOutputFromMessages(messages)
     const result = finalizeAgentTool(messages, agentId, {
       prompt: promptText,
       resolvedAgentModel: model ?? agentDefinition.model ?? 'inherit',
@@ -206,6 +258,7 @@ export function createWorkflowAgentRunner(
       // extractTextContent; this catches the text-literal variant.
       text: stripLiteralThinking(extractTextContent(result.content, '\n')),
       tokens: result.totalTokens,
+      ...(structuredOutput !== undefined ? { structuredOutput } : {}),
     }
   }
 
@@ -232,7 +285,7 @@ export function createWorkflowAgentRunner(
       ...appState.toolPermissionContext,
       mode: agentDefinition.permissionMode ?? ('acceptEdits' as const),
     }
-    const availableTools = assembleToolPool(
+    const baseAvailableTools = assembleToolPool(
       workerPermissionContext,
       appState.mcp.tools,
     )
@@ -243,7 +296,7 @@ export function createWorkflowAgentRunner(
       if (!opts.schema) {
         const { text, tokens } = await runOnce(
           agentDefinition,
-          availableTools,
+          baseAvailableTools,
           prompt,
           model,
           meta.label,
@@ -253,16 +306,22 @@ export function createWorkflowAgentRunner(
         return { value: text, tokens, ok: true }
       }
 
-      // Schema → instruct for JSON, then parse+validate with re-prompt on failure.
+      // Schema → require the StructuredOutput tool, then validate+retry on failure.
       // promptText carries the schema instruction (and, on retry, the rejection
       // feedback) — runOnce must receive promptText, not the bare prompt.
+      const schemaAgentDefinition = withStructuredOutputAllowed(agentDefinition)
+      const schemaTools = withStructuredOutputTool(
+        baseAvailableTools,
+        opts.schema,
+        meta.label,
+      )
       let promptText = prompt + buildSchemaInstruction(opts.schema)
       let totalTokens = 0
       let lastDetail = ''
       for (let attempt = 0; attempt <= MAX_SCHEMA_RETRIES; attempt++) {
-        const { text, tokens } = await runOnce(
-          agentDefinition,
-          availableTools,
+        const { tokens, structuredOutput } = await runOnce(
+          schemaAgentDefinition,
+          schemaTools,
           promptText,
           model,
           meta.label,
@@ -270,22 +329,21 @@ export function createWorkflowAgentRunner(
           agentAbortController,
         )
         totalTokens += tokens
-        try {
-          const parsed = extractJson(text)
-          const validation = validateAgainstSchema(parsed, opts.schema)
+        if (structuredOutput === undefined) {
+          lastDetail = `the agent never called the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool`
+        } else {
+          const validation = validateAgainstSchema(structuredOutput, opts.schema)
           if (validation.ok) {
             return { value: validation.value, tokens: totalTokens, ok: true }
           }
           lastDetail = formatIssues(validation.errors)
-        } catch (err) {
-          lastDetail = (err as Error).message
         }
         // Re-prompt with the specific failure so the model can correct itself.
         promptText =
           prompt +
           buildSchemaInstruction(opts.schema) +
           `\n\nYour previous response was rejected:\n${lastDetail}\n` +
-          'Return corrected JSON only.'
+          `Call ${SYNTHETIC_OUTPUT_TOOL_NAME} with corrected data only.`
       }
       throw new WorkflowSchemaError(meta.label, lastDetail)
     } catch (err) {
