@@ -31,6 +31,7 @@ import {
   removeAgentWorktree,
 } from '../../../utils/worktree.js'
 import { runAgent } from '../../AgentTool/runAgent.js'
+import { AGENT_TOOL_NAME } from '../../AgentTool/constants.js'
 import { finalizeAgentTool } from '../../AgentTool/agentToolUtils.js'
 import {
   isBuiltInAgent,
@@ -38,6 +39,10 @@ import {
   type AgentDefinition,
 } from '../../AgentTool/loadAgentsDir.js'
 import { GENERAL_PURPOSE_AGENT } from '../../AgentTool/built-in/generalPurposeAgent.js'
+import {
+  filterDeniedAgents,
+  getDenyRuleForAgent,
+} from '../../../utils/permissions/permissions.js'
 import {
   createSyntheticOutputTool,
   SYNTHETIC_OUTPUT_TOOL_NAME,
@@ -135,15 +140,42 @@ function resolveAgentDefinition(
   requested: string | undefined,
 ): AgentDefinition {
   const wanted = requested?.trim() || GENERAL_PURPOSE_AGENT.agentType
-  const agents = toolUseContext.options.agentDefinitions.activeAgents
+  const allAgents = toolUseContext.options.agentDefinitions.activeAgents
+  const { allowedAgentTypes } = toolUseContext.options.agentDefinitions
+  const permissionContext = toolUseContext.getAppState().toolPermissionContext
+  const allowedAgents = allowedAgentTypes
+    ? allAgents.filter(agent => allowedAgentTypes.includes(agent.agentType))
+    : allAgents
+  const agents = filterDeniedAgents(
+    allowedAgents,
+    permissionContext,
+    AGENT_TOOL_NAME,
+  )
   const resolved = resolveAgentTypeFlexible(agents, wanted)
   if (resolved.kind === 'found') return resolved.agent
-  // Fall back to general-purpose so a workflow never hard-fails on an unknown
-  // agentType — the script author gets the default research agent.
   if (wanted === GENERAL_PURPOSE_AGENT.agentType) return GENERAL_PURPOSE_AGENT
+  const deniedResolution = resolveAgentTypeFlexible(allowedAgents, wanted)
+  if (deniedResolution.kind === 'found') {
+    const deniedAgent = deniedResolution.agent
+    const denyRule = getDenyRuleForAgent(
+      permissionContext,
+      AGENT_TOOL_NAME,
+      deniedAgent.agentType,
+    )
+    if (denyRule) {
+      throw new Error(
+        `agent({agentType}): '${wanted}' is denied by permission rule '${AGENT_TOOL_NAME}(${deniedAgent.agentType})' from ${denyRule.source ?? 'settings'}.`,
+      )
+    }
+  }
+  if (resolved.kind === 'ambiguous') {
+    throw new Error(
+      `agent({agentType}): agent type '${wanted}' is ambiguous after case/separator normalization. Matching agents: ${resolved.matches.map(agent => agent.agentType).join(', ')}`,
+    )
+  }
   const known = agents.map(a => a.agentType).join(', ')
   throw new Error(
-    `Workflow agent type "${wanted}" not found. Available: ${known || '(none)'}`,
+    `agent({agentType}): agent type '${wanted}' not found. Available agents: ${known || '(none)'}`,
   )
 }
 

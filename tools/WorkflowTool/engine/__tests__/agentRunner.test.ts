@@ -1,9 +1,14 @@
 import { describe, expect, test } from 'bun:test'
+import {
+  getEmptyToolPermissionContext,
+  type ToolUseContext,
+} from '../../../../Tool.js'
 import type { AgentDefinition } from '../../../AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../../../SyntheticOutputTool/SyntheticOutputTool.js'
 import {
   buildRemoteWorkflowAgentPrompt,
   coerceRemoteWorkflowAgentResult,
+  createWorkflowAgentRunner,
   extractStructuredOutputFromMessages,
   runHostedRemoteWorkflowAgent,
   withStructuredOutputAllowed,
@@ -18,6 +23,51 @@ const OBJECT_SCHEMA: Record<string, unknown> = {
   },
   required: ['ok'],
   additionalProperties: false,
+}
+
+function testAgent(agentType: string): AgentDefinition {
+  return {
+    agentType,
+    whenToUse: 'test',
+    getSystemPrompt: () => 'system',
+    source: 'projectSettings',
+  } as unknown as AgentDefinition
+}
+
+function workflowRunnerContext(params: {
+  agents: AgentDefinition[]
+  deniedRules?: string[]
+}): ToolUseContext {
+  return {
+    options: {
+      commands: [],
+      debug: false,
+      mainLoopModel: 'test-model',
+      tools: [],
+      verbose: false,
+      thinkingConfig: {},
+      mcpClients: [],
+      mcpResources: {},
+      isNonInteractiveSession: false,
+      agentDefinitions: {
+        activeAgents: params.agents,
+        allAgents: params.agents,
+      },
+    },
+    abortController: new AbortController(),
+    readFileState: {} as ToolUseContext['readFileState'],
+    getAppState: () =>
+      ({
+        toolPermissionContext: {
+          ...getEmptyToolPermissionContext(),
+          alwaysDenyRules: {
+            userSettings: params.deniedRules ?? [],
+          },
+        },
+        mcp: { tools: [] },
+      }) as unknown as ReturnType<ToolUseContext['getAppState']>,
+    setAppState: () => {},
+  } as unknown as ToolUseContext
 }
 
 describe('workflow agent structured output helpers', () => {
@@ -82,6 +132,50 @@ describe('workflow agent structured output helpers', () => {
     ]
 
     expect(extractStructuredOutputFromMessages(messages)).toEqual({ ok: true })
+  })
+})
+
+describe('workflow local agent resolution', () => {
+  test('reports denied agentType with the official workflow error shape', async () => {
+    const runner = createWorkflowAgentRunner({
+      toolUseContext: workflowRunnerContext({
+        agents: [testAgent('Reviewer')],
+        deniedRules: ['Agent(Reviewer)'],
+      }),
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      runId: 'wf-test',
+    })
+
+    await expect(
+      runner('review the diff', { agentType: 'Reviewer' }, {
+        agentNumber: 1,
+        phase: null,
+        label: 'review',
+      }),
+    ).rejects.toThrow(
+      "agent({agentType}): 'Reviewer' is denied by permission rule 'Agent(Reviewer)' from userSettings.",
+    )
+  })
+
+  test('reports missing agentType with the official workflow error shape', async () => {
+    const runner = createWorkflowAgentRunner({
+      toolUseContext: workflowRunnerContext({
+        agents: [testAgent('Explore'), testAgent('Reviewer')],
+        deniedRules: ['Agent(Reviewer)'],
+      }),
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      runId: 'wf-test',
+    })
+
+    await expect(
+      runner('review the diff', { agentType: 'Missing' }, {
+        agentNumber: 1,
+        phase: null,
+        label: 'review',
+      }),
+    ).rejects.toThrow(
+      "agent({agentType}): agent type 'Missing' not found. Available agents: Explore",
+    )
   })
 })
 

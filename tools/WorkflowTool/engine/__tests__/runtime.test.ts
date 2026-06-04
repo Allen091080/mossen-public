@@ -131,6 +131,9 @@ describe('runtime.agent', () => {
     await agent('a')
     await agent('b')
     await expect(agent('c')).rejects.toThrow(WorkflowAgentCapError)
+    await expect(agent('d')).rejects.toThrow(
+      'Workflow agent() call cap reached (2). This usually means a loop using budget.remaining() never terminates because no token budget was set',
+    )
   })
 
   test('rejects an empty prompt', async () => {

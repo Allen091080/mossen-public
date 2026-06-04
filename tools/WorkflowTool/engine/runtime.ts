@@ -39,7 +39,9 @@ export const MAX_AGENTS_PER_RUN = 1000
 
 export class WorkflowAgentCapError extends Error {
   constructor(cap: number) {
-    super(`Workflow exceeded the ${cap}-agent lifetime cap (runaway loop?).`)
+    super(
+      `Workflow agent() call cap reached (${cap}). This usually means a loop using budget.remaining() never terminates because no token budget was set — remaining() returns Infinity when budget.total is null. Add a hard iteration cap to the loop, or pass a token budget.`,
+    )
     this.name = 'WorkflowAgentCapError'
   }
 }
