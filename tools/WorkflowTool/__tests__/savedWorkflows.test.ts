@@ -197,37 +197,28 @@ describe('savedWorkflows loader (S3)', () => {
     }
   })
 
-  test('bundled workflows are first-class workflow refs and commands', async () => {
+  test('bundled workflows expose the official deep-research command only', async () => {
     const bundled = loadBundledWorkflowRefs()
-    expect(bundled.map(wf => wf.commandName)).toContain('deep-research')
-    expect(bundled.map(wf => wf.commandName)).toContain('project-scan')
+    expect(bundled.map(wf => wf.commandName)).toEqual(['deep-research'])
     expect(bundled.every(wf => wf.scope === 'bundled')).toBe(true)
     expect(bundled.every(wf => typeof wf.source === 'string')).toBe(true)
 
     const workflows = getAllWorkflows(root)
     expect(workflows.map(wf => wf.commandName)).toContain('deep-research')
-    expect(workflows.map(wf => wf.commandName)).toContain('project-scan')
     expect(resolveWorkflowFromSources(root, 'deep-research')?.source).toContain(
       "name: 'deep-research'",
     )
-    expect(resolveWorkflowFromSources(root, 'project-scan')?.source).toContain(
-      "name: 'project-scan'",
-    )
+    expect(resolveWorkflowFromSources(root, 'project-scan')).toBeNull()
 
     const deepResearchCommand = loadWorkflowCommandsFromSources(root).find(
       c => c.name === 'deep-research',
     )
     expect(deepResearchCommand?.type).toBe('prompt')
-
-    const command = loadWorkflowCommandsFromSources(root).find(
-      c => c.name === 'project-scan',
-    )
-    expect(command?.type).toBe('prompt')
-    const getPrompt = (command as unknown as {
+    const getPrompt = (deepResearchCommand as unknown as {
       getPromptForCommand: (a: string) => Promise<Array<{ type: string; text: string }>>
     }).getPromptForCommand
-    const text = (await getPrompt('focus=tests')).map(b => b.text).join('')
-    expect(text).toContain('bundled script named "project-scan"')
-    expect(text).toContain('focus=tests')
+    const text = (await getPrompt('Node.js permissions')).map(b => b.text).join('')
+    expect(text).toContain('bundled script named "deep-research"')
+    expect(text).toContain('Node.js permissions')
   })
 })
