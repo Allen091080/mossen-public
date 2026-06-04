@@ -24,7 +24,7 @@ import {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { WORKFLOW_TOOL_NAME } from './constants.js'
 import { WORKFLOW_TOOL_PROMPT } from './prompt.js'
-import { extractMeta } from './engine/meta.js'
+import { extractMeta, MAX_WORKFLOW_SCRIPT_BYTES } from './engine/meta.js'
 import { createLimiter, defaultConcurrency } from './engine/concurrency.js'
 import { createBudget } from './engine/budget.js'
 import { createJournal } from './engine/journal.js'
@@ -53,6 +53,7 @@ import {
   normalizeWorkflowPermissionRuleContent,
 } from './permissionRules.js'
 import { readWorkflowScriptFile } from './scriptFile.js'
+import { isWorkflowRuntimeEnabled } from '../../utils/workflowAvailability.js'
 
 /** Default wall-clock ceiling for a whole workflow run (30 minutes). */
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
@@ -64,51 +65,58 @@ const WORKFLOW_NONDETERMINISTIC_API_PATTERN =
 const WORKFLOW_DETERMINISM_ERROR =
   'Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable (breaks resume). Stamp results after the workflow returns, or pass timestamps via args.'
 
-const inputSchema = z.object({
-  script: z
-    .string()
-    .optional()
-    .describe(
-      'Self-contained workflow script. Must begin with `export const meta = {...}`. Provide this, scriptPath, or name.',
-    ),
-  name: z
-    .string()
-    .optional()
-    .describe(
-      'Name of a saved, plugin-provided, or bundled workflow to run. Alternative to script or scriptPath.',
-    ),
-  description: z
-    .string()
-    .optional()
-    .describe(
-      "Ignored. Set the workflow description in the script's meta block.",
-    ),
-  title: z
-    .string()
-    .optional()
-    .describe("Ignored. Set the workflow title in the script's meta block."),
-  scriptPath: z
-    .string()
-    .optional()
-    .describe(
-      'Path to a workflow script file on disk. Every Workflow invocation persists its script under the session directory and returns the path in the tool result. To iterate, edit that file and re-invoke Workflow with the same scriptPath instead of re-sending the full script. Takes precedence over `script` and `name`.',
-    ),
-  args: z
-    .any()
-    .optional()
-    .describe('Value exposed to the script as the global `args`, verbatim.'),
-  timeoutMs: z
-    .number()
-    .optional()
-    .describe('Optional wall-clock ceiling for the whole run in milliseconds.'),
-  resumeFromRunId: z
-    .string()
-    .regex(RESUME_RUN_ID_PATTERN)
-    .optional()
-    .describe(
-      'Resume a prior run: the longest unchanged prefix of agent() calls returns cached results instantly; the first changed/new call and everything after runs live. Same script + args ⇒ full cache hit.',
-    ),
-})
+const inputSchema = z
+  .strictObject({
+    script: z
+      .string()
+      .max(MAX_WORKFLOW_SCRIPT_BYTES)
+      .optional()
+      .describe(
+        'Self-contained workflow script. Must begin with `export const meta = {...}`. Provide this, scriptPath, or name.',
+      ),
+    name: z
+      .string()
+      .optional()
+      .describe(
+        'Name of a saved, plugin-provided, or bundled workflow to run. Alternative to script or scriptPath.',
+      ),
+    description: z
+      .string()
+      .optional()
+      .describe(
+        "Ignored. Set the workflow description in the script's meta block.",
+      ),
+    title: z
+      .string()
+      .optional()
+      .describe("Ignored. Set the workflow title in the script's meta block."),
+    scriptPath: z
+      .string()
+      .optional()
+      .describe(
+        'Path to a workflow script file on disk. Every Workflow invocation persists its script under the session directory and returns the path in the tool result. To iterate, edit that file and re-invoke Workflow with the same scriptPath instead of re-sending the full script. Takes precedence over `script` and `name`.',
+      ),
+    args: z
+      .any()
+      .optional()
+      .describe(
+        'Optional input value exposed to the script as the global `args`, verbatim. Pass arrays/objects as actual JSON values, not JSON-encoded strings.',
+      ),
+    timeoutMs: z
+      .number()
+      .optional()
+      .describe('Optional wall-clock ceiling for the whole run in milliseconds.'),
+    resumeFromRunId: z
+      .string()
+      .regex(RESUME_RUN_ID_PATTERN)
+      .optional()
+      .describe(
+        'Resume a prior run: the longest unchanged prefix of agent() calls returns cached results instantly; the first changed/new call and everything after runs live. Same script + args ⇒ full cache hit.',
+      ),
+  })
+  .refine(input => Boolean(input.script || input.name || input.scriptPath), {
+    message: 'Must provide script, name, or scriptPath',
+  })
 
 type WorkflowInput = z.infer<typeof inputSchema>
 
@@ -235,6 +243,10 @@ function checkWorkflowScriptDeterminism(scriptBody: string): string | null {
     : null
 }
 
+function messageFromError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
 function findRunningWorkflowResumeTask(
   tasks: Record<string, unknown> | null | undefined,
   resumeRunId: string | null,
@@ -340,11 +352,15 @@ export function appendWorkflowResultLogLine(
 
 export const WorkflowTool = buildTool({
   name: WORKFLOW_TOOL_NAME,
-  searchHint: 'orchestrate multiple subagents with a deterministic script',
-  maxResultSizeChars: 200_000,
+  aliases: ['RunWorkflow'],
+  searchHint: 'orchestrate subagents with deterministic JavaScript workflow',
+  maxResultSizeChars: 100_000,
   inputSchema,
   get outputSchema(): OutputSchema {
     return outputSchema()
+  },
+  isEnabled() {
+    return isWorkflowRuntimeEnabled()
   },
   async description() {
     return 'Run a workflow script that orchestrates multiple subagents deterministically.'
@@ -358,6 +374,69 @@ export const WorkflowTool = buildTool({
   },
   isConcurrencySafe() {
     return false
+  },
+  toAutoClassifierInput(input) {
+    return input.script ?? input.name ?? ''
+  },
+  async validateInput(input, context) {
+    if (!isWorkflowRuntimeEnabled()) {
+      return {
+        result: false,
+        message:
+          'Dynamic workflows are not enabled for this session (runtime setting, launch gate, or environment override).',
+        errorCode: 6,
+      }
+    }
+
+    const resumeRunId = normalizeResumeRunId(input.resumeFromRunId)
+    let source: string
+    try {
+      source = await readSource(input)
+    } catch (err) {
+      return {
+        result: false,
+        message: messageFromError(err),
+        errorCode: 1,
+      }
+    }
+
+    let scriptBody: string
+    try {
+      const parsed = extractMeta(source)
+      scriptBody = parsed.scriptBody
+    } catch (err) {
+      return {
+        result: false,
+        message: `Invalid workflow script: ${messageFromError(err)}`,
+        errorCode: 2,
+      }
+    }
+
+    const determinismError = checkWorkflowScriptDeterminism(scriptBody)
+    if (determinismError) {
+      return {
+        result: false,
+        message: determinismError,
+        errorCode: 4,
+      }
+    }
+
+    const runningResumeTask = findRunningWorkflowResumeTask(
+      context.getAppState().tasks,
+      resumeRunId,
+    )
+    if (runningResumeTask && resumeRunId) {
+      return {
+        result: false,
+        message: workflowResumeRunningMessage(
+          resumeRunId,
+          runningResumeTask.taskId,
+        ),
+        errorCode: 3,
+      }
+    }
+
+    return { result: true }
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
     const workflowName = normalizeWorkflowPermissionRuleContent(input.name)

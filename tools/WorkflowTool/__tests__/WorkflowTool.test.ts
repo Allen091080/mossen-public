@@ -45,12 +45,118 @@ function toolUseContextWithWorkflowRules({
   } as unknown as ToolUseContext
 }
 
+function workflowValidationContext(
+  tasks: Record<string, unknown> = {},
+): ToolUseContext {
+  return {
+    abortController: new AbortController(),
+    getAppState: () => ({
+      tasks,
+      toolPermissionContext: getEmptyToolPermissionContext(),
+    }),
+    setAppState: () => {},
+  } as unknown as ToolUseContext
+}
+
 // Regression for the Ink crash seen in real use: renderToolResultMessage used
 // to return a bare string, which crashes the entire render tree with
 // `Text string "..." must be rendered within a <Text> component` and exits the
 // app. It must return a React element (with strings wrapped in <Text>), never a
 // bare string. ink-testing-library is not a dependency here, so we assert on the
 // returned node shape directly — string vs element is exactly the bug.
+describe('WorkflowTool official tool contract', () => {
+  it('exposes the official alias, result ceiling, and classifier input', () => {
+    expect(WorkflowTool.aliases).toContain('RunWorkflow')
+    expect(WorkflowTool.maxResultSizeChars).toBe(100_000)
+    expect(
+      WorkflowTool.toAutoClassifierInput({
+        script: 'export const meta = {}',
+      } as never),
+    ).toBe('export const meta = {}')
+    expect(WorkflowTool.toAutoClassifierInput({ name: 'deep-research' })).toBe(
+      'deep-research',
+    )
+    expect(
+      WorkflowTool.toAutoClassifierInput({ scriptPath: '/tmp/workflow.js' }),
+    ).toBe('')
+  })
+
+  it('uses a strict object input schema and requires a workflow source', () => {
+    expect(
+      WorkflowTool.inputSchema.safeParse({
+        script: `
+export const meta = { name: 'strict-flow', description: 'strict flow' }
+return 'ok'
+`,
+        unexpected: true,
+      }).success,
+    ).toBe(false)
+    expect(WorkflowTool.inputSchema.safeParse({ args: { ticket: 42 } }).success).toBe(
+      false,
+    )
+  })
+
+  it('validates workflow source and deterministic APIs before permissions', async () => {
+    const invalid = await WorkflowTool.validateInput!(
+      {
+        script: `
+return 'ok'
+`,
+      },
+      workflowValidationContext(),
+    )
+    expect(invalid.result).toBe(false)
+    if (invalid.result === false) {
+      expect(invalid.errorCode).toBe(2)
+      expect(invalid.message).toContain('Invalid workflow script:')
+    }
+
+    const nondeterministic = await WorkflowTool.validateInput!(
+      {
+        script: `
+export const meta = { name: 'clock-flow', description: 'clock flow' }
+return Date.now()
+`,
+      },
+      workflowValidationContext(),
+    )
+    expect(nondeterministic).toEqual({
+      result: false,
+      message:
+        'Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable (breaks resume). Stamp results after the workflow returns, or pass timestamps via args.',
+      errorCode: 4,
+    })
+  })
+
+  it('validates the official active-run resume guard before permissions', async () => {
+    const result = await WorkflowTool.validateInput!(
+      {
+        script: `
+export const meta = { name: 'running-resume', description: 'running resume' }
+return 'ok'
+`,
+        resumeFromRunId: 'wf_resume1',
+      },
+      workflowValidationContext({
+        task_slot: {
+          id: 'wf_live_task',
+          type: 'local_workflow',
+          status: 'running',
+          runId: 'wf_resume1',
+          workflowRunId: 'wf_resume1',
+        },
+      }),
+    )
+
+    expect(result).toEqual({
+      result: false,
+      message:
+        'Workflow wf_resume1 is still running (task wf_live_task). Stop it first with TaskStop({task_id: "wf_live_task"}) before resuming.',
+      errorCode: 3,
+    })
+  })
+})
+
 describe('WorkflowTool renderToolResultMessage (Ink crash regression)', () => {
   it('returns a React element for an async launched run, not a bare string', () => {
     const out = {
