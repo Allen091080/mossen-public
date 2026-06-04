@@ -1436,6 +1436,12 @@ export const MOSSEN_EVENT_TO_LEGACY_WIRE_ALIAS: Readonly<Record<string, string>>
     LEGACY_EVENT_PREFIX + 'agent_stop_hook_success',
   'mossen.permission.exitPlanModeOutsidePlan':
     LEGACY_EVENT_PREFIX + 'exit_plan_mode_called_outside_plan',
+  'mossen.workflow.launched':
+    LEGACY_EVENT_PREFIX + 'workflow_launched',
+  'mossen.workflow.completed':
+    LEGACY_EVENT_PREFIX + 'workflow_completed',
+  'mossen.workflow.phaseCompleted':
+    LEGACY_EVENT_PREFIX + 'workflow_phase_completed',
 })
 
 /** Resolve a Mossen-native event name to the wire name the sink will

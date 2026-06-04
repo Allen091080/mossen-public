@@ -20,6 +20,15 @@ export type WorkflowPhaseCompletionMetric = {
   phaseSkipCount: number
 }
 
+export type WorkflowTelemetrySource =
+  | 'built-in'
+  | 'project'
+  | 'user'
+  | 'plugin'
+  | 'scriptPath'
+  | 'inline'
+  | string
+
 function asRecord(value: unknown): WorkflowProgressRecord | null {
   return value !== null && typeof value === 'object'
     ? (value as WorkflowProgressRecord)
@@ -127,6 +136,59 @@ function safeAnalyticsString(
   value: string,
 ): AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS {
   return value as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+}
+
+export function workflowSourceForTelemetry(
+  source: string | null | undefined,
+): WorkflowTelemetrySource {
+  if (source === 'bundled') return 'built-in'
+  return source?.trim() || 'inline'
+}
+
+export function logWorkflowLaunchMetric(params: {
+  invocationMode: string
+  workflowSource: string
+  workflowName: string
+  workflowDescription: string
+  phaseCount: number
+  hasArgs: boolean
+  isResume: boolean
+  scriptSizeChars: number
+}): void {
+  logMossenEvent('mossen.workflow.launched', {
+    invocation_mode: safeAnalyticsString(params.invocationMode),
+    workflow_source: safeAnalyticsString(params.workflowSource),
+    workflow_name: safeAnalyticsString(params.workflowName),
+    workflow_description: safeAnalyticsString(params.workflowDescription),
+    phase_count: params.phaseCount,
+    has_args: params.hasArgs,
+    is_resume: params.isResume,
+    script_size_chars: params.scriptSizeChars,
+  })
+}
+
+export function logWorkflowCompletionMetric(params: {
+  workflowRunId: string
+  workflowSource: string
+  workflowName: string
+  workflowDescription: string
+  status: 'completed' | 'failed' | 'killed' | string
+  agentCount: number
+  totalTokens: number
+  totalToolCalls: number
+  durationMs: number
+}): void {
+  logMossenEvent('mossen.workflow.completed', {
+    workflow_run_id: safeAnalyticsString(params.workflowRunId),
+    workflow_source: safeAnalyticsString(params.workflowSource),
+    workflow_name: safeAnalyticsString(params.workflowName),
+    workflow_description: safeAnalyticsString(params.workflowDescription),
+    status: safeAnalyticsString(params.status),
+    agent_count: params.agentCount,
+    total_tokens: params.totalTokens,
+    total_tool_calls: params.totalToolCalls,
+    duration_ms: params.durationMs,
+  })
 }
 
 export function logWorkflowPhaseCompletionMetrics(params: {

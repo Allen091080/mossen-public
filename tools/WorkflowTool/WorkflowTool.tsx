@@ -50,7 +50,12 @@ import {
   resolveWorkflowFromAllSources,
   type SavedWorkflowRef,
 } from './savedWorkflows.js'
-import { logWorkflowPhaseCompletionMetrics } from './phaseTelemetry.js'
+import {
+  logWorkflowCompletionMetric,
+  logWorkflowLaunchMetric,
+  logWorkflowPhaseCompletionMetrics,
+  workflowSourceForTelemetry,
+} from './phaseTelemetry.js'
 import type { WorkflowRuntime } from './engine/runtime.js'
 import { getProjectDir } from '../../utils/sessionStorage.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -361,6 +366,14 @@ function checkWorkflowScriptDeterminism(scriptBody: string): string | null {
   return WORKFLOW_NONDETERMINISTIC_API_PATTERN.test(scriptBody)
     ? WORKFLOW_DETERMINISM_ERROR
     : null
+}
+
+function workflowInvocationMode(input: WorkflowInput): 'scriptPath' | 'named' | 'inline' {
+  if (typeof input.scriptPath === 'string' && input.scriptPath.trim()) {
+    return 'scriptPath'
+  }
+  if (typeof input.name === 'string' && input.name.trim()) return 'named'
+  return 'inline'
 }
 
 function messageFromError(err: unknown): string {
@@ -723,6 +736,7 @@ export const WorkflowTool = buildTool({
         } satisfies WorkflowOutput,
       }
     }
+    const workflowSource = workflowSourceForTelemetry(workflowSourceScope)
 
     if (shouldLaunchRemoteWorkflow(input, toolUseContext, resumeRunId)) {
       const remoteTaskId = generateTaskId('remote_agent')
@@ -797,6 +811,16 @@ export const WorkflowTool = buildTool({
       transcriptDir,
       createdAt: new Date().toISOString(),
       status: 'running',
+    })
+    logWorkflowLaunchMetric({
+      invocationMode: workflowInvocationMode(input),
+      workflowSource,
+      workflowName: meta.name,
+      workflowDescription: meta.description,
+      phaseCount: meta.phases?.length ?? 0,
+      hasArgs: input.args !== undefined,
+      isResume: Boolean(resumeRunId),
+      scriptSizeChars: source.length,
     })
 
     // Official workflows are async launches: use an UNLINKED abort controller
@@ -957,6 +981,21 @@ export const WorkflowTool = buildTool({
       runtimes.reduce((total, current) => total + current.toolCallCount(), 0)
     const failures = () => runtimes.flatMap(current => current.failures())
     const durationMs = () => Date.now() - startedAtMs
+    const emitCompletionMetric = (
+      status: 'completed' | 'failed' | 'killed',
+    ) => {
+      logWorkflowCompletionMetric({
+        workflowRunId: runId,
+        workflowSource,
+        workflowName: meta.name,
+        workflowDescription: meta.description,
+        status,
+        agentCount: agentCount(),
+        totalTokens: budget.spent(),
+        totalToolCalls: totalToolCalls(),
+        durationMs: durationMs(),
+      })
+    }
 
     const execute = () =>
       runSandbox({
@@ -971,6 +1010,7 @@ export const WorkflowTool = buildTool({
     void execute()
       .then(() => {
         saveRunLog(runId, log)
+        emitCompletionMetric('completed')
         emitBundledPhaseCompletionMetrics()
         finalizeRunMeta(runId, {
           status: 'completed',
@@ -1021,6 +1061,7 @@ export const WorkflowTool = buildTool({
           failures: failures(),
           durationMs: durationMs(),
         }
+        emitCompletionMetric(killed ? 'killed' : 'failed')
         emitBundledPhaseCompletionMetrics()
         if (killed) finishWorkflowTask(taskId, 'killed', setTaskState, patch)
         else
