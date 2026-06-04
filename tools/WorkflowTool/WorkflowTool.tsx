@@ -1,6 +1,6 @@
 import { Box, Text } from '../../ink.js'
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { z } from 'zod/v4'
 import { buildTool } from 'src/Tool.js'
 import { generateTaskId, type SetAppState } from '../../Task.js'
@@ -165,6 +165,11 @@ type ResolvedWorkflowSource = {
   label: string
 }
 
+type WorkflowSourceResolution = {
+  source: string
+  resolvedScriptPath?: string
+}
+
 type RunningWorkflowTask = {
   id?: string
   type?: string
@@ -216,15 +221,25 @@ async function resolveNamedWorkflowSource(
   return sourceFromWorkflowRef(saved, workflowName)
 }
 
-async function readSource(input: WorkflowInput): Promise<string> {
+async function resolveSource(
+  input: WorkflowInput,
+): Promise<WorkflowSourceResolution> {
   if (typeof input.scriptPath === 'string' && input.scriptPath.trim()) {
-    return readWorkflowScriptFile(input.scriptPath)
-  }
-  if (typeof input.script === 'string' && input.script.trim()) {
-    return input.script
+    const scriptPath = input.scriptPath.trim()
+    if (typeof input.script === 'string' && input.script) {
+      return {
+        source: input.script,
+        resolvedScriptPath: resolve(scriptPath),
+      }
+    }
+    return { source: readWorkflowScriptFile(scriptPath) }
   }
   if (typeof input.name === 'string' && input.name.trim()) {
-    return (await resolveNamedWorkflowSource(input.name)).source
+    const named = await resolveNamedWorkflowSource(input.name)
+    return { source: input.script ?? named.source }
+  }
+  if (typeof input.script === 'string' && input.script.trim()) {
+    return { source: input.script }
   }
   throw new Error('Must provide script, name, or scriptPath')
 }
@@ -419,7 +434,7 @@ export const WorkflowTool = buildTool({
     const resumeRunId = normalizeResumeRunId(input.resumeFromRunId)
     let source: string
     try {
-      source = await readSource(input)
+      source = (await resolveSource(input)).source
     } catch (err) {
       return {
         result: false,
@@ -571,7 +586,7 @@ export const WorkflowTool = buildTool({
       ? resumeRunId
       : `wf_${randomUUID().replace(/-/g, '').slice(0, 10)}`
     const taskId = generateTaskId('local_workflow')
-    const source = await readSource(input)
+    const { source, resolvedScriptPath } = await resolveSource(input)
 
     // Validate + surface meta early so a malformed script fails fast — for the
     // background path too, so the caller learns of a bad script synchronously.
@@ -602,7 +617,7 @@ export const WorkflowTool = buildTool({
     }
 
     const prior = resumeRunId ? loadJournal(runId) : null
-    const persistedScriptPath = runScriptPath(runId)
+    const persistedScriptPath = resolvedScriptPath ?? runScriptPath(runId)
     const transcriptDir = workflowTranscriptDir(runId)
     removeInactiveWorkflowResumeTasks(
       typeof toolUseContext.getAppState === 'function'

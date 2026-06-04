@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { isValidElement } from 'react'
 import { getProjectRoot, setProjectRoot } from '../../../bootstrap/state.js'
 import {
@@ -367,8 +367,8 @@ return 'ok'
 })
 
 describe('WorkflowTool scriptPath guards', () => {
-  it('uses scriptPath contents before inline script when both are provided', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'wf-scriptpath-priority-'))
+  it('uses inline script when scriptPath and script are both provided, returning the resolved scriptPath', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wf-scriptpath-inline-'))
     const scriptPath = join(dir, 'file.js')
     try {
       writeFileSync(
@@ -383,7 +383,7 @@ import fs from 'fs'
         {
           scriptPath,
           script: `
-export const meta = { name: 'inline-flow', description: 'Inline workflow loses' }
+export const meta = { name: 'inline-flow', description: 'Inline workflow wins' }
 return 'ok'
 `,
         },
@@ -394,9 +394,30 @@ return 'ok'
         async () => ({ behavior: 'allow' }) as never,
       )
 
-      expect(result.data.summary).toBe('File workflow wins')
-      expect(result.data.error).toContain('Workflow scripts cannot use import')
-      expect(result.data.scriptPath).toBeUndefined()
+      expect(result.data.summary).toBe('Inline workflow wins')
+      expect(result.data.error).toBeUndefined()
+      expect(result.data.scriptPath).toBe(resolve(scriptPath))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('validates inline script without reading a missing scriptPath when both are provided', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wf-scriptpath-inline-missing-'))
+    const scriptPath = join(dir, 'missing.js')
+    try {
+      const result = await WorkflowTool.validateInput!(
+        {
+          scriptPath,
+          script: `
+export const meta = { name: 'inline-missing', description: 'Inline missing path' }
+return 'ok'
+`,
+        },
+        workflowValidationContext(),
+      )
+
+      expect(result).toEqual({ result: true })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
