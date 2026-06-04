@@ -2,8 +2,9 @@ import { Box, Text } from '../../ink.js'
 import { randomUUID } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { z } from 'zod/v4'
-import { buildTool } from 'src/Tool.js'
+import { buildTool, type ToolUseContext } from 'src/Tool.js'
 import { generateTaskId, type SetAppState } from '../../Task.js'
+import { getRemoteSessionUrl } from '../../constants/product.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { getRuleByContentsForToolName } from '../../utils/permissions/permissions.js'
 import {
@@ -55,6 +56,11 @@ import {
 } from './permissionRules.js'
 import { readWorkflowScriptFile } from './scriptFile.js'
 import { isWorkflowRuntimeEnabled } from '../../utils/workflowAvailability.js'
+import {
+  registerRemoteAgentTask,
+  startRemoteAgentTaskPolling,
+  type RemoteAgentTaskPollingDeps,
+} from '../../tasks/RemoteAgentTask/RemoteAgentTask.js'
 
 /** Default wall-clock ceiling for a whole workflow run (30 minutes). */
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
@@ -170,6 +176,30 @@ type WorkflowSourceResolution = {
   resolvedScriptPath?: string
 }
 
+type RemoteWorkflowLaunchResult = {
+  id: string
+  title?: string
+} | null
+
+type RemoteWorkflowLaunchOptions = {
+  initialMessage: string
+  description: string
+  title: string
+  model?: string
+  signal: AbortSignal
+}
+
+type WorkflowRemoteDeps = {
+  launch: (
+    options: RemoteWorkflowLaunchOptions,
+  ) => Promise<RemoteWorkflowLaunchResult>
+  getSessionUrl: (sessionId: string) => string
+  startPolling: (
+    params: { taskId: string; sessionId: string; setAppState: SetAppState },
+    deps?: RemoteAgentTaskPollingDeps,
+  ) => () => void
+}
+
 type RunningWorkflowTask = {
   id?: string
   type?: string
@@ -197,6 +227,72 @@ function sourceFromWorkflowRef(
           })()),
     label: ref.name,
   }
+}
+
+async function defaultRemoteWorkflowLaunch(
+  options: RemoteWorkflowLaunchOptions,
+): Promise<RemoteWorkflowLaunchResult> {
+  const { teleportToRemote } = await import('../../utils/teleport.js')
+  return teleportToRemote({
+    initialMessage: options.initialMessage,
+    description: options.description,
+    title: options.title,
+    ...(options.model ? { model: options.model } : {}),
+    permissionMode: 'acceptEdits',
+    signal: options.signal,
+  })
+}
+
+let workflowRemoteDeps: WorkflowRemoteDeps = {
+  launch: defaultRemoteWorkflowLaunch,
+  getSessionUrl: getRemoteSessionUrl,
+  startPolling: startRemoteAgentTaskPolling,
+}
+
+export function setWorkflowRemoteDepsForTest(
+  overrides: Partial<WorkflowRemoteDeps>,
+): () => void {
+  const previous = workflowRemoteDeps
+  workflowRemoteDeps = { ...workflowRemoteDeps, ...overrides }
+  return () => {
+    workflowRemoteDeps = previous
+  }
+}
+
+function shouldLaunchRemoteWorkflow(
+  input: WorkflowInput,
+  toolUseContext: ToolUseContext,
+  resumeRunId: string | null,
+): boolean {
+  if (resumeRunId) return false
+  if (input.resumeFromRunId) return false
+  const permissionContext =
+    typeof toolUseContext.getAppState === 'function'
+      ? toolUseContext.getAppState().toolPermissionContext
+      : undefined
+  return permissionContext?.shouldAvoidPermissionPrompts === true
+}
+
+function buildRemoteWorkflowInitialMessage(
+  source: string,
+  input: WorkflowInput,
+  meta: WorkflowMeta,
+): string {
+  const callInput: Record<string, unknown> = {
+    script: source,
+  }
+  if (input.args !== undefined) callInput.args = input.args
+  if (input.timeoutMs !== undefined) callInput.timeoutMs = input.timeoutMs
+
+  return [
+    `Run the dynamic workflow "${meta.name}" in this remote session.`,
+    '',
+    'Call Workflow with this exact input, monitor it until it completes, then summarize the final outcome for the user.',
+    '',
+    '```json',
+    JSON.stringify(callInput, null, 2),
+    '```',
+  ].join('\n')
 }
 
 async function resolveNamedWorkflowSource(
@@ -612,6 +708,55 @@ export const WorkflowTool = buildTool({
           runId,
           summary: meta.description,
           error: syntaxCheck.error,
+        } satisfies WorkflowOutput,
+      }
+    }
+
+    if (shouldLaunchRemoteWorkflow(input, toolUseContext, resumeRunId)) {
+      const remoteTaskId = generateTaskId('remote_agent')
+      const initialMessage = buildRemoteWorkflowInitialMessage(
+        source,
+        input,
+        meta,
+      )
+      const launched = await workflowRemoteDeps.launch({
+        initialMessage,
+        description: `Remote dynamic workflow: ${meta.name}`,
+        title: `workflow: ${meta.name}`,
+        ...(meta.model ? { model: meta.model } : {}),
+        signal: toolUseContext.abortController?.signal ?? new AbortController().signal,
+      })
+      if (!launched?.id) {
+        throw new Error('Failed to create remote workflow session.')
+      }
+      const sessionUrl = workflowRemoteDeps.getSessionUrl(launched.id)
+      registerRemoteAgentTask({
+        taskId: remoteTaskId,
+        sessionId: launched.id,
+        title: launched.title ?? `workflow: ${meta.name}`,
+        description: meta.description,
+        remoteTaskType: 'remote-workflow',
+        command: initialMessage,
+        sessionUrl,
+        toolUseId: toolUseContext.toolUseId,
+        setAppState: setTaskState,
+        remoteTaskMetadata: {
+          workflowName: meta.name,
+          description: meta.description,
+          phaseTitles: meta.phases?.map(phase => phase.title) ?? [],
+        },
+      })
+      workflowRemoteDeps.startPolling({
+        taskId: remoteTaskId,
+        sessionId: launched.id,
+        setAppState: setTaskState,
+      })
+      return {
+        data: {
+          status: 'remote_launched',
+          taskId: remoteTaskId,
+          summary: meta.description,
+          sessionUrl,
         } satisfies WorkflowOutput,
       }
     }

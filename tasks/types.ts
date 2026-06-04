@@ -12,6 +12,19 @@ import type { TaskStateBase } from '../Task.js'
 export type RemoteAgentTaskState = TaskStateBase & {
   type: 'remote_agent'
   title: string
+  sessionId?: string
+  sessionUrl?: string
+  remoteTaskType?:
+    | 'remote-agent'
+    | 'remote-workflow'
+    | 'ultraplan'
+    | 'ultrareview'
+    | 'autofix-pr'
+    | string
+  command?: string
+  log?: unknown[]
+  pollStartedAt?: number
+  remoteTaskMetadata?: unknown
   isBackgrounded?: boolean
 }
 

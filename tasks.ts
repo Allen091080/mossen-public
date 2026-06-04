@@ -3,6 +3,7 @@ import type { Task, TaskType } from './Task.js'
 import { DreamTask } from './tasks/DreamTask/DreamTask.js'
 import { LocalAgentTask } from './tasks/LocalAgentTask/LocalAgentTask.js'
 import { LocalShellTask } from './tasks/LocalShellTask/LocalShellTask.js'
+import { RemoteAgentTask } from './tasks/RemoteAgentTask/RemoteAgentTask.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const LocalWorkflowTask: Task | null = feature('WORKFLOW_SCRIPTS')
@@ -22,6 +23,7 @@ export function getAllTasks(): Task[] {
   const tasks: Task[] = [
     LocalShellTask,
     LocalAgentTask,
+    RemoteAgentTask,
     DreamTask,
   ]
   if (LocalWorkflowTask) tasks.push(LocalWorkflowTask)
