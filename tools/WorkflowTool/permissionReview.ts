@@ -33,6 +33,7 @@ export type WorkflowPermissionReview = {
   meta: WorkflowMeta | null
   metaError: string | null
   argsPreview: string | null
+  scriptSource: string | null
   scriptPreview: string | null
   staticSummary: WorkflowStaticSummary | null
   usageConsentHash: string | null
@@ -169,6 +170,7 @@ export function buildWorkflowPermissionReview(
     meta,
     metaError,
     argsPreview: previewUnknown(input.args),
+    scriptSource: resolved.source,
     scriptPreview: resolved.source ? scriptPreview(resolved.source) : null,
     staticSummary: staticSummarySource
       ? analyzeWorkflowStaticSummary(staticSummarySource)

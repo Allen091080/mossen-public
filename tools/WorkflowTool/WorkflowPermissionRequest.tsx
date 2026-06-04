@@ -1,6 +1,10 @@
-import React, { useMemo } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Box, Text } from '../../ink.js'
+import type { KeyboardEvent } from '../../ink/events/keyboard-event.js'
 import { sanitizeToolNameForAnalytics } from '../../services/analytics/metadata.js'
+import { getExternalEditor } from '../../utils/editor.js'
+import { toIDEDisplayName } from '../../utils/ide.js'
+import { editPromptInEditor } from '../../utils/promptEditor.js'
 import { updateSettingsForSource } from '../../utils/settings/settings.js'
 import { getLocalizedText } from '../../utils/uiLanguage.js'
 import { type UnaryEvent, usePermissionRequestLogging } from '../../components/permissions/hooks.js'
@@ -32,7 +36,15 @@ type WorkflowOptionValue =
   | 'yes-always'
   | 'yes-record-consent'
   | 'yes-skip-warning'
+  | 'toggle-script'
   | 'no'
+
+const MAX_RAW_SCRIPT_CHARS = 4000
+
+function truncateRawScript(source: string): string {
+  if (source.length <= MAX_RAW_SCRIPT_CHARS) return source
+  return `${source.slice(0, MAX_RAW_SCRIPT_CHARS - 18)}\n... [truncated]`
+}
 
 function DetailRow({
   label,
@@ -138,10 +150,16 @@ function StaticSummaryDetails({
 
 function ReviewDetails({
   review,
+  showRawScript,
 }: {
   review: WorkflowPermissionReview
+  showRawScript: boolean
 }): React.ReactNode {
   const phases = review.meta?.phases ?? []
+  const scriptBody =
+    showRawScript && review.scriptSource
+      ? truncateRawScript(review.scriptSource)
+      : review.scriptPreview
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1}>
       {review.meta ? (
@@ -192,10 +210,10 @@ function ReviewDetails({
           <Text color="warning">{review.metaError}</Text>
         </DetailRow>
       ) : null}
-      {review.scriptPreview ? (
+      {scriptBody ? (
         <DetailRow label="Script">
           <Text dimColor wrap="truncate-end">
-            {review.scriptPreview}
+            {scriptBody}
           </Text>
         </DetailRow>
       ) : null}
@@ -218,9 +236,29 @@ export function WorkflowPermissionRequest({
   onReject,
   workerBadge,
 }: PermissionRequestProps): React.ReactNode {
+  const [editedScript, setEditedScript] = useState<string | null>(null)
+  const [showRawScript, setShowRawScript] = useState(false)
+  const [editorStatus, setEditorStatus] = useState<string | null>(null)
+  useEffect(() => {
+    setEditedScript(null)
+    setShowRawScript(false)
+    setEditorStatus(null)
+  }, [toolUseConfirm.input])
+
+  const originalReview = useMemo(
+    () => buildWorkflowPermissionReview(toolUseConfirm.input),
+    [toolUseConfirm.input],
+  )
+  const effectiveInput = useMemo(
+    () =>
+      editedScript === null
+        ? toolUseConfirm.input
+        : { ...toolUseConfirm.input, script: editedScript },
+    [editedScript, toolUseConfirm.input],
+  )
   const review = useMemo(
     () => {
-      const base = buildWorkflowPermissionReview(toolUseConfirm.input)
+      const base = buildWorkflowPermissionReview(effectiveInput)
       return {
         ...base,
         showUsageWarning: workflowNeedsUsageConsentPrompt(
@@ -228,8 +266,11 @@ export function WorkflowPermissionRequest({
         ),
       }
     },
-    [toolUseConfirm.input],
+    [effectiveInput],
   )
+  const currentScript = editedScript ?? originalReview.scriptSource
+  const editor = getExternalEditor()
+  const editorName = editor ? toIDEDisplayName(editor) : null
   const unaryEvent: UnaryEvent = useMemo(
     () => ({
       completion_type: 'tool_use_single',
@@ -239,8 +280,8 @@ export function WorkflowPermissionRequest({
   )
   usePermissionRequestLogging(toolUseConfirm, unaryEvent)
   const namedWorkflowPermissionUpdates =
-    review.sourceKind === 'named' && !review.metaError
-      ? buildNamedWorkflowPermissionUpdates(review.sourceLabel)
+    originalReview.sourceKind === 'named' && !originalReview.metaError
+      ? buildNamedWorkflowPermissionUpdates(originalReview.sourceLabel)
       : []
 
   const options: PermissionPromptOption<WorkflowOptionValue>[] = [
@@ -253,8 +294,8 @@ export function WorkflowPermissionRequest({
   if (namedWorkflowPermissionUpdates.length > 0) {
     options.push({
       label: getLocalizedText({
-        en: `Yes, and don't ask again for ${review.sourceLabel} in this project`,
-        zh: `是，并且在此项目中不再询问 ${review.sourceLabel}`,
+        en: `Yes, and don't ask again for ${originalReview.sourceLabel} in this project`,
+        zh: `是，并且在此项目中不再询问 ${originalReview.sourceLabel}`,
       }),
       value: 'yes-always',
       feedbackConfig: { type: 'accept' },
@@ -280,6 +321,20 @@ export function WorkflowPermissionRequest({
       feedbackConfig: { type: 'accept' },
     })
   }
+  if (review.scriptSource) {
+    options.push({
+      label: showRawScript
+        ? getLocalizedText({
+            en: 'View workflow summary',
+            zh: '查看 workflow 摘要',
+          })
+        : getLocalizedText({
+            en: 'View raw script',
+            zh: '查看原始脚本',
+          }),
+      value: 'toggle-script',
+    })
+  }
   options.push({
     label: getLocalizedText({ en: 'No', zh: '否' }),
     value: 'no',
@@ -295,13 +350,13 @@ export function WorkflowPermissionRequest({
     switch (value) {
       case 'yes':
         logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept')
-        toolUseConfirm.onAllow(toolUseConfirm.input, [], feedback)
+        toolUseConfirm.onAllow(effectiveInput, [], feedback)
         onDone()
         break
       case 'yes-always':
         logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept')
         toolUseConfirm.onAllow(
-          toolUseConfirm.input,
+          effectiveInput,
           namedWorkflowPermissionUpdates,
           feedback,
         )
@@ -310,7 +365,7 @@ export function WorkflowPermissionRequest({
       case 'yes-record-consent':
         logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept')
         recordWorkflowUsageConsent(review.usageConsentHash)
-        toolUseConfirm.onAllow(toolUseConfirm.input, [], feedback)
+        toolUseConfirm.onAllow(effectiveInput, [], feedback)
         onDone()
         break
       case 'yes-skip-warning': {
@@ -318,10 +373,13 @@ export function WorkflowPermissionRequest({
         updateSettingsForSource('localSettings', {
           skipWorkflowUsageWarning: true,
         })
-        toolUseConfirm.onAllow(toolUseConfirm.input, [], feedback)
+        toolUseConfirm.onAllow(effectiveInput, [], feedback)
         onDone()
         break
       }
+      case 'toggle-script':
+        setShowRawScript(value => !value)
+        break
       case 'no':
         logUnaryPermissionEvent(
           'tool_use_single',
@@ -343,6 +401,37 @@ export function WorkflowPermissionRequest({
     onDone()
   }
 
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (!event.ctrl || event.key !== 'g') return
+    event.preventDefault()
+    if (!currentScript) return
+    if (!editorName) {
+      setEditorStatus(
+        getLocalizedText({
+          en: 'No external editor is configured. Set VISUAL or EDITOR to edit this workflow script.',
+          zh: '尚未配置外部编辑器。请设置 VISUAL 或 EDITOR 后再编辑 workflow 脚本。',
+        }),
+      )
+      return
+    }
+
+    const result = editPromptInEditor(currentScript)
+    if (result.error) {
+      setEditorStatus(result.error)
+      return
+    }
+    if (result.content !== null) {
+      setEditedScript(result.content)
+      setShowRawScript(false)
+      setEditorStatus(
+        getLocalizedText({
+          en: 'Script updated from editor.',
+          zh: '脚本已从编辑器更新。',
+        }),
+      )
+    }
+  }
+
   const title = getLocalizedText({
     en: 'Review dynamic workflow before running',
     zh: '运行前审核动态 workflow',
@@ -357,25 +446,45 @@ export function WorkflowPermissionRequest({
   )
 
   return (
-    <PermissionDialog
-      title={title}
-      subtitle={review.meta?.name ?? review.sourceLabel}
-      workerBadge={workerBadge}
-    >
-      <ReviewDetails review={review} />
-      <Box flexDirection="column">
-        <PermissionRuleExplanation
-          permissionResult={toolUseConfirm.permissionResult}
-          toolType="tool"
-        />
-        <PermissionPrompt
-          question={question}
-          options={options}
-          onSelect={handleSelect}
-          onCancel={handleCancel}
-          toolAnalyticsContext={toolAnalyticsContext}
-        />
-      </Box>
-    </PermissionDialog>
+    <Box flexDirection="column" tabIndex={0} autoFocus onKeyDown={handleKeyDown}>
+      <PermissionDialog
+        title={title}
+        subtitle={review.meta?.name ?? review.sourceLabel}
+        workerBadge={workerBadge}
+      >
+        <ReviewDetails review={review} showRawScript={showRawScript} />
+        <Box flexDirection="column">
+          <PermissionRuleExplanation
+            permissionResult={toolUseConfirm.permissionResult}
+            toolType="tool"
+          />
+          <PermissionPrompt
+            question={question}
+            options={options}
+            onSelect={handleSelect}
+            onCancel={handleCancel}
+            toolAnalyticsContext={toolAnalyticsContext}
+          />
+        </Box>
+      </PermissionDialog>
+      {currentScript && editorName ? (
+        <Box flexDirection="row" gap={1} paddingX={1} marginTop={1}>
+          <Text dimColor>ctrl+g to edit script in </Text>
+          <Text bold dimColor>
+            {editorName}
+          </Text>
+          {editorStatus ? (
+            <>
+              <Text dimColor>{' · '}</Text>
+              <Text color="success">{editorStatus}</Text>
+            </>
+          ) : null}
+        </Box>
+      ) : editorStatus ? (
+        <Box paddingX={1} marginTop={1}>
+          <Text color="warning">{editorStatus}</Text>
+        </Box>
+      ) : null}
+    </Box>
   )
 }

@@ -49,6 +49,7 @@ describe('buildWorkflowPermissionReview', () => {
     expect(review.argsPreview).toContain('"target": "HEAD"')
     expect(review.timeoutMs).toBe(5000)
     expect(review.metaError).toBeNull()
+    expect(review.scriptSource).toBe(WORKFLOW_SOURCE)
     expect(review.scriptPreview).toContain('export const meta')
     expect(review.staticSummary?.phases.map(phase => phase.kind)).toEqual([
       'parallel',
