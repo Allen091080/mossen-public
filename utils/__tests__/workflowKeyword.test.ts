@@ -26,17 +26,18 @@ describe('workflowKeyword', () => {
   })
 
   describe('hasWorkflowKeyword', () => {
-    test('matches standalone "workflow"', () => {
+    test('matches explicit natural-language workflow requests', () => {
       expect(hasWorkflowKeyword('please use a workflow here')).toBe(true)
     })
 
-    test('matches plural "workflows"', () => {
-      expect(hasWorkflowKeyword('compare these workflows')).toBe(true)
+    test('does not match incidental standalone workflow mentions', () => {
+      expect(hasWorkflowKeyword('compare these workflows')).toBe(false)
+      expect(hasWorkflowKeyword('workflow design notes')).toBe(false)
     })
 
     test('is case-insensitive', () => {
-      expect(hasWorkflowKeyword('WORKFLOW now')).toBe(true)
-      expect(hasWorkflowKeyword('WorkFlows please')).toBe(true)
+      expect(hasWorkflowKeyword('RUN A WORKFLOW now')).toBe(true)
+      expect(hasWorkflowKeyword('Use WorkFlows please')).toBe(true)
     })
 
     test('does NOT match "workflowy" (no trailing boundary)', () => {
@@ -52,9 +53,9 @@ describe('workflowKeyword', () => {
       expect(hasWorkflowKeyword('just a normal message')).toBe(false)
     })
 
-    test('matches when adjacent to punctuation', () => {
+    test('matches explicit requests when adjacent to punctuation', () => {
       expect(hasWorkflowKeyword('run a workflow.')).toBe(true)
-      expect(hasWorkflowKeyword('(workflows)')).toBe(true)
+      expect(hasWorkflowKeyword('please use workflows.')).toBe(true)
     })
 
     test('detects all workflow trigger variants', () => {
@@ -87,44 +88,46 @@ describe('workflowKeyword', () => {
   })
 
   describe('findWorkflowTriggerPositions', () => {
-    test('returns correct position for a single match', () => {
-      const text = 'use a workflow now'
+    test('returns correct position for a single ultracode match', () => {
+      const text = 'use ultracode now'
       const positions = findWorkflowTriggerPositions(text)
       expect(positions).toHaveLength(1)
-      expect(positions[0]).toEqual({ word: 'workflow', start: 6, end: 14 })
-      expect(text.slice(positions[0]!.start, positions[0]!.end)).toBe('workflow')
+      expect(positions[0]).toEqual({ word: 'ultracode', start: 4, end: 13 })
+      expect(text.slice(positions[0]!.start, positions[0]!.end)).toBe('ultracode')
     })
 
-    test('finds plural and reports the matched word', () => {
-      const positions = findWorkflowTriggerPositions('two workflows please')
+    test('finds ultrawork and reports the matched word', () => {
+      const positions = findWorkflowTriggerPositions('try ultrawork please')
       expect(positions).toHaveLength(1)
-      expect(positions[0]!.word).toBe('workflows')
+      expect(positions[0]!.word).toBe('ultrawork')
       expect(positions[0]!.start).toBe(4)
       expect(positions[0]!.end).toBe(13)
     })
 
     test('finds multiple occurrences with correct offsets', () => {
-      const text = 'workflow then another workflow'
+      const text = 'ultracode then ultrawork'
       const positions = findWorkflowTriggerPositions(text)
       expect(positions).toHaveLength(2)
       expect(positions[0]!.start).toBe(0)
-      expect(positions[1]!.start).toBe(22)
+      expect(positions[1]!.start).toBe(15)
       for (const p of positions) {
         expect(text.slice(p.start, p.end)).toBe(p.word)
       }
     })
 
-    test('does not produce positions for non-boundary substrings', () => {
-      expect(findWorkflowTriggerPositions('workflowy reflow dataflow')).toHaveLength(0)
+    test('does not produce positions for workflow mentions or non-boundary substrings', () => {
+      expect(
+        findWorkflowTriggerPositions('workflow workflows workflowy ultracodebase'),
+      ).toHaveLength(0)
     })
 
     test('preserves original casing in word field', () => {
-      const positions = findWorkflowTriggerPositions('a WorkFlow here')
-      expect(positions[0]!.word).toBe('WorkFlow')
+      const positions = findWorkflowTriggerPositions('a UltraCode here')
+      expect(positions[0]!.word).toBe('UltraCode')
     })
 
     test('no lastIndex leak across repeated calls', () => {
-      const text = 'a workflow b'
+      const text = 'a ultracode b'
       const a = findWorkflowTriggerPositions(text)
       const b = findWorkflowTriggerPositions(text)
       expect(a).toEqual(b)
@@ -132,10 +135,10 @@ describe('workflowKeyword', () => {
     })
 
     test('stable when interleaved with hasWorkflowKeyword (shared-regex leak guard)', () => {
-      const text = 'one workflow two'
-      hasWorkflowKeyword(text)
+      const text = 'one ultracode two'
+      hasWorkflowKeyword('use a workflow')
       const first = findWorkflowTriggerPositions(text)
-      hasWorkflowKeyword(text)
+      hasWorkflowKeyword('run a workflow')
       const second = findWorkflowTriggerPositions(text)
       expect(first).toEqual(second)
       expect(first).toHaveLength(1)
@@ -154,8 +157,9 @@ describe('workflowKeyword', () => {
       expect(out).not.toContain('build a workflow')
     })
 
-    test('fires for the plural keyword too', () => {
-      expect(buildWorkflowReminder('run two workflows', true)).not.toBeNull()
+    test('does not fire for incidental workflow mentions', () => {
+      expect(buildWorkflowReminder('compare these workflows', true)).toBeNull()
+      expect(buildWorkflowReminder('workflow design notes', true)).toBeNull()
     })
 
     test('fires for explicit natural-language workflow requests', () => {

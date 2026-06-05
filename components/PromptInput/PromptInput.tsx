@@ -535,9 +535,9 @@ function PromptInput({
   const displayedValue = useMemo(() => isSearchingHistory && historyMatch ? getValueFromInput(typeof historyMatch === 'string' ? historyMatch : historyMatch.display) : input, [isSearchingHistory, historyMatch, input]);
   const thinkTriggers = useMemo(() => findThinkingTriggerPositions(displayedValue), [displayedValue]);
   const ultraplanTriggers = useMemo((): Array<{ start: number; end: number }> => [], []);
-  // Workflow keyword positions (rainbow highlight + opt-in to multi-agent
-  // orchestration). Gated on WORKFLOW_SCRIPTS so users without the Workflow
-  // tool never see a meaningless highlight.
+  // Workflow trigger keyword positions (rainbow highlight + opt-in to
+  // multi-agent orchestration). Gated on WORKFLOW_SCRIPTS so users without the
+  // Workflow tool never see a meaningless highlight.
   const rawWorkflowTriggers = useMemo(() => isWorkflowKeywordEnabled() ? findWorkflowTriggerPositions(displayedValue) : [], [displayedValue]);
   const inputWorkflowTriggers = useMemo(() => isWorkflowKeywordEnabled() ? findWorkflowTriggerPositions(input) : [], [input]);
   const workflowTriggers = useMemo(
@@ -735,7 +735,7 @@ function PromptInput({
       }
     }
 
-    // Same rainbow treatment for the workflow keyword (multi-agent opt-in)
+    // Same rainbow treatment for workflow trigger keywords (multi-agent opt-in)
     if (isWorkflowKeywordEnabled()) {
       for (const trigger of workflowTriggers) {
         for (let i = trigger.start; i < trigger.end; i++) {

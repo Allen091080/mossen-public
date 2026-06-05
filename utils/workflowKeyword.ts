@@ -1,12 +1,14 @@
 /**
  * Workflow keyword detection for the prompt input.
  *
- * Standalone trigger words and explicit natural-language requests let the user
- * opt into multi-agent orchestration, mirroring the thinking keyword UX:
- *  - `workflow` / `workflows` — opt in for THIS message.
+ * Explicit natural-language requests and strong trigger words let the user opt
+ * into multi-agent orchestration, mirroring the thinking keyword UX:
  *  - `ultrawork` — strongest single-turn orchestration for THIS message.
  *  - `ultracode` — turn ON standing (session-wide) orchestration mode.
- * All are highlighted (rainbow shimmer) and surface an opt-in notification.
+ *  - “use/run a workflow” — natural-language opt-in for THIS message.
+ * Keyword triggers are highlighted (rainbow shimmer) and surface an opt-in
+ * notification; natural-language requests inject only the model-visible
+ * reminder so incidental mentions of workflows do not light up the prompt.
  * Gated behind the same flag that enables the Workflow tool itself, so users
  * without orchestration never see a meaningless highlight.
  */
@@ -24,11 +26,10 @@ export function isWorkflowKeywordEnabled(): boolean {
 
 // Word-boundary, case-insensitive. `workflowy`, `reflow`, `ultraworking`,
 // `ultracodebase` etc. must NOT match.
-const WORKFLOW_RE = /\bworkflows?\b/i
 const ULTRAWORK_RE = /\bultrawork\b/i
 const ULTRACODE_RE = /\bultracode\b/i
 const WORKFLOW_DIRECT_REQUEST_RE =
-  /\b(?:use|run|launch|start|write|create)\s+(?:a\s+)?workflows?\b/i
+  /\b(?:use|run|launch|start|write|create|build)\s+(?:a\s+)?workflows?\b/i
 const BROAD_PARALLEL_REQUEST_RE =
   /\b(?:comprehensive|broad|large[-\s]?scale)\s+parallel\s+(?:review|audit|research|analysis|sweep)\b/i
 const MULTI_AGENT_REQUEST_RE =
@@ -38,7 +39,7 @@ const FANOUT_AGENT_REQUEST_RE =
 const suppressedWorkflowReminderPrompts = new Set<string>()
 
 export function hasWorkflowKeyword(text: string): boolean {
-  return WORKFLOW_RE.test(text)
+  return hasWorkflowDirectRequest(text)
 }
 
 export function hasUltraworkKeyword(text: string): boolean {
@@ -61,7 +62,6 @@ export function hasWorkflowDirectRequest(text: string): boolean {
 /** True when the message contains any orchestration trigger. */
 export function hasAnyWorkflowTrigger(text: string): boolean {
   return (
-    hasWorkflowKeyword(text) ||
     hasUltraworkKeyword(text) ||
     hasUltracodeKeyword(text) ||
     hasWorkflowDirectRequest(text)
@@ -69,7 +69,7 @@ export function hasAnyWorkflowTrigger(text: string): boolean {
 }
 
 /**
- * Find positions of all three trigger keywords for highlighting.
+ * Find positions of keyword triggers for highlighting.
  *
  * IMPORTANT: A fresh /g literal is created on every call. Reusing a module-level
  * /g regex would leak `lastIndex` between calls (and String.prototype.matchAll
@@ -82,7 +82,7 @@ export function findWorkflowTriggerPositions(text: string): Array<{
   end: number
 }> {
   const positions: Array<{ word: string; start: number; end: number }> = []
-  const matches = text.matchAll(/\b(?:workflows?|ultrawork|ultracode)\b/gi)
+  const matches = text.matchAll(/\b(?:ultrawork|ultracode)\b/gi)
 
   for (const match of matches) {
     if (match.index !== undefined) {
@@ -127,7 +127,7 @@ export function buildWorkflowReminder(
     key = 'ui.workflowKeyword.ultracodeReminder'
   } else if (hasUltraworkKeyword(value)) {
     key = 'ui.workflowKeyword.ultraworkReminder'
-  } else if (hasWorkflowKeyword(value) || hasWorkflowDirectRequest(value)) {
+  } else if (hasWorkflowDirectRequest(value)) {
     key = 'ui.workflowKeyword.reminder'
   } else if (ultracodeStanding) {
     key = 'ui.workflowKeyword.ultracodeStandingReminder'
