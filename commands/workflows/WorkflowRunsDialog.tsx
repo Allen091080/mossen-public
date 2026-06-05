@@ -200,7 +200,7 @@ function inputGuide(mode: WorkflowDialogMode) {
           {mode === 'agent' ? <KeyboardShortcutHint shortcut="j/k" action="scroll" /> : null}
           <KeyboardShortcutHint shortcut="p" action="pause/resume" />
           <KeyboardShortcutHint shortcut="x" action="stop" />
-          <KeyboardShortcutHint shortcut="r" action="retry agent" />
+          <KeyboardShortcutHint shortcut="r" action="restart agent" />
           <KeyboardShortcutHint shortcut="s" action="save" />
         </>
       )}

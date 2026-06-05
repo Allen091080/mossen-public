@@ -210,7 +210,7 @@ describe('/workflows resume', () => {
     )
     expect(message).toContain('Read commands/workflows/workflows.tsx')
     expect(message).toContain('Found the command detail renderer.')
-    expect(message).toContain(`/workflows retry-agent ${runId} 1`)
+    expect(message).toContain(`/workflows restart-agent ${runId} 1`)
   })
 
   test('stop resolves a workflow run id and kills the backing task', async () => {
@@ -261,7 +261,7 @@ describe('/workflows resume', () => {
     expect(state.tasks[taskId]?.summary).toBe('skip requested for agent #1')
   })
 
-  test('retry-agent requests a restart for the selected workflow agent', async () => {
+  test('restart-agent requests a restart for the selected workflow agent', async () => {
     const taskId = 'wtaskcmd_retry_agent'
     const runId = 'wf_cmd_retry_agent'
     const state = {
@@ -276,7 +276,7 @@ describe('/workflows resume', () => {
         message = nextMessage
       },
       workflowCommandContext(state) as never,
-      `retry-agent ${runId} 1`,
+      `restart-agent ${runId} 1`,
     )
 
     expect(message).toContain(runId)
@@ -285,7 +285,7 @@ describe('/workflows resume', () => {
     expect(state.tasks[taskId]?.summary).toBe('retry requested for agent #1')
   })
 
-  test('retry-agent only restarts a running agent', async () => {
+  test('restart-agent only restarts a running agent', async () => {
     const taskId = 'wtaskcmd_retry_completed_agent'
     const runId = 'wf_cmd_retry_completed_agent'
     const state = {
@@ -300,7 +300,7 @@ describe('/workflows resume', () => {
         message = nextMessage
       },
       workflowCommandContext(state) as never,
-      `retry-agent ${runId} 2`,
+      `restart-agent ${runId} 2`,
     )
 
     expect(message).toContain(runId)

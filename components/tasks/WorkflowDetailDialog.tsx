@@ -208,7 +208,7 @@ export function WorkflowDetailDialog({
         <KeyboardShortcutHint shortcut="s" action="save" />
       ) : null}
       {runningAgent && onRetryAgent ? (
-        <KeyboardShortcutHint shortcut="r" action="retry current agent" />
+        <KeyboardShortcutHint shortcut="r" action="restart current agent" />
       ) : null}
     </Byline>
   )
