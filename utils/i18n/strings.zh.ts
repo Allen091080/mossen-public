@@ -106,7 +106,7 @@ export const STRINGS_ZH = {
   'cmd.workflows.ultracodeOn': '已为本会话开启 ultracode 常驻编排模式。',
   'cmd.workflows.ultracodeOff': '已关闭 ultracode 常驻编排模式。',
   'cmd.workflows.ultracodeStatusOn': 'ultracode 常驻编排模式已开启。用 /workflows ultracode off 可关闭。',
-  'cmd.workflows.ultracodeStatusOff': 'ultracode 常驻编排模式已关闭。在消息中输入 “ultracode”（或 /workflows ultracode on）可开启。',
+  'cmd.workflows.ultracodeStatusOff': 'ultracode 常驻编排模式已关闭。使用 /effort ultracode 可为本会话开启。',
   'cmd.goal.set.ok': '已为当前会话设置目标。',
   'cmd.goal.unavailable.hooksDisabled':
     '/goal 不可用，因为设置或 managed policy 已禁用 hooks。',
@@ -188,16 +188,12 @@ export const STRINGS_ZH = {
     'Workflow 模式 —— 本条消息已启用多 agent 编排。',
   'ui.workflowKeyword.reminder':
     '用户明确选择了多 agent 编排（workflow 关键词或自然语言请求）。当任务确有必要时，你可以使用 Workflow 工具来协调子 agent。',
-  'ui.workflowKeyword.ultraworkReminder':
-    '用户为本条消息请求了最强的单轮编排（ultrawork）。请积极拆解任务，使用 Workflow 工具并行 fan-out 多个子 agent，并在汇报前验证发现。',
   'ui.workflowKeyword.ultracodeReminder':
-    '用户为本会话开启了常驻编排模式（ultracode）。从现在起，对于有分量的工作请默认使用 Workflow 工具——拆解并并行覆盖——直到用户关闭该模式。',
+    '用户为本条消息请求了 ultracode 编排。请积极拆解任务，必要时使用 Workflow 工具并行 fan-out 多个子 agent，并在汇报前验证发现。',
   'ui.workflowKeyword.ultracodeStandingReminder':
     '常驻编排模式（ultracode）已激活。对任何有分量的任务，请优先用 Workflow 工具编排子 agent，而不是单打独斗。',
-  'ui.workflowKeyword.ultraworkNotification':
-    'Ultrawork —— 本条消息启用最强单轮多 agent 编排。',
   'ui.workflowKeyword.ultracodeNotification':
-    'Ultracode —— 本会话已开启常驻多 agent 编排模式。',
+    'Ultracode —— 本条消息启用多 agent 编排。',
   'ui.goalOverlay.title': '目标',
   'ui.goalOverlay.hideHint': 'ctrl-g 隐藏',
   'ui.goalOverlay.hiddenToast': '目标浮层已隐藏；按 Ctrl-G 可再次显示。',

@@ -6,7 +6,6 @@ import {
   findWorkflowTriggerPositions,
   hasAnyWorkflowTrigger,
   hasUltracodeKeyword,
-  hasUltraworkKeyword,
   hasWorkflowDirectRequest,
   hasWorkflowKeyword,
   suppressNextWorkflowReminderFor,
@@ -44,6 +43,12 @@ describe('workflowKeyword', () => {
       expect(hasWorkflowKeyword('open workflowy app')).toBe(false)
     })
 
+    test('does not treat non-official ultrawork wording as a trigger', () => {
+      expect(hasAnyWorkflowTrigger('use ultrawork')).toBe(false)
+      expect(findWorkflowTriggerPositions('try ultrawork please')).toHaveLength(0)
+      expect(buildWorkflowReminder('try ultrawork please', true)).toBeNull()
+    })
+
     test('does NOT match "reflow" / "dataflow" (no leading boundary)', () => {
       expect(hasWorkflowKeyword('reflow the layout')).toBe(false)
       expect(hasWorkflowKeyword('a dataflow graph')).toBe(false)
@@ -59,8 +64,6 @@ describe('workflowKeyword', () => {
     })
 
     test('detects all workflow trigger variants', () => {
-      expect(hasAnyWorkflowTrigger('use ultrawork')).toBe(true)
-      expect(hasUltraworkKeyword('use ultrawork')).toBe(true)
       expect(hasUltracodeKeyword('turn on ultracode')).toBe(true)
       expect(hasAnyWorkflowTrigger('ordinary prompt')).toBe(false)
     })
@@ -96,16 +99,8 @@ describe('workflowKeyword', () => {
       expect(text.slice(positions[0]!.start, positions[0]!.end)).toBe('ultracode')
     })
 
-    test('finds ultrawork and reports the matched word', () => {
-      const positions = findWorkflowTriggerPositions('try ultrawork please')
-      expect(positions).toHaveLength(1)
-      expect(positions[0]!.word).toBe('ultrawork')
-      expect(positions[0]!.start).toBe(4)
-      expect(positions[0]!.end).toBe(13)
-    })
-
     test('finds multiple occurrences with correct offsets', () => {
-      const text = 'ultracode then ultrawork'
+      const text = 'ultracode then ultracode'
       const positions = findWorkflowTriggerPositions(text)
       expect(positions).toHaveLength(2)
       expect(positions[0]!.start).toBe(0)
@@ -191,7 +186,8 @@ describe('workflowKeyword', () => {
     })
 
     test('standing ultracode fires even without a keyword in the message', () => {
-      // 3rd arg = ultracodeStanding: no keyword, but standing mode on → fires.
+      // 3rd arg = ultracodeStanding: no keyword, but standing mode on through
+      // /effort ultracode or an explicit command toggle -> fires.
       expect(buildWorkflowReminder('just keep going', true, true)).not.toBeNull()
       expect(buildWorkflowReminder('just keep going', true, false)).toBeNull()
     })

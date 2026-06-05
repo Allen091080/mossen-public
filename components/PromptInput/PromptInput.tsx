@@ -1165,7 +1165,7 @@ function PromptInput({
     }
 
     // Normal leader submission. The opt-in workflow reminder (when the user
-    // typed the `workflow`/`ultrawork`/`ultracode` keyword) is injected later as
+    // typed the `workflow`/`ultracode` keyword) is injected later as
     // a SEPARATE isMeta message in processTextPrompt — never concatenated into
     // the user's text here, which would leak the <system-reminder> into the
     // transcript. We only reach here after all early returns (slash-command,

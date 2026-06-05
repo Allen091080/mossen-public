@@ -3,8 +3,7 @@
  *
  * Explicit natural-language requests and strong trigger words let the user opt
  * into multi-agent orchestration, mirroring the thinking keyword UX:
- *  - `ultrawork` — strongest single-turn orchestration for THIS message.
- *  - `ultracode` — turn ON standing (session-wide) orchestration mode.
+ *  - `ultracode` — single-turn orchestration for THIS message.
  *  - “use/run a workflow” — natural-language opt-in for THIS message.
  * Keyword triggers are highlighted (rainbow shimmer) and surface an opt-in
  * notification; natural-language requests inject only the model-visible
@@ -14,7 +13,7 @@
  */
 
 import { feature } from 'bun:bundle'
-import { isUltracodeActive, setUltracodeActive } from '../bootstrap/state.js'
+import { isUltracodeActive } from '../bootstrap/state.js'
 import { t } from './i18n/index.js'
 import { isWorkflowKeywordTriggerEnabled } from './workflowAvailability.js'
 
@@ -24,9 +23,8 @@ export function isWorkflowKeywordEnabled(): boolean {
   return feature('WORKFLOW_SCRIPTS') ? isWorkflowKeywordTriggerEnabled() : false
 }
 
-// Word-boundary, case-insensitive. `workflowy`, `reflow`, `ultraworking`,
-// `ultracodebase` etc. must NOT match.
-const ULTRAWORK_RE = /\bultrawork\b/i
+// Word-boundary, case-insensitive. `workflowy`, `reflow`, `ultracodebase`,
+// etc. must NOT match.
 const ULTRACODE_RE = /\bultracode\b/i
 const WORKFLOW_DIRECT_REQUEST_RE =
   /\b(?:use|run|launch|start|write|create|build)\s+(?:a\s+)?workflows?\b/i
@@ -40,10 +38,6 @@ const suppressedWorkflowReminderPrompts = new Set<string>()
 
 export function hasWorkflowKeyword(text: string): boolean {
   return hasWorkflowDirectRequest(text)
-}
-
-export function hasUltraworkKeyword(text: string): boolean {
-  return ULTRAWORK_RE.test(text)
 }
 
 export function hasUltracodeKeyword(text: string): boolean {
@@ -61,11 +55,7 @@ export function hasWorkflowDirectRequest(text: string): boolean {
 
 /** True when the message contains any orchestration trigger. */
 export function hasAnyWorkflowTrigger(text: string): boolean {
-  return (
-    hasUltraworkKeyword(text) ||
-    hasUltracodeKeyword(text) ||
-    hasWorkflowDirectRequest(text)
-  )
+  return hasUltracodeKeyword(text) || hasWorkflowDirectRequest(text)
 }
 
 /**
@@ -82,7 +72,7 @@ export function findWorkflowTriggerPositions(text: string): Array<{
   end: number
 }> {
   const positions: Array<{ word: string; start: number; end: number }> = []
-  const matches = text.matchAll(/\b(?:ultrawork|ultracode)\b/gi)
+  const matches = text.matchAll(/\bultracode\b/gi)
 
   for (const match of matches) {
     if (match.index !== undefined) {
@@ -105,8 +95,8 @@ export function findWorkflowTriggerPositions(text: string): Array<{
  * Additive and reversible — when no trigger applies, the value is returned
  * verbatim, never mutated in place.
  *
- * Reminder priority (strongest first): ultracode keyword > ultrawork keyword >
- * workflow keyword/direct request > already-standing ultracode mode.
+ * Reminder priority (strongest first): ultracode keyword > workflow
+ * keyword/direct request > already-standing ultracode mode.
  */
 export function buildWorkflowReminder(
   value: string,
@@ -119,14 +109,11 @@ export function buildWorkflowReminder(
   if (value.trimStart().startsWith('/')) return null
   let key:
     | 'ui.workflowKeyword.reminder'
-    | 'ui.workflowKeyword.ultraworkReminder'
     | 'ui.workflowKeyword.ultracodeReminder'
     | 'ui.workflowKeyword.ultracodeStandingReminder'
     | null = null
   if (hasUltracodeKeyword(value)) {
     key = 'ui.workflowKeyword.ultracodeReminder'
-  } else if (hasUltraworkKeyword(value)) {
-    key = 'ui.workflowKeyword.ultraworkReminder'
   } else if (hasWorkflowDirectRequest(value)) {
     key = 'ui.workflowKeyword.reminder'
   } else if (ultracodeStanding) {
@@ -159,18 +146,14 @@ export function clearSuppressedWorkflowRemindersForTests(): void {
  * Production entry point: gate on the WORKFLOW_SCRIPTS build flag, then delegate
  * to the injectable, testable buildWorkflowReminder. Returns the reminder block
  * to inject as a separate isMeta message (model-visible, user-hidden), or null
- * when no trigger applies. Side effect: typing the `ultracode` keyword latches
- * standing orchestration mode ON for the session.
+ * when no trigger applies. The `ultracode` keyword itself is single-turn; only
+ * /effort ultracode (or explicit command toggles) changes standing mode.
  */
 export function workflowReminderFor(value: string): string | null {
   // Slash commands are never an orchestration opt-in. Bail before any side
-  // effect: otherwise `/workflows ultracode on` would BOTH latch ultracode here
-  // and emit a reminder.
+  // effect or reminder.
   if (value.trimStart().startsWith('/')) return null
   if (consumeSuppressedWorkflowReminder(value)) return null
   const enabled = isWorkflowKeywordEnabled()
-  if (enabled && hasUltracodeKeyword(value)) {
-    setUltracodeActive(true)
-  }
   return buildWorkflowReminder(value, enabled, enabled && isUltracodeActive())
 }

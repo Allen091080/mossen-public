@@ -148,9 +148,10 @@ type State = {
   // process-local: it survives /compact in the current REPL, but it is not
   // persisted as global config or credentials.
   sessionGoal: MossenGoalState | null
-  // When true, the "ultracode" keyword has put this session in standing
-  // multi-agent orchestration mode: every turn is nudged toward the Workflow
-  // tool until the user clears it. Process-local, survives /compact.
+  // When true, /effort ultracode (or an explicit workflow command toggle) has
+  // put this session in standing multi-agent orchestration mode: every turn is
+  // nudged toward the Workflow tool until the user clears it. Process-local,
+  // survives /compact.
   ultracodeActive: boolean
   // Terminal goals from this session (cleared/completed/failed), most recent
   // last. Lets /goal status surface a "previously" trail. Process-local like

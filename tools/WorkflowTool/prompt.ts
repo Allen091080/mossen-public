@@ -5,7 +5,7 @@ export const WORKFLOW_TOOL_PROMPT = `Execute a workflow script that orchestrates
 
 A workflow is a small JavaScript program that fans work out across many subagents and combines their results. Use it to be comprehensive (decompose and cover in parallel), to be confident (independent perspectives and adversarial checks), or to take on scale a single context can't hold (migrations, audits, broad sweeps). Workflows launch asynchronously: the tool returns immediately with taskId/runId/scriptPath, and a task-notification arrives when it completes. Use /workflows to watch live progress.
 
-ONLY call this tool when the user has explicitly opted into multi-agent orchestration. Workflows can spawn many agents and consume substantial tokens; the user must request that scale, not have it inferred. Explicit opt-in includes workflow/ultrawork/ultracode wording, or a direct request for broad multi-agent orchestration, comprehensive parallel review, multi-agent research, or similar scale.
+ONLY call this tool when the user has explicitly opted into multi-agent orchestration. Workflows can spawn many agents and consume substantial tokens; the user must request that scale, not have it inferred. Explicit opt-in includes workflow/ultracode wording, or a direct request for broad multi-agent orchestration, comprehensive parallel review, multi-agent research, or similar scale.
 
 Provide the program inline via \`script\`. It must begin with an \`export const meta\` literal:
 

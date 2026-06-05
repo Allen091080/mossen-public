@@ -42,8 +42,8 @@ export function processTextPrompt(
     is_keep_going: isKeepGoing,
   })
 
-  // Opt-in workflow orchestration: when the user typed the workflow/ultrawork/
-  // ultracode keyword, inject the hint as a SEPARATE isMeta message
+  // Opt-in workflow orchestration: when the user typed the workflow/ultracode
+  // keyword, inject the hint as a SEPARATE isMeta message
   // (model-visible, user-hidden) — never concatenated into the user's text,
   // which would leak the <system-reminder> into the transcript. Skipped for
   // isMeta prompts (scheduled / system-generated). See workflowKeyword.ts.

@@ -127,7 +127,7 @@ export const STRINGS_EN = {
   'cmd.workflows.ultracodeOn': 'Ultracode standing orchestration mode is now ON for this session.',
   'cmd.workflows.ultracodeOff': 'Ultracode standing orchestration mode is now OFF.',
   'cmd.workflows.ultracodeStatusOn': 'Ultracode standing orchestration mode is ON. Use /workflows ultracode off to disable.',
-  'cmd.workflows.ultracodeStatusOff': 'Ultracode standing orchestration mode is OFF. Type "ultracode" in a message (or /workflows ultracode on) to enable.',
+  'cmd.workflows.ultracodeStatusOff': 'Ultracode standing orchestration mode is OFF. Use /effort ultracode to enable it for this session.',
   'cmd.goal.set.ok': 'Goal set for this session.',
   'cmd.goal.unavailable.hooksDisabled':
     '/goal is unavailable because hooks are disabled by settings or managed policy.',
@@ -212,16 +212,12 @@ export const STRINGS_EN = {
     'Workflow mode — multi-agent orchestration enabled for this message.',
   'ui.workflowKeyword.reminder':
     'The user explicitly opted into multi-agent orchestration by typing the workflow keyword or asking for it in natural language. When the task genuinely warrants it, you may use the Workflow tool to coordinate sub-agents.',
-  'ui.workflowKeyword.ultraworkReminder':
-    'The user requested the strongest single-turn orchestration (ultrawork) for this message. Decompose aggressively and use the Workflow tool to fan out sub-agents in parallel, verifying findings before reporting.',
   'ui.workflowKeyword.ultracodeReminder':
-    'The user turned on standing orchestration mode (ultracode) for this session. From now on, default to the Workflow tool for substantial work — decompose and cover in parallel — until the user clears the mode.',
+    'The user requested ultracode orchestration for this message. Decompose aggressively when warranted, use the Workflow tool to fan out sub-agents in parallel, and verify findings before reporting.',
   'ui.workflowKeyword.ultracodeStandingReminder':
     'Standing orchestration mode (ultracode) is active. For any substantial task, reach for the Workflow tool to orchestrate sub-agents rather than working solo.',
-  'ui.workflowKeyword.ultraworkNotification':
-    'Ultrawork — strongest single-turn multi-agent orchestration for this message.',
   'ui.workflowKeyword.ultracodeNotification':
-    'Ultracode — standing multi-agent orchestration mode ON for this session.',
+    'Ultracode — multi-agent orchestration enabled for this message.',
   'ui.goalOverlay.title': 'GOAL',
   'ui.goalOverlay.hideHint': 'ctrl-g hide',
   'ui.goalOverlay.hiddenToast': 'Goal overlay hidden; press Ctrl-G to show it again.',
