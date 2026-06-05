@@ -164,6 +164,7 @@ describe('workflow local agent resolution', () => {
   test('runs local workflow agents in acceptEdits while inheriting permission rules', async () => {
     const observed: Array<{
       mode: PermissionMode
+      agentPermissionMode?: PermissionMode
       allowRules: string[]
       askRules: string[]
       denyRules: string[]
@@ -171,11 +172,12 @@ describe('workflow local agent resolution', () => {
     }> = []
     const runAgentImpl: NonNullable<
       WorkflowAgentRunnerDeps['runAgentImpl']
-    > = async function* ({ toolUseContext }) {
+    > = async function* ({ agentDefinition, toolUseContext }) {
       const permissionContext =
         toolUseContext.getAppState().toolPermissionContext
       observed.push({
         mode: permissionContext.mode,
+        agentPermissionMode: agentDefinition.permissionMode,
         allowRules: [
           ...(permissionContext.alwaysAllowRules.localSettings ?? []),
         ],
@@ -226,6 +228,7 @@ describe('workflow local agent resolution', () => {
     expect(observed).toEqual([
       {
         mode: 'acceptEdits',
+        agentPermissionMode: 'acceptEdits',
         allowRules: ['Bash(npm test)'],
         askRules: ['WebFetch(example.com)'],
         denyRules: ['Bash(rm -rf *)'],

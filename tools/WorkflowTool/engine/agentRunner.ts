@@ -159,6 +159,18 @@ type WorkflowAgentStallWatch = {
 
 type WorkflowRunOneAgentMeta = Parameters<RunOneAgent>[2]
 
+function asWorkflowAgentDefinition(
+  agentDefinition: AgentDefinition,
+): AgentDefinition {
+  if (agentDefinition.permissionMode === 'acceptEdits') return agentDefinition
+  return {
+    ...agentDefinition,
+    // Official workflows always run subagents in acceptEdits, regardless of the
+    // parent session mode or an agent file's own permissionMode frontmatter.
+    permissionMode: 'acceptEdits',
+  }
+}
+
 const TOOL_INPUT_SUMMARY_KEYS = [
   'command',
   'file_path',
@@ -1126,7 +1138,9 @@ export function createWorkflowAgentRunner(
       }
     }
 
-    const agentDefinition = resolveAgentDefinition(toolUseContext, opts.agentType)
+    const agentDefinition = asWorkflowAgentDefinition(
+      resolveAgentDefinition(toolUseContext, opts.agentType),
+    )
     const worktreeInfo =
       opts.isolation === 'worktree'
         ? await createAgentWorktree(
