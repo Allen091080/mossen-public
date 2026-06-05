@@ -466,8 +466,10 @@ function formatWorkflowResultForNotification(result: unknown): string | undefine
 
 function shouldSkipWorkflowLaunchPrompt(
   permissionContext: ReturnType<ToolUseContext['getAppState']>['toolPermissionContext'],
+  context?: ToolUseContext,
 ): boolean {
   return (
+    context?.options?.isNonInteractiveSession === true ||
     permissionContext.shouldAvoidPermissionPrompts === true ||
     permissionContext.mode === 'bypassPermissions' ||
     (permissionContext.mode === 'plan' &&
@@ -622,7 +624,7 @@ export const WorkflowTool = buildTool({
       }
     }
 
-    if (shouldSkipWorkflowLaunchPrompt(permissionContext)) {
+    if (shouldSkipWorkflowLaunchPrompt(permissionContext, context)) {
       return {
         behavior: 'allow',
         updatedInput: input,

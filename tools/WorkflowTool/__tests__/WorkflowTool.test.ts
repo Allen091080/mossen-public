@@ -69,6 +69,7 @@ function toolUseContextWithWorkflowRules({
   mode = 'default',
   isBypassPermissionsModeAvailable = false,
   shouldAvoidPermissionPrompts = false,
+  isNonInteractiveSession = false,
 }: {
   allow?: string[]
   ask?: string[]
@@ -76,9 +77,13 @@ function toolUseContextWithWorkflowRules({
   mode?: AppState['toolPermissionContext']['mode']
   isBypassPermissionsModeAvailable?: boolean
   shouldAvoidPermissionPrompts?: boolean
+  isNonInteractiveSession?: boolean
 } = {}): ToolUseContext {
   const base = getEmptyToolPermissionContext()
   return {
+    options: {
+      isNonInteractiveSession,
+    },
     abortController: new AbortController(),
     getAppState: () => ({
       toolPermissionContext: {
@@ -844,6 +849,19 @@ return 'ok'
     )
     expect(headlessDecision.behavior).toBe('allow')
     expect(headlessDecision.decisionReason).toEqual({
+      type: 'mode',
+      mode: 'default',
+    })
+
+    const printModeDecision = await WorkflowTool.checkPermissions(
+      { name: 'ship-check' },
+      toolUseContextWithWorkflowRules({
+        ask: [`${WORKFLOW_TOOL_NAME}(ship-check)`],
+        isNonInteractiveSession: true,
+      }),
+    )
+    expect(printModeDecision.behavior).toBe('allow')
+    expect(printModeDecision.decisionReason).toEqual({
       type: 'mode',
       mode: 'default',
     })
