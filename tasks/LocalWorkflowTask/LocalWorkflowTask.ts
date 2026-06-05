@@ -177,7 +177,7 @@ export function buildWorkflowResumePrompt(
   const workflowRunId = task.workflowRunId ?? task.runId
   if (!task.scriptPath || !workflowRunId) return null
   const args = task.args !== undefined ? `, args: ${formatWorkflowArgs(task.args)}` : ''
-  return `Resume the paused workflow by calling: Workflow({scriptPath: '${task.scriptPath}', resumeFromRunId: '${workflowRunId}'${args}}) — completed agents return cached results.`
+  return `Resume the workflow run by calling: Workflow({scriptPath: '${task.scriptPath}', resumeFromRunId: '${workflowRunId}'${args}}) — completed agents return cached results.`
 }
 
 function buildWorkflowRecoveryPrompt(

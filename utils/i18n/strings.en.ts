@@ -122,7 +122,7 @@ export const STRINGS_EN = {
   'cmd.workflows.agentControlsHint': 'Controls: /workflows stop-agent {runId} {agentNumber}, /workflows retry-agent {runId} {agentNumber}, /workflows <runId>.',
   'cmd.workflows.resumed': 'Queued workflow resume for {runId}.',
   'cmd.workflows.alreadyPaused': 'Workflow task {runId} is already paused.',
-  'cmd.workflows.notPaused': 'Workflow task {runId} is not paused.',
+  'cmd.workflows.notPaused': 'Workflow task {runId} is not paused or stopped.',
   'cmd.workflows.taskNotRunning': 'Workflow task {runId} is not running.',
   'cmd.workflows.ultracodeOn': 'Ultracode standing orchestration mode is now ON for this session.',
   'cmd.workflows.ultracodeOff': 'Ultracode standing orchestration mode is now OFF.',

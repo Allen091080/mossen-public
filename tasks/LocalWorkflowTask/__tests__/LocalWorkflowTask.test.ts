@@ -140,7 +140,7 @@ describe('LocalWorkflowTask pause/resume controls', () => {
     expect(task.scriptPath).toBe('/tmp/workflows/wf_register_separate/script.js')
   })
 
-  test('buildWorkflowResumePrompt includes args like official paused workflow prompt', () => {
+  test('buildWorkflowResumePrompt includes args like official resumable workflow prompt', () => {
     expect(
       buildWorkflowResumePrompt({
         runId: 'wf_resume_test',
@@ -148,7 +148,7 @@ describe('LocalWorkflowTask pause/resume controls', () => {
         args: { ticket: 42 },
       }),
     ).toBe(
-      "Resume the paused workflow by calling: Workflow({scriptPath: '/tmp/workflows/wf_resume_test/script.js', resumeFromRunId: 'wf_resume_test', args: {\"ticket\":42}}) — completed agents return cached results.",
+      "Resume the workflow run by calling: Workflow({scriptPath: '/tmp/workflows/wf_resume_test/script.js', resumeFromRunId: 'wf_resume_test', args: {\"ticket\":42}}) — completed agents return cached results.",
     )
   })
 

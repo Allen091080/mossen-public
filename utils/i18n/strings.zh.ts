@@ -101,7 +101,7 @@ export const STRINGS_ZH = {
   'cmd.workflows.agentControlsHint': '控制：/workflows stop-agent {runId} {agentNumber}、/workflows retry-agent {runId} {agentNumber}、/workflows <runId>。',
   'cmd.workflows.resumed': '已排队恢复工作流 {runId}。',
   'cmd.workflows.alreadyPaused': '工作流任务 {runId} 已经处于暂停状态。',
-  'cmd.workflows.notPaused': '工作流任务 {runId} 当前没有暂停。',
+  'cmd.workflows.notPaused': '工作流任务 {runId} 当前没有暂停或停止。',
   'cmd.workflows.taskNotRunning': '工作流任务 {runId} 未在运行。',
   'cmd.workflows.ultracodeOn': '已为本会话开启 ultracode 常驻编排模式。',
   'cmd.workflows.ultracodeOff': '已关闭 ultracode 常驻编排模式。',

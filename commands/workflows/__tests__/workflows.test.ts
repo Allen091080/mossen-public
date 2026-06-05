@@ -342,4 +342,34 @@ describe('/workflows resume', () => {
     expect(nextInput).toContain('args: {"ticket":42}')
     expect(nextInput).not.toContain(taskId)
   })
+
+  test('resume-task queues stopped workflow runs like the interactive view', async () => {
+    const taskId = 'wtaskcmd_stopped_resume'
+    const runId = 'wf_cmd_stopped_resume'
+    const state = {
+      tasks: {
+        [taskId]: {
+          ...runningWorkflowTask({ taskId, runId }),
+          status: 'killed',
+          abortController: undefined,
+          endTime: Date.now(),
+        },
+      },
+    }
+    let nextInput = ''
+
+    await call(
+      (_message, options) => {
+        nextInput = options?.nextInput ?? ''
+      },
+      workflowCommandContext(state) as never,
+      `resume-task ${runId}`,
+    )
+
+    expect(nextInput).toContain(
+      "Workflow({scriptPath: '/tmp/workflows/wf_cmd_stopped_resume/script.js'",
+    )
+    expect(nextInput).toContain("resumeFromRunId: 'wf_cmd_stopped_resume'")
+    expect(nextInput).not.toContain(taskId)
+  })
 })

@@ -390,7 +390,7 @@ function resumeTaskRun(
     return { message: t('cmd.workflows.notFound', { runId }) }
   }
   const { task, workflowRunId } = found
-  if (task.status !== 'paused') {
+  if (!isResumableWorkflowTaskStatus(task.status)) {
     return { message: t('cmd.workflows.notPaused', { runId }) }
   }
   const meta = loadRunMeta(workflowRunId)
@@ -400,6 +400,10 @@ function resumeTaskRun(
     meta?.args ?? task.args,
     runId,
   )
+}
+
+function isResumableWorkflowTaskStatus(status: string | undefined): boolean {
+  return status === 'paused' || status === 'killed'
 }
 
 function parseWorkflowAgentNumber(agentId: string | undefined): number | null {
