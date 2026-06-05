@@ -110,6 +110,9 @@ type WorkflowScriptSyntaxCheck =
   | { ok: true }
   | { ok: false; error: string }
 
+export const WORKFLOW_DETERMINISM_ERROR =
+  'Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable (breaks resume). Stamp results after the workflow returns, or pass timestamps via args.'
+
 function workflowImportError(): WorkflowScriptError {
   return new WorkflowScriptError(
     'Workflow scripts cannot use import. They run self-contained against the ' +
@@ -126,6 +129,64 @@ function workflowRequireError(): WorkflowScriptError {
 function workflowEvalError(): WorkflowScriptError {
   return new WorkflowScriptError(
     'Workflow scripts cannot use eval. Use the injected engine surface only.',
+  )
+}
+
+function isIdentifier(node: unknown, name: string): boolean {
+  return isAstNode(node) && node.type === 'Identifier' && node.name === name
+}
+
+function isLiteralString(node: unknown, value: string): boolean {
+  return (
+    isAstNode(node) &&
+    node.type === 'Literal' &&
+    (node as { value?: unknown }).value === value
+  )
+}
+
+function isNamedMember(
+  node: unknown,
+  objectName: string,
+  propertyName: string,
+): boolean {
+  if (!isAstNode(node) || node.type !== 'MemberExpression') return false
+  const member = node as {
+    object?: unknown
+    property?: unknown
+    computed?: unknown
+  }
+  if (!isIdentifier(member.object, objectName)) return false
+  return member.computed === true
+    ? isLiteralString(member.property, propertyName)
+    : isIdentifier(member.property, propertyName)
+}
+
+function isCallOfNamedMember(
+  node: unknown,
+  objectName: string,
+  propertyName: string,
+): boolean {
+  return (
+    isAstNode(node) &&
+    node.type === 'CallExpression' &&
+    isNamedMember(
+      (node as { callee?: unknown }).callee,
+      objectName,
+      propertyName,
+    )
+  )
+}
+
+function isArglessDateConstruction(node: unknown): boolean {
+  if (!isAstNode(node)) return false
+  if (node.type !== 'NewExpression' && node.type !== 'CallExpression') {
+    return false
+  }
+  const expr = node as { callee?: unknown; arguments?: unknown }
+  return (
+    isIdentifier(expr.callee, 'Date') &&
+    Array.isArray(expr.arguments) &&
+    expr.arguments.length === 0
   )
 }
 
@@ -200,6 +261,30 @@ function rejectModuleSyntax(source: string): void {
       if (node.callee.name === 'eval') throw workflowEvalError()
     }
   })
+}
+
+export function checkWorkflowScriptDeterminism(source: string): string | null {
+  let program: AstNode | null
+  try {
+    program = parseForForbiddenSyntax(source)
+  } catch {
+    return null
+  }
+  if (!program) return null
+
+  let blocked = false
+  walkAst(program, node => {
+    if (blocked) return
+    if (
+      isCallOfNamedMember(node, 'Date', 'now') ||
+      isCallOfNamedMember(node, 'Math', 'random') ||
+      isArglessDateConstruction(node)
+    ) {
+      blocked = true
+    }
+  })
+
+  return blocked ? WORKFLOW_DETERMINISM_ERROR : null
 }
 
 const DETERMINISTIC_GUARDS = `

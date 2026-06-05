@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  checkWorkflowScriptDeterminism,
   checkWorkflowScriptSyntax,
   runSandbox,
   WorkflowScriptError,
@@ -208,6 +209,32 @@ describe('checkWorkflowScriptSyntax', () => {
     if ('error' in check) {
       expect(check.error).toContain('Workflow script failed to parse')
     }
+  })
+})
+
+describe('checkWorkflowScriptDeterminism', () => {
+  test('ignores nondeterministic API names inside strings', () => {
+    expect(
+      checkWorkflowScriptDeterminism(`
+        const prompt = 'Explain why Date.now(), Math.random(), and new Date() are risky.'
+        return agent(prompt)
+      `),
+    ).toBeNull()
+  })
+
+  test('rejects actual nondeterministic API calls', () => {
+    expect(checkWorkflowScriptDeterminism(`return Date.now()`)).toContain(
+      'Workflow scripts must be deterministic',
+    )
+    expect(checkWorkflowScriptDeterminism(`return Math.random()`)).toContain(
+      'Workflow scripts must be deterministic',
+    )
+    expect(checkWorkflowScriptDeterminism(`return new Date()`)).toContain(
+      'Workflow scripts must be deterministic',
+    )
+    expect(checkWorkflowScriptDeterminism(`return Date()`)).toContain(
+      'Workflow scripts must be deterministic',
+    )
   })
 })
 

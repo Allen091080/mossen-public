@@ -178,6 +178,21 @@ return Date.now()
     })
   })
 
+  it('allows nondeterministic API names inside workflow prompt strings', async () => {
+    const result = await WorkflowTool.validateInput!(
+      {
+        script: `
+export const meta = { name: 'prompt-flow', description: 'Prompt flow' }
+const prompt = 'Explain Date.now(), Math.random(), and new Date() migrations.'
+return agent(prompt)
+`,
+      },
+      workflowValidationContext(),
+    )
+
+    expect(result).toEqual({ result: true })
+  })
+
   it('validates the official active-run resume guard before permissions', async () => {
     const result = await WorkflowTool.validateInput!(
       {
