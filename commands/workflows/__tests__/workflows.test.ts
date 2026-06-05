@@ -20,6 +20,7 @@ import {
   sumAgentElapsedMs,
   toggleWorkflowSaveScope,
   workflowAgentBackTarget,
+  workflowLiveRunListMetricSummary,
   workflowRunOpenTarget,
   workflowSaveOpenTarget,
   workflowSaveRunArgs,
@@ -295,6 +296,23 @@ return 'ok'
 
     expect(isValidElement(result)).toBe(true)
     expect(message).toBe('')
+  })
+
+  test('interactive live workflow list summarizes in-progress agent usage', () => {
+    const task = {
+      ...runningWorkflowTask({
+        taskId: 'task_live_usage',
+        runId: 'wf_live_usage',
+      }),
+      tokensSpent: 0,
+      totalToolCalls: 0,
+    }
+
+    expect(workflowLiveRunListMetricSummary(task)).toMatchObject({
+      agentCount: 2,
+      tokens: 55,
+      toolCalls: 3,
+    })
   })
 
   test('interactive controls target agents only when an agent is selected', () => {

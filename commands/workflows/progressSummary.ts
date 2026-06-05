@@ -101,16 +101,24 @@ export function buildWorkflowRunMetricSummary(
   agents: readonly WorkflowProgressAgentSummaryInput[],
   now = Date.now(),
 ): WorkflowMetricSummary {
+  const agentTokens = workflowSumAgents(agents, 'tokens')
+  const agentToolCalls = workflowSumAgents(agents, 'toolCalls')
+  const runTokens =
+    run.tokensSpent !== undefined
+      ? workflowFiniteNumber(run.tokensSpent)
+      : undefined
+  const runToolCalls =
+    run.totalToolCalls !== undefined
+      ? workflowFiniteNumber(run.totalToolCalls)
+      : undefined
   return {
     agentCount: workflowFiniteNumber(run.agentCount) || agents.length,
     tokens:
-      run.tokensSpent !== undefined
-        ? workflowFiniteNumber(run.tokensSpent)
-        : workflowSumAgents(agents, 'tokens'),
+      runTokens !== undefined ? Math.max(runTokens, agentTokens) : agentTokens,
     toolCalls:
-      run.totalToolCalls !== undefined
-        ? workflowFiniteNumber(run.totalToolCalls)
-        : workflowSumAgents(agents, 'toolCalls'),
+      runToolCalls !== undefined
+        ? Math.max(runToolCalls, agentToolCalls)
+        : agentToolCalls,
     elapsedMs: workflowTaskElapsedMs(run, now),
   }
 }

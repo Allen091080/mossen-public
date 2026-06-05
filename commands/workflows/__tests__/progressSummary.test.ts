@@ -56,6 +56,33 @@ describe('/workflows progress summary model', () => {
       .toContain('2 agents · ~55 tok · 3 tools')
   })
 
+  test('live run counters include in-progress agent token and tool usage', () => {
+    const summary = buildWorkflowRunMetricSummary(
+      {
+        status: 'running',
+        startTime: 1_000,
+        agentCount: 2,
+        tokensSpent: 0,
+        totalToolCalls: 0,
+      },
+      [
+        { status: 'completed', tokens: 20, toolCalls: 1 },
+        { status: 'running', tokens: 35, toolCalls: 4 },
+      ],
+      3_000,
+    )
+
+    expect(summary).toEqual({
+      agentCount: 2,
+      tokens: 55,
+      toolCalls: 5,
+      elapsedMs: 2_000,
+    })
+    expect(formatWorkflowMetricSummary(summary)).toContain(
+      '2 agents · 55 tok · 5 tools',
+    )
+  })
+
   test('summarizes official phase progress fields for /workflows views', () => {
     const summary = buildWorkflowPhaseMetricSummary(
       'Verify',

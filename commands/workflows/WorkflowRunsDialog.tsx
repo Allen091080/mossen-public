@@ -296,6 +296,12 @@ export function workflowSaveRunArgs(
   return scope === 'user' ? [runId, '--user'] : [runId]
 }
 
+export function workflowLiveRunListMetricSummary(
+  task: LocalWorkflowTaskState,
+): ReturnType<typeof buildWorkflowRunMetricSummary> {
+  return buildWorkflowRunMetricSummary(task, task.agents)
+}
+
 function inputGuide(mode: WorkflowDialogMode) {
   return () => (
     <Byline>
@@ -612,7 +618,10 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
               <Text dimColor>
                 {item.runId} · {item.status}
                 {item.kind === 'live'
-                  ? ` · ${formatNumber(item.task.agentCount)} agents · ${formatNumber(item.task.tokensSpent)} tok`
+                  ? (() => {
+                      const summary = workflowLiveRunListMetricSummary(item.task)
+                      return ` · ${formatNumber(summary.agentCount)} agents · ${formatNumber(summary.tokens)} tok`
+                    })()
                   : item.meta.agentCount != null
                     ? ` · ${formatNumber(item.meta.agentCount)} agents${item.meta.tokensSpent != null ? ` · ${formatNumber(item.meta.tokensSpent)} tok` : ''}`
                     : ''}

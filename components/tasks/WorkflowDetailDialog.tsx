@@ -46,6 +46,19 @@ type WorkflowPhaseSummaryInput = {
   agents: readonly WorkflowPhaseSummaryAgent[]
 }
 
+type WorkflowDetailRunSummaryInput = {
+  agentCount: number
+  tokensSpent: number
+  totalToolCalls: number
+  agents: readonly Pick<WorkflowAgentTaskProgress, 'tokens' | 'toolCalls'>[]
+}
+
+type WorkflowDetailRunSummary = {
+  agentCount: number
+  tokens: number
+  toolCalls: number
+}
+
 type WorkflowPhaseSummary = {
   title: string
   agentCount: number
@@ -105,6 +118,24 @@ export function workflowAgentDetailParts(
     parts.push(formatDuration(agent.durationMs))
   }
   return parts
+}
+
+export function workflowDetailRunSummary(
+  workflow: WorkflowDetailRunSummaryInput,
+): WorkflowDetailRunSummary {
+  const agentTokens = workflow.agents.reduce(
+    (sum, agent) => sum + agent.tokens,
+    0,
+  )
+  const agentToolCalls = workflow.agents.reduce(
+    (sum, agent) => sum + agent.toolCalls,
+    0,
+  )
+  return {
+    agentCount: Math.max(workflow.agentCount, workflow.agents.length),
+    tokens: Math.max(workflow.tokensSpent, agentTokens),
+    toolCalls: Math.max(workflow.totalToolCalls, agentToolCalls),
+  }
 }
 
 export function workflowPhaseSummaries(
@@ -221,6 +252,7 @@ export function WorkflowDetailDialog({
   const canStopWorkflow = canStopWorkflowDetail(workflow)
   const canPauseWorkflow = canPauseWorkflowDetail(workflow)
   const canResumeWorkflow = canResumeWorkflowDetail(workflow)
+  const runSummary = workflowDetailRunSummary(workflow)
   const phaseSummaries = workflowPhaseSummaries(workflow)
   const handleClose = () =>
     onDone('Workflow details dismissed', { display: 'system' })
@@ -268,10 +300,9 @@ export function WorkflowDetailDialog({
         {getTaskStatusIcon(workflow.status)} {displayStatus}
       </Text>
       <Text dimColor>
-        {' '}
-        · {elapsedTime} · {formatNumber(workflow.tokensSpent)} tokens ·{' '}
-        {formatNumber(workflow.totalToolCalls)} tools ·{' '}
-        {workflow.agentCount} {workflow.agentCount === 1 ? 'agent' : 'agents'}
+        {' '}· {elapsedTime} · {formatNumber(runSummary.tokens)} tokens ·{' '}
+        {formatNumber(runSummary.toolCalls)} tools · {runSummary.agentCount}{' '}
+        {runSummary.agentCount === 1 ? 'agent' : 'agents'}
       </Text>
     </Text>
   )

@@ -4,6 +4,7 @@ import {
   canResumeWorkflowDetail,
   canStopWorkflowDetail,
   workflowAgentDetailParts,
+  workflowDetailRunSummary,
   workflowPhaseSummaries,
 } from '../WorkflowDetailDialog.js'
 
@@ -122,5 +123,29 @@ describe('WorkflowDetailDialog controls', () => {
       'result: users route missing admin check',
       '2s',
     ])
+  })
+
+  test('task panel run summary includes in-progress agent usage', () => {
+    expect(
+      workflowDetailRunSummary({
+        agentCount: 2,
+        tokensSpent: 0,
+        totalToolCalls: 0,
+        agents: [
+          {
+            tokens: 20,
+            toolCalls: 1,
+          },
+          {
+            tokens: 35,
+            toolCalls: 4,
+          },
+        ],
+      }),
+    ).toEqual({
+      agentCount: 2,
+      tokens: 55,
+      toolCalls: 5,
+    })
   })
 })
