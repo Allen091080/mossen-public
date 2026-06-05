@@ -53,7 +53,7 @@ type SaveScope = 'project' | 'user'
 
 export type WorkflowDialogMode = 'list' | 'run' | 'phase' | 'agent' | 'save'
 
-type WorkflowMainViewState =
+export type WorkflowMainViewState =
   | { mode: 'list' }
   | { mode: 'run'; runId: string }
   | { mode: 'phase'; runId: string; phase: string }
@@ -183,6 +183,34 @@ export function shouldRouteWorkflowAgentControl(
   return mode === 'phase' || mode === 'agent'
 }
 
+export function shouldShowRunLevelAgents(
+  phaseCount: number,
+  agentCount: number,
+): boolean {
+  return phaseCount === 0 && agentCount > 0
+}
+
+export function workflowRunOpenTarget(
+  runId: string,
+  phases: readonly string[],
+  selectedPhaseIndex: number,
+  agent: WorkflowAgentTaskProgress | null | undefined,
+): WorkflowMainViewState | null {
+  const phase = phases[selectedPhaseIndex]
+  if (phase) return { mode: 'phase', runId, phase }
+  if (shouldShowRunLevelAgents(phases.length, agent ? 1 : 0)) {
+    return { mode: 'agent', runId, agentNumber: agent.agentNumber }
+  }
+  return null
+}
+
+export function workflowAgentBackTarget(
+  runId: string,
+  phase: string | null | undefined,
+): WorkflowMainViewState {
+  return phase ? { mode: 'phase', runId, phase } : { mode: 'run', runId }
+}
+
 function inputGuide(mode: WorkflowDialogMode) {
   return () => (
     <Byline>
@@ -255,6 +283,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
         ? selectedRun.task.agents.filter(agent => agent.phase === view.phase)
         : selectedRun.task.agents
       : []
+  const showRunLevelAgents = shouldShowRunLevelAgents(phases.length, agents.length)
   const currentAgent =
     view.mode === 'agent'
       ? selectedRun?.kind === 'live'
@@ -306,7 +335,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
         return
       }
       if (view.mode === 'agent') {
-        setView({ mode: 'phase', runId: view.runId, phase: currentAgent?.phase ?? '' })
+        setView(workflowAgentBackTarget(view.runId, currentAgent?.phase))
         setAgentScroll(0)
         return
       }
@@ -405,13 +434,32 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
     }
 
     if (view.mode === 'run') {
-      if (key.upArrow) setSelectedPhaseIndex(index => Math.max(0, index - 1))
-      if (key.downArrow) {
-        setSelectedPhaseIndex(index => Math.min(Math.max(0, phases.length - 1), index + 1))
+      if (key.upArrow) {
+        if (showRunLevelAgents) {
+          setSelectedAgentIndex(index => Math.max(0, index - 1))
+        } else {
+          setSelectedPhaseIndex(index => Math.max(0, index - 1))
+        }
       }
-      if ((key.return || key.rightArrow) && phases[selectedPhaseIndex]) {
-        setView({ mode: 'phase', runId: view.runId, phase: phases[selectedPhaseIndex]! })
-        setSelectedAgentIndex(0)
+      if (key.downArrow) {
+        if (showRunLevelAgents) {
+          setSelectedAgentIndex(index => Math.min(Math.max(0, agents.length - 1), index + 1))
+        } else {
+          setSelectedPhaseIndex(index => Math.min(Math.max(0, phases.length - 1), index + 1))
+        }
+      }
+      if (key.return || key.rightArrow) {
+        const target = workflowRunOpenTarget(
+          view.runId,
+          phases,
+          selectedPhaseIndex,
+          currentAgent,
+        )
+        if (target) {
+          setView(target)
+          if (target.mode === 'phase') setSelectedAgentIndex(0)
+          if (target.mode === 'agent') setAgentScroll(0)
+        }
       }
     }
 
@@ -495,21 +543,32 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
                 )}
               </Text>
               <Box flexDirection="column" marginTop={1}>
-                {phases.map((phase, index) => {
-                  const phaseAgents = selectedRun.task.agents.filter(agent => agent.phase === phase)
-                  const selected = index === selectedPhaseIndex
-                  return (
-                    <Text key={phase} color={selected ? 'suggestion' : undefined}>
-                      {selected ? '> ' : '  '}
-                      {phase}{' '}
-                      <Text dimColor>
-                        · {phaseAgents.length} agents · {statusSummary(phaseAgents)}
-                        {' '}· {formatNumber(sumAgents(phaseAgents, 'tokens'))} tok
-                        {' '}· {formatNumber(sumAgents(phaseAgents, 'toolCalls'))} tools
+                {showRunLevelAgents
+                  ? agents.map((agent, index) => (
+                      <Text key={agent.agentNumber} color={index === selectedAgentIndex ? 'suggestion' : undefined}>
+                        {index === selectedAgentIndex ? '> ' : '  '}
+                        #{agent.agentNumber} {agent.label}{' '}
+                        <Text color={statusColor(agent.status)}>{agent.status}</Text>
+                        <Text dimColor>
+                          {' '}· {formatNumber(agent.tokens)} tok · {formatNumber(agent.toolCalls)} tools
+                        </Text>
                       </Text>
-                    </Text>
-                  )
-                })}
+                    ))
+                  : phases.map((phase, index) => {
+                      const phaseAgents = selectedRun.task.agents.filter(agent => agent.phase === phase)
+                      const selected = index === selectedPhaseIndex
+                      return (
+                        <Text key={phase} color={selected ? 'suggestion' : undefined}>
+                          {selected ? '> ' : '  '}
+                          {phase}{' '}
+                          <Text dimColor>
+                            · {phaseAgents.length} agents · {statusSummary(phaseAgents)}
+                            {' '}· {formatNumber(sumAgents(phaseAgents, 'tokens'))} tok
+                            {' '}· {formatNumber(sumAgents(phaseAgents, 'toolCalls'))} tools
+                          </Text>
+                        </Text>
+                      )
+                    })}
               </Box>
             </>
           ) : (

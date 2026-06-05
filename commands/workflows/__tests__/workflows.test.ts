@@ -13,12 +13,18 @@ import {
 import { getTaskOutputPath } from '../../../utils/task/diskOutput.js'
 import { buildWorkflowResumeNextInput, call } from '../workflows.js'
 import { deriveWorkflowSaveName, saveRun } from '../saveWorkflow.js'
-import { shouldRouteWorkflowAgentControl } from '../WorkflowRunsDialog.js'
+import {
+  shouldRouteWorkflowAgentControl,
+  shouldShowRunLevelAgents,
+  workflowAgentBackTarget,
+  workflowRunOpenTarget,
+} from '../WorkflowRunsDialog.js'
 import { initRunArtifacts } from '../../../tools/WorkflowTool/engine/journalStore.js'
 import {
   getProjectWorkflowsDir,
   loadWorkflowCommandsFrom,
 } from '../../../tools/WorkflowTool/savedWorkflows.js'
+import type { LocalWorkflowTaskState } from '../../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
 function workflowCommandContext(state: { tasks: Record<string, unknown> }) {
   const setAppState = (updater: (prev: typeof state) => typeof state) => {
@@ -35,7 +41,7 @@ function runningWorkflowTask(params: {
   taskId: string
   runId: string
   abortController?: AbortController
-}) {
+}): LocalWorkflowTaskState {
   const { taskId, runId, abortController = new AbortController() } = params
   return {
     id: taskId,
@@ -183,6 +189,45 @@ return 'ok'
     expect(shouldRouteWorkflowAgentControl('run')).toBe(false)
     expect(shouldRouteWorkflowAgentControl('list')).toBe(false)
     expect(shouldRouteWorkflowAgentControl('save')).toBe(false)
+  })
+
+  test('interactive run view can drill into agents when a workflow has no phases', () => {
+    const agent = runningWorkflowTask({
+      taskId: 'wtaskcmd_unphased',
+      runId: 'wf_cmd_unphased',
+    }).agents[0]!
+
+    expect(shouldShowRunLevelAgents(0, 1)).toBe(true)
+    expect(workflowRunOpenTarget('wf_cmd_unphased', [], 0, agent)).toEqual({
+      mode: 'agent',
+      runId: 'wf_cmd_unphased',
+      agentNumber: 1,
+    })
+    expect(workflowAgentBackTarget('wf_cmd_unphased', null)).toEqual({
+      mode: 'run',
+      runId: 'wf_cmd_unphased',
+    })
+  })
+
+  test('interactive run view keeps phase drilldown when phases exist', () => {
+    const agent = runningWorkflowTask({
+      taskId: 'wtaskcmd_phased',
+      runId: 'wf_cmd_phased',
+    }).agents[0]!
+
+    expect(shouldShowRunLevelAgents(1, 2)).toBe(false)
+    expect(
+      workflowRunOpenTarget('wf_cmd_phased', ['Scan'], 0, agent),
+    ).toEqual({
+      mode: 'phase',
+      runId: 'wf_cmd_phased',
+      phase: 'Scan',
+    })
+    expect(workflowAgentBackTarget('wf_cmd_phased', 'Scan')).toEqual({
+      mode: 'phase',
+      runId: 'wf_cmd_phased',
+      phase: 'Scan',
+    })
   })
 
   test('queues an official-shaped Workflow tool call with scriptPath, resumeFromRunId, and args', () => {
