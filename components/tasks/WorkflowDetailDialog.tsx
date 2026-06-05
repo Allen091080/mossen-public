@@ -88,6 +88,25 @@ function latestToolCallLabel(
   return latest ? `${latest.name}${latest.summary ? ` ${latest.summary}` : ''}` : null
 }
 
+export function workflowAgentDetailParts(
+  agent: DeepImmutable<WorkflowAgentTaskProgress>,
+): string[] {
+  const latestTool = latestToolCallLabel(agent)
+  const parts: string[] = []
+  if (agent.agentType) parts.push(agent.agentType)
+  if (agent.model) parts.push(agent.model)
+  if (agent.isolation) parts.push(agent.isolation)
+  if (agent.promptPreview) parts.push(`prompt: ${agent.promptPreview}`)
+  if (agent.tokens > 0) parts.push(`${formatNumber(agent.tokens)} tokens`)
+  if (agent.toolCalls > 0) parts.push(`${formatNumber(agent.toolCalls)} tools`)
+  if (latestTool) parts.push(`tool: ${latestTool}`)
+  if (agent.resultPreview) parts.push(`result: ${agent.resultPreview}`)
+  if (agent.durationMs !== undefined) {
+    parts.push(formatDuration(agent.durationMs))
+  }
+  return parts
+}
+
 export function workflowPhaseSummaries(
   workflow: WorkflowPhaseSummaryInput,
 ): WorkflowPhaseSummary[] {
@@ -158,28 +177,17 @@ function AgentRow({
   key?: React.Key
   agent: DeepImmutable<WorkflowAgentTaskProgress>
 }): React.ReactNode {
-  const latestTool = latestToolCallLabel(agent)
+  const detailParts = workflowAgentDetailParts(agent)
   return (
     <Text wrap="truncate-end">
       #{agent.agentNumber} {agent.phase ? `[${agent.phase}] ` : ''}
       {agent.label}{' '}
       <Text color={agentStatusColor(agent.status)}>{agent.status}</Text>
-      {agent.agentType ? <Text dimColor> · {agent.agentType}</Text> : null}
-      {agent.model ? <Text dimColor> · {agent.model}</Text> : null}
-      {agent.isolation ? <Text dimColor> · {agent.isolation}</Text> : null}
-        {agent.tokens > 0 ? (
-          <Text dimColor> · {formatNumber(agent.tokens)} tokens</Text>
-        ) : null}
-        {agent.toolCalls > 0 ? (
-          <Text dimColor> · {formatNumber(agent.toolCalls)} tools</Text>
-        ) : null}
-        {latestTool ? <Text dimColor> · {latestTool}</Text> : null}
-        {agent.resultPreview ? (
-          <Text dimColor> · {agent.resultPreview}</Text>
-        ) : null}
-        {agent.durationMs !== undefined ? (
-          <Text dimColor> · {formatDuration(agent.durationMs)}</Text>
-        ) : null}
+      {detailParts.map(part => (
+        <Text key={part} dimColor>
+          {' '}· {part}
+        </Text>
+      ))}
       {agent.error ? <Text color="error"> · {agent.error}</Text> : null}
     </Text>
   )

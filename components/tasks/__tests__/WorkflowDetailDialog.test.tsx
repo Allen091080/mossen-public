@@ -3,6 +3,7 @@ import {
   canPauseWorkflowDetail,
   canResumeWorkflowDetail,
   canStopWorkflowDetail,
+  workflowAgentDetailParts,
   workflowPhaseSummaries,
 } from '../WorkflowDetailDialog.js'
 
@@ -87,6 +88,39 @@ describe('WorkflowDetailDialog controls', () => {
         toolCalls: 0,
         elapsedMs: 0,
       },
+    ])
+  })
+
+  test('task panel agent rows expose official prompt, tool, and result details', () => {
+    expect(
+      workflowAgentDetailParts({
+        agentNumber: 2,
+        label: 'inspect auth routes',
+        phase: 'Scan',
+        status: 'completed',
+        tokens: 12400,
+        toolCalls: 3,
+        durationMs: 2400,
+        agentType: 'general-purpose',
+        model: 'inherit',
+        isolation: 'worktree',
+        promptPreview: 'inspect src/routes for missing auth checks',
+        recentToolCalls: [
+          { name: 'Grep', summary: 'src/routes' },
+          { name: 'Read', summary: 'src/routes/users.ts' },
+        ],
+        resultPreview: 'users route missing admin check',
+      }),
+    ).toEqual([
+      'general-purpose',
+      'inherit',
+      'worktree',
+      'prompt: inspect src/routes for missing auth checks',
+      '12.4k tokens',
+      '3 tools',
+      'tool: Read src/routes/users.ts',
+      'result: users route missing admin check',
+      '2s',
     ])
   })
 })
