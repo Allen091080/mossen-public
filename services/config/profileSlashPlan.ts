@@ -7,6 +7,7 @@ import {
   getProfileByName,
   setActiveProfile,
   setProfile,
+  resolveDefaultProfileProvider,
   validateProfile,
   validateProfileName,
   type DesensitizedProfile,
@@ -275,7 +276,11 @@ export function createModelProfileUpdatePlan(input: {
   }
 
   const nextCandidate: ProfileSchema = {
-    provider: input.provider ?? existing.provider,
+    provider: input.provider ?? (
+      input.baseURL !== undefined
+        ? resolveDefaultProfileProvider(input.baseURL)
+        : existing.provider
+    ),
     baseURL: input.baseURL ?? existing.baseURL,
     model: input.model ?? existing.model,
     apiKey: input.apiKey ?? existing.apiKey,

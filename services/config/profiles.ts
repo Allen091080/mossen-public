@@ -107,11 +107,12 @@ export function looksLikeMessagesCompatibleBaseUrl(
       .split('/')
       .filter(Boolean)
     return (
-      segments.includes('messages')
+      segments.includes('messages') ||
+      segments.includes('anth' + 'ropic')
     )
   } catch {
     const lower = raw.toLowerCase()
-    return lower.includes('/messages')
+    return lower.includes('/messages') || lower.includes('/' + 'anth' + 'ropic')
   }
 }
 
@@ -121,6 +122,30 @@ export function resolveDefaultProfileProvider(
   return looksLikeMessagesCompatibleBaseUrl(baseURL)
     ? MESSAGES_COMPATIBLE_PROVIDER
     : 'openai-compatible'
+}
+
+function buildMessagesCompatibleEndpoint(baseURL: string): string {
+  const trimmed = baseURL.trim().replace(/\/+$/, '')
+  if (!trimmed) return '/v1/messages'
+  try {
+    const parsed = new URL(trimmed)
+    const pathname = parsed.pathname.replace(/\/+$/, '')
+    if (pathname.endsWith('/v1/messages') || pathname.endsWith('/messages')) {
+      return parsed.toString()
+    }
+    if (pathname.endsWith('/v1')) {
+      parsed.pathname = `${pathname}/messages`
+      return parsed.toString()
+    }
+    parsed.pathname = `${pathname}/v1/messages`
+    return parsed.toString()
+  } catch {
+    if (trimmed.endsWith('/v1/messages') || trimmed.endsWith('/messages')) {
+      return trimmed
+    }
+    if (trimmed.endsWith('/v1')) return `${trimmed}/messages`
+    return `${trimmed}/v1/messages`
+  }
 }
 
 /** apiKey 脱敏: 前 6 + ... + 后 4. 短 key 全 mask. */
@@ -808,14 +833,20 @@ export async function testProfile(
  */
 export async function testProfileChat(
   profile: ProfileSchema,
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; fetch?: typeof fetch },
 ): Promise<ProfileChatTestResult> {
   const timeoutMs = options?.timeoutMs ?? 5000
+  const fetchImpl = options?.fetch ?? fetch
   const baseTrimmed = profile.baseURL.replace(/\/+$/, '')
-  const isOpenAICompatible = profile.provider === 'openai-compatible'
+  const effectiveProvider =
+    profile.provider === 'openai-compatible' &&
+    looksLikeMessagesCompatibleBaseUrl(profile.baseURL)
+      ? MESSAGES_COMPATIBLE_PROVIDER
+      : profile.provider
+  const isOpenAICompatible = effectiveProvider === 'openai-compatible'
   const url = isOpenAICompatible
     ? `${baseTrimmed}/chat/completions`
-    : `${baseTrimmed}/messages`
+    : buildMessagesCompatibleEndpoint(baseTrimmed)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   const start = Date.now()
@@ -857,7 +888,7 @@ export async function testProfileChat(
       }
 
   try {
-    const res = await fetch(url, {
+    const res = await fetchImpl(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),

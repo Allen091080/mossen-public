@@ -298,11 +298,17 @@ export async function handleModelProfileCliFlag(
           emitError(`profile "${name}" not found; use --add-model-profile to create`)
           return { handled: true, exitCode: 1 }
         }
-        const baseURL = getOptionValue(args, '--baseURL') ?? existing.baseURL
+        const explicitBaseURL = getOptionValue(args, '--baseURL') ?? getOptionValue(args, '--baseUrl')
+        const baseURL = explicitBaseURL ?? existing.baseURL
         const model = getOptionValue(args, '--model') ?? existing.model
         const apiKey = getOptionValue(args, '--apiKey') ?? existing.apiKey
         const displayName = getOptionValue(args, '--name') ?? existing.name
-        const provider = getOptionValue(args, '--provider') ?? existing.provider
+        const explicitProvider = getOptionValue(args, '--provider')
+        const provider = explicitProvider ?? (
+          explicitBaseURL
+            ? resolveDefaultProfileProvider(baseURL)
+            : existing.provider
+        )
         const maxInputTokens = parseMaxInputTokensOption(args)
         if (maxInputTokens.ok === false) {
           emitError(maxInputTokens.reason)
