@@ -211,7 +211,7 @@ export const STRINGS_EN = {
   'ui.workflowKeyword.notification':
     'Workflow mode — multi-agent orchestration enabled for this message.',
   'ui.workflowKeyword.reminder':
-    'The user explicitly opted into multi-agent orchestration by typing the workflow keyword. When the task genuinely warrants it, you may use the Workflow tool to coordinate sub-agents.',
+    'The user explicitly opted into multi-agent orchestration by typing the workflow keyword or asking for it in natural language. When the task genuinely warrants it, you may use the Workflow tool to coordinate sub-agents.',
   'ui.workflowKeyword.ultraworkReminder':
     'The user requested the strongest single-turn orchestration (ultrawork) for this message. Decompose aggressively and use the Workflow tool to fan out sub-agents in parallel, verifying findings before reporting.',
   'ui.workflowKeyword.ultracodeReminder':

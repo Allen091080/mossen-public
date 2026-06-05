@@ -187,7 +187,7 @@ export const STRINGS_ZH = {
   'ui.workflowKeyword.notification':
     'Workflow 模式 —— 本条消息已启用多 agent 编排。',
   'ui.workflowKeyword.reminder':
-    '用户通过输入 workflow 关键词明确选择了多 agent 编排。当任务确有必要时，你可以使用 Workflow 工具来协调子 agent。',
+    '用户明确选择了多 agent 编排（workflow 关键词或自然语言请求）。当任务确有必要时，你可以使用 Workflow 工具来协调子 agent。',
   'ui.workflowKeyword.ultraworkReminder':
     '用户为本条消息请求了最强的单轮编排（ultrawork）。请积极拆解任务，使用 Workflow 工具并行 fan-out 多个子 agent，并在汇报前验证发现。',
   'ui.workflowKeyword.ultracodeReminder':

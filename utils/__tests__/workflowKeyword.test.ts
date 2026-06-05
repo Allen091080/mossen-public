@@ -7,6 +7,7 @@ import {
   hasAnyWorkflowTrigger,
   hasUltracodeKeyword,
   hasUltraworkKeyword,
+  hasWorkflowDirectRequest,
   hasWorkflowKeyword,
   suppressNextWorkflowReminderFor,
 } from '../workflowKeyword.js'
@@ -61,6 +62,27 @@ describe('workflowKeyword', () => {
       expect(hasUltraworkKeyword('use ultrawork')).toBe(true)
       expect(hasUltracodeKeyword('turn on ultracode')).toBe(true)
       expect(hasAnyWorkflowTrigger('ordinary prompt')).toBe(false)
+    })
+
+    test('treats explicit natural-language orchestration requests as opt-in', () => {
+      expect(hasWorkflowDirectRequest('run a workflow for this migration')).toBe(
+        true,
+      )
+      expect(
+        hasWorkflowDirectRequest(
+          'do a comprehensive parallel review of this API surface',
+        ),
+      ).toBe(true)
+      expect(hasWorkflowDirectRequest('use multi-agent research here')).toBe(true)
+      expect(hasWorkflowDirectRequest('fan out across multiple agents')).toBe(true)
+      expect(hasAnyWorkflowTrigger('use multi-agent research here')).toBe(true)
+    })
+
+    test('does not treat incidental agent wording as workflow opt-in', () => {
+      expect(hasWorkflowDirectRequest('compare multi-agent systems')).toBe(false)
+      expect(hasWorkflowDirectRequest('this agent should review one file')).toBe(
+        false,
+      )
     })
   })
 
@@ -134,6 +156,15 @@ describe('workflowKeyword', () => {
 
     test('fires for the plural keyword too', () => {
       expect(buildWorkflowReminder('run two workflows', true)).not.toBeNull()
+    })
+
+    test('fires for explicit natural-language workflow requests', () => {
+      expect(
+        buildWorkflowReminder(
+          'please do a broad parallel audit of these packages',
+          true,
+        ),
+      ).not.toBeNull()
     })
 
     test('returns null when the keyword is absent (gate enabled)', () => {

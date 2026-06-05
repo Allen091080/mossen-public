@@ -1,8 +1,8 @@
 /**
  * Workflow keyword detection for the prompt input.
  *
- * Three standalone trigger words let the user opt into multi-agent
- * orchestration, mirroring the thinking/ultraplan keyword UX:
+ * Standalone trigger words and explicit natural-language requests let the user
+ * opt into multi-agent orchestration, mirroring the thinking keyword UX:
  *  - `workflow` / `workflows` — opt in for THIS message.
  *  - `ultrawork` — strongest single-turn orchestration for THIS message.
  *  - `ultracode` — turn ON standing (session-wide) orchestration mode.
@@ -27,6 +27,14 @@ export function isWorkflowKeywordEnabled(): boolean {
 const WORKFLOW_RE = /\bworkflows?\b/i
 const ULTRAWORK_RE = /\bultrawork\b/i
 const ULTRACODE_RE = /\bultracode\b/i
+const WORKFLOW_DIRECT_REQUEST_RE =
+  /\b(?:use|run|launch|start|write|create)\s+(?:a\s+)?workflows?\b/i
+const BROAD_PARALLEL_REQUEST_RE =
+  /\b(?:comprehensive|broad|large[-\s]?scale)\s+parallel\s+(?:review|audit|research|analysis|sweep)\b/i
+const MULTI_AGENT_REQUEST_RE =
+  /\bmulti[-\s]?agent\s+(?:orchestration|research|review|audit|analysis|parallel|fan[-\s]?out)\b/i
+const FANOUT_AGENT_REQUEST_RE =
+  /\bfan[-\s]?out\s+(?:with|to|across)\s+(?:multiple|many)\s+(?:agents|subagents)\b/i
 const suppressedWorkflowReminderPrompts = new Set<string>()
 
 export function hasWorkflowKeyword(text: string): boolean {
@@ -41,12 +49,22 @@ export function hasUltracodeKeyword(text: string): boolean {
   return ULTRACODE_RE.test(text)
 }
 
-/** True when the message contains any orchestration trigger word. */
+export function hasWorkflowDirectRequest(text: string): boolean {
+  return (
+    WORKFLOW_DIRECT_REQUEST_RE.test(text) ||
+    BROAD_PARALLEL_REQUEST_RE.test(text) ||
+    MULTI_AGENT_REQUEST_RE.test(text) ||
+    FANOUT_AGENT_REQUEST_RE.test(text)
+  )
+}
+
+/** True when the message contains any orchestration trigger. */
 export function hasAnyWorkflowTrigger(text: string): boolean {
   return (
     hasWorkflowKeyword(text) ||
     hasUltraworkKeyword(text) ||
-    hasUltracodeKeyword(text)
+    hasUltracodeKeyword(text) ||
+    hasWorkflowDirectRequest(text)
   )
 }
 
@@ -88,7 +106,7 @@ export function findWorkflowTriggerPositions(text: string): Array<{
  * verbatim, never mutated in place.
  *
  * Reminder priority (strongest first): ultracode keyword > ultrawork keyword >
- * workflow keyword > already-standing ultracode mode.
+ * workflow keyword/direct request > already-standing ultracode mode.
  */
 export function buildWorkflowReminder(
   value: string,
@@ -109,7 +127,7 @@ export function buildWorkflowReminder(
     key = 'ui.workflowKeyword.ultracodeReminder'
   } else if (hasUltraworkKeyword(value)) {
     key = 'ui.workflowKeyword.ultraworkReminder'
-  } else if (hasWorkflowKeyword(value)) {
+  } else if (hasWorkflowKeyword(value) || hasWorkflowDirectRequest(value)) {
     key = 'ui.workflowKeyword.reminder'
   } else if (ultracodeStanding) {
     key = 'ui.workflowKeyword.ultracodeStandingReminder'
