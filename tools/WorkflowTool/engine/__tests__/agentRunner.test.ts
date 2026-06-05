@@ -18,10 +18,18 @@ import {
   runHostedRemoteWorkflowAgent,
   withStructuredOutputAllowed,
   withStructuredOutputTool,
+  WORKFLOW_AGENT_DIRECT_USER_TOOLS,
   type WorkflowAgentRunnerDeps,
   WorkflowSchemaError,
 } from '../agentRunner.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../../../AskUserQuestionTool/prompt.js'
+import {
+  BRIEF_TOOL_NAME,
+  LEGACY_BRIEF_TOOL_NAME,
+} from '../../../BriefTool/prompt.js'
+import { PUSH_NOTIFICATION_TOOL_NAME } from '../../../PushNotificationTool/prompt.js'
+import { SEND_MESSAGE_TOOL_NAME } from '../../../SendMessageTool/constants.js'
+import { SEND_USER_FILE_TOOL_NAME } from '../../../SendUserFileTool/prompt.js'
 
 const OBJECT_SCHEMA: Record<string, unknown> = {
   type: 'object',
@@ -151,13 +159,28 @@ describe('workflow agent structured output helpers', () => {
     const tools = [
       { name: 'Read' },
       { name: ASK_USER_QUESTION_TOOL_NAME },
+      { name: BRIEF_TOOL_NAME },
+      { name: LEGACY_BRIEF_TOOL_NAME },
+      { name: SEND_USER_FILE_TOOL_NAME },
+      { name: PUSH_NOTIFICATION_TOOL_NAME },
+      { name: SEND_MESSAGE_TOOL_NAME },
       { name: 'Bash' },
     ] as unknown as Tools
 
     expect(filterWorkflowAgentTools(tools).map(tool => tool.name)).toEqual([
       'Read',
+      SEND_MESSAGE_TOOL_NAME,
       'Bash',
     ])
+    expect(WORKFLOW_AGENT_DIRECT_USER_TOOLS).toEqual(
+      new Set([
+        ASK_USER_QUESTION_TOOL_NAME,
+        BRIEF_TOOL_NAME,
+        LEGACY_BRIEF_TOOL_NAME,
+        SEND_USER_FILE_TOOL_NAME,
+        PUSH_NOTIFICATION_TOOL_NAME,
+      ]),
+    )
   })
 
   test('extracts the latest structured output attachment from agent messages', () => {
@@ -231,10 +254,10 @@ describe('workflow local agent resolution', () => {
         deniedRules: ['Bash(rm -rf *)'],
         shouldAvoidPermissionPrompts: true,
         mcpTools: [
-          {
-            name: ASK_USER_QUESTION_TOOL_NAME,
-            isEnabled: () => true,
-          },
+          { name: ASK_USER_QUESTION_TOOL_NAME, isEnabled: () => true },
+          { name: BRIEF_TOOL_NAME, isEnabled: () => true },
+          { name: SEND_USER_FILE_TOOL_NAME, isEnabled: () => true },
+          { name: PUSH_NOTIFICATION_TOOL_NAME, isEnabled: () => true },
         ] as unknown as Tools,
       }),
       canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
@@ -258,7 +281,12 @@ describe('workflow local agent resolution', () => {
         askRules: ['WebFetch(example.com)'],
         denyRules: ['Bash(rm -rf *)'],
         shouldAvoidPermissionPrompts: true,
-        toolNames: expect.not.arrayContaining([ASK_USER_QUESTION_TOOL_NAME]),
+        toolNames: expect.not.arrayContaining([
+          ASK_USER_QUESTION_TOOL_NAME,
+          BRIEF_TOOL_NAME,
+          SEND_USER_FILE_TOOL_NAME,
+          PUSH_NOTIFICATION_TOOL_NAME,
+        ]),
       },
     ])
   })

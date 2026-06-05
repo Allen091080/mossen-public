@@ -49,6 +49,12 @@ import {
 } from '../../SyntheticOutputTool/SyntheticOutputTool.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../../AskUserQuestionTool/prompt.js'
 import {
+  BRIEF_TOOL_NAME,
+  LEGACY_BRIEF_TOOL_NAME,
+} from '../../BriefTool/prompt.js'
+import { PUSH_NOTIFICATION_TOOL_NAME } from '../../PushNotificationTool/prompt.js'
+import { SEND_USER_FILE_TOOL_NAME } from '../../SendUserFileTool/prompt.js'
+import {
   extractJson,
   formatIssues,
   stripLiteralThinking,
@@ -871,8 +877,18 @@ export function assertWorkflowAgentSchema(schema: Record<string, unknown>): void
 }
 
 export function filterWorkflowAgentTools(availableTools: Tools): Tools {
-  return availableTools.filter(tool => tool.name !== ASK_USER_QUESTION_TOOL_NAME)
+  return availableTools.filter(
+    tool => !WORKFLOW_AGENT_DIRECT_USER_TOOLS.has(tool.name),
+  )
 }
+
+export const WORKFLOW_AGENT_DIRECT_USER_TOOLS = new Set([
+  ASK_USER_QUESTION_TOOL_NAME,
+  BRIEF_TOOL_NAME,
+  LEGACY_BRIEF_TOOL_NAME,
+  SEND_USER_FILE_TOOL_NAME,
+  PUSH_NOTIFICATION_TOOL_NAME,
+])
 
 export function formatMissingStructuredOutputAfterNudges(
   nudges = MAX_SCHEMA_RETRIES,
