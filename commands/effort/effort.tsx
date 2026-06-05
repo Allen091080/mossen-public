@@ -116,6 +116,7 @@ export function showCurrentEffort(
 }
 
 function unsetEffortLevel(): EffortCommandResult {
+  setUltracodeActive(false)
   const result = updateSettingsForSource('userSettings', {
     effortLevel: undefined,
   })
@@ -181,6 +182,7 @@ export function executeEffort(args: string): EffortCommandResult {
     }
   }
 
+  setUltracodeActive(false)
   return setEffortValue(normalized)
 }
 

@@ -31,4 +31,22 @@ describe('/effort ultracode', () => {
     expect(isUltracodeActive()).toBe(false)
     expect(result.message).toContain('Workflow')
   })
+
+  test('ordinary effort levels turn off standing ultracode mode', () => {
+    setUltracodeActive(true)
+
+    const result = executeEffort('high')
+
+    expect(result.effortUpdate?.value).toBe('high')
+    expect(isUltracodeActive()).toBe(false)
+  })
+
+  test('auto effort turns off standing ultracode mode', () => {
+    setUltracodeActive(true)
+
+    const result = executeEffort('auto')
+
+    expect(result.effortUpdate?.value).toBeUndefined()
+    expect(isUltracodeActive()).toBe(false)
+  })
 })
