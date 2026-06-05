@@ -191,6 +191,30 @@ function isCallOfNamedMember(
   )
 }
 
+function callExpressionArgs(node: AstNode): unknown[] {
+  const args = (node as { arguments?: unknown }).arguments
+  return Array.isArray(args) ? args : []
+}
+
+function isConstructorReflectAccess(node: unknown): boolean {
+  if (!isAstNode(node) || node.type !== 'CallExpression') return false
+  const call = node as { callee?: unknown }
+  const args = callExpressionArgs(node)
+  if (
+    isNamedMember(call.callee, 'Reflect', 'get') &&
+    isLiteralString(args[1], 'constructor')
+  ) {
+    return true
+  }
+  if (
+    isNamedMember(call.callee, 'Object', 'getOwnPropertyDescriptor') &&
+    isLiteralString(args[1], 'constructor')
+  ) {
+    return true
+  }
+  return false
+}
+
 function isArglessDateConstruction(node: unknown): boolean {
   if (!isAstNode(node)) return false
   if (node.type !== 'NewExpression' && node.type !== 'CallExpression') {
@@ -274,6 +298,7 @@ function rejectModuleSyntax(source: string): void {
       if (node.callee.name === 'require') throw workflowRequireError()
       if (node.callee.name === 'eval') throw workflowEvalError()
     }
+    if (isConstructorReflectAccess(node)) throw workflowConstructorError()
     if (isConstructorMemberAccess(node)) throw workflowConstructorError()
   })
 }
@@ -339,6 +364,34 @@ const DETERMINISTIC_GUARDS = `
     writable: true,
     configurable: true,
   })
+
+  const hideConstructor = (target) => {
+    try {
+      Object.defineProperty(target, 'constructor', {
+        value: undefined,
+        writable: false,
+        configurable: false,
+      })
+    } catch {}
+  }
+  const AsyncFunction = (async function () {}).constructor
+  const GeneratorFunction = (function* () {}).constructor
+  const AsyncGeneratorFunction = (async function* () {}).constructor
+  for (const target of [
+    Object.prototype,
+    Array.prototype,
+    Function.prototype,
+    AsyncFunction.prototype,
+    GeneratorFunction.prototype,
+    AsyncGeneratorFunction.prototype,
+    Date.prototype,
+    RegExp.prototype,
+    Map.prototype,
+    Set.prototype,
+    Promise.prototype,
+  ]) {
+    hideConstructor(target)
+  }
 })()
 `
 

@@ -125,6 +125,34 @@ describe('runSandbox — blocked surface', () => {
     ).rejects.toThrow(/constructor/)
   })
 
+  test('constructor reflection cannot recover dynamic code constructors', async () => {
+    await expect(
+      runSandbox({
+        ...base,
+        source: `const F = Reflect.get(Object, 'constructor'); return F('return 1')()`,
+      }),
+    ).rejects.toThrow(/constructor/)
+    await expect(
+      runSandbox({
+        ...base,
+        source: `const descriptor = Object.getOwnPropertyDescriptor(Function.prototype, 'constructor'); return descriptor.value('return 1')()`,
+      }),
+    ).rejects.toThrow(/constructor/)
+
+    const out = await runSandbox({
+      ...base,
+      source: `
+        const key = 'constructor'
+        return [
+          typeof Object[key],
+          typeof (async () => {})[key],
+          typeof Promise.prototype[key],
+        ].join(':')
+      `,
+    })
+    expect(out).toBe('undefined:undefined:undefined')
+  })
+
   test('injected host functions stay callable without host prototypes', async () => {
     const out = await runSandbox({
       ...base,
