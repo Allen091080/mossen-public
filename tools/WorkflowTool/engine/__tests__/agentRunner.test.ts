@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   getEmptyToolPermissionContext,
+  type Tools,
   type ToolUseContext,
 } from '../../../../Tool.js'
 import type { PermissionMode } from '../../../../types/permissions.js'
@@ -12,6 +13,7 @@ import {
   coerceRemoteWorkflowAgentResult,
   createWorkflowAgentRunner,
   extractStructuredOutputFromMessages,
+  filterWorkflowAgentTools,
   formatMissingStructuredOutputAfterNudges,
   runHostedRemoteWorkflowAgent,
   withStructuredOutputAllowed,
@@ -19,6 +21,7 @@ import {
   type WorkflowAgentRunnerDeps,
   WorkflowSchemaError,
 } from '../agentRunner.js'
+import { ASK_USER_QUESTION_TOOL_NAME } from '../../../AskUserQuestionTool/prompt.js'
 
 const OBJECT_SCHEMA: Record<string, unknown> = {
   type: 'object',
@@ -45,6 +48,7 @@ function workflowRunnerContext(params: {
   deniedRules?: string[]
   mode?: PermissionMode
   shouldAvoidPermissionPrompts?: boolean
+  mcpTools?: Tools
 }): ToolUseContext {
   return {
     options: {
@@ -81,7 +85,7 @@ function workflowRunnerContext(params: {
           shouldAvoidPermissionPrompts:
             params.shouldAvoidPermissionPrompts ?? false,
         },
-        mcp: { tools: [] },
+        mcp: { tools: params.mcpTools ?? [] },
       }) as unknown as ReturnType<ToolUseContext['getAppState']>,
     setAppState: () => {},
   } as unknown as ToolUseContext
@@ -143,6 +147,19 @@ describe('workflow agent structured output helpers', () => {
     expect(withStructuredOutputAllowed(agent)).toBe(agent)
   })
 
+  test('filters direct user-input tools from workflow agents', () => {
+    const tools = [
+      { name: 'Read' },
+      { name: ASK_USER_QUESTION_TOOL_NAME },
+      { name: 'Bash' },
+    ] as unknown as Tools
+
+    expect(filterWorkflowAgentTools(tools).map(tool => tool.name)).toEqual([
+      'Read',
+      'Bash',
+    ])
+  })
+
   test('extracts the latest structured output attachment from agent messages', () => {
     const messages = [
       { type: 'assistant', message: { content: [] } },
@@ -169,10 +186,11 @@ describe('workflow local agent resolution', () => {
       askRules: string[]
       denyRules: string[]
       shouldAvoidPermissionPrompts?: boolean
+      toolNames: string[]
     }> = []
     const runAgentImpl: NonNullable<
       WorkflowAgentRunnerDeps['runAgentImpl']
-    > = async function* ({ agentDefinition, toolUseContext }) {
+    > = async function* ({ agentDefinition, toolUseContext, availableTools }) {
       const permissionContext =
         toolUseContext.getAppState().toolPermissionContext
       observed.push({
@@ -185,6 +203,7 @@ describe('workflow local agent resolution', () => {
         denyRules: [...(permissionContext.alwaysDenyRules.userSettings ?? [])],
         shouldAvoidPermissionPrompts:
           permissionContext.shouldAvoidPermissionPrompts,
+        toolNames: availableTools.map(tool => tool.name),
       })
       yield {
         type: 'assistant',
@@ -211,6 +230,12 @@ describe('workflow local agent resolution', () => {
         askRules: ['WebFetch(example.com)'],
         deniedRules: ['Bash(rm -rf *)'],
         shouldAvoidPermissionPrompts: true,
+        mcpTools: [
+          {
+            name: ASK_USER_QUESTION_TOOL_NAME,
+            isEnabled: () => true,
+          },
+        ] as unknown as Tools,
       }),
       canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
       runId: 'wf-test',
@@ -233,6 +258,7 @@ describe('workflow local agent resolution', () => {
         askRules: ['WebFetch(example.com)'],
         denyRules: ['Bash(rm -rf *)'],
         shouldAvoidPermissionPrompts: true,
+        toolNames: expect.not.arrayContaining([ASK_USER_QUESTION_TOOL_NAME]),
       },
     ])
   })

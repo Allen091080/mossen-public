@@ -47,6 +47,7 @@ import {
   createSyntheticOutputTool,
   SYNTHETIC_OUTPUT_TOOL_NAME,
 } from '../../SyntheticOutputTool/SyntheticOutputTool.js'
+import { ASK_USER_QUESTION_TOOL_NAME } from '../../AskUserQuestionTool/prompt.js'
 import {
   extractJson,
   formatIssues,
@@ -869,6 +870,10 @@ export function assertWorkflowAgentSchema(schema: Record<string, unknown>): void
   }
 }
 
+export function filterWorkflowAgentTools(availableTools: Tools): Tools {
+  return availableTools.filter(tool => tool.name !== ASK_USER_QUESTION_TOOL_NAME)
+}
+
 export function formatMissingStructuredOutputAfterNudges(
   nudges = MAX_SCHEMA_RETRIES,
 ): string {
@@ -1154,9 +1159,8 @@ export function createWorkflowAgentRunner(
       ...workerAppState.toolPermissionContext,
       mode: 'acceptEdits' as const,
     }
-    const baseAvailableTools = assembleToolPool(
-      workerPermissionContext,
-      appState.mcp.tools,
+    const baseAvailableTools = filterWorkflowAgentTools(
+      assembleToolPool(workerPermissionContext, appState.mcp.tools),
     )
     const model = opts.model as ModelAlias | undefined
 
