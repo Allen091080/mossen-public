@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
+  UPSTREAM_WORKFLOW_DISABLE_ENV,
   WORKFLOW_DISABLE_ENV,
   WORKFLOW_ENABLE_ENV,
   isWorkflowKeywordTriggerEnabled,
@@ -7,6 +8,7 @@ import {
 } from '../workflowAvailability.js'
 
 function clearWorkflowEnv(): void {
+  delete process.env[UPSTREAM_WORKFLOW_DISABLE_ENV]
   delete process.env[WORKFLOW_DISABLE_ENV]
   delete process.env[WORKFLOW_ENABLE_ENV]
 }
@@ -30,6 +32,12 @@ describe('workflowAvailability', () => {
 
   test('env disable has highest precedence', () => {
     process.env[WORKFLOW_DISABLE_ENV] = '1'
+    process.env[WORKFLOW_ENABLE_ENV] = '1'
+    expect(isWorkflowRuntimeEnabled({ enableWorkflows: true })).toBe(false)
+  })
+
+  test('upstream-compatible env disable has highest precedence', () => {
+    process.env[UPSTREAM_WORKFLOW_DISABLE_ENV] = '1'
     process.env[WORKFLOW_ENABLE_ENV] = '1'
     expect(isWorkflowRuntimeEnabled({ enableWorkflows: true })).toBe(false)
   })

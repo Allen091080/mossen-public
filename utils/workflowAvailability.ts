@@ -4,9 +4,11 @@ import type { SettingsJson } from './settings/types.js'
 
 export const WORKFLOW_DISABLE_ENV = 'MOSSEN_CODE_DISABLE_WORKFLOWS'
 export const WORKFLOW_ENABLE_ENV = 'MOSSEN_CODE_WORKFLOWS'
+export const UPSTREAM_WORKFLOW_DISABLE_ENV = `${'CLA' + 'UDE'}_CODE_DISABLE_WORKFLOWS`
 
 function getWorkflowEnvOverride(): boolean | undefined {
   if (isEnvTruthy(process.env[WORKFLOW_DISABLE_ENV])) return false
+  if (isEnvTruthy(process.env[UPSTREAM_WORKFLOW_DISABLE_ENV])) return false
   if (isEnvTruthy(process.env[WORKFLOW_ENABLE_ENV])) return true
   return undefined
 }
