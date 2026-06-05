@@ -757,11 +757,7 @@ export const WorkflowTool = buildTool({
       ? resumeRunId
       : `wf_${randomUUID().replace(/-/g, '').slice(0, 10)}`
     const taskId = generateTaskId('local_workflow')
-    const {
-      source,
-      resolvedScriptPath,
-      scope: workflowSourceScope,
-    } = await resolveSource(input)
+    const { source, scope: workflowSourceScope } = await resolveSource(input)
 
     // Validate + surface meta early so a malformed script fails fast — for the
     // background path too, so the caller learns of a bad script synchronously.
@@ -842,7 +838,7 @@ export const WorkflowTool = buildTool({
     }
 
     const prior = resumeRunId ? loadJournal(runId) : null
-    const persistedScriptPath = resolvedScriptPath ?? runScriptPath(runId)
+    const persistedScriptPath = runScriptPath(runId)
     const transcriptDir = workflowTranscriptDir(runId)
     removeInactiveWorkflowResumeTasks(
       typeof toolUseContext.getAppState === 'function'

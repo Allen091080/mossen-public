@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { isValidElement } from 'react'
 import {
   getProjectRoot,
@@ -648,7 +648,7 @@ return 'ok'
 })
 
 describe('WorkflowTool scriptPath guards', () => {
-  it('uses inline script when scriptPath and script are both provided, returning the resolved scriptPath', async () => {
+  it('uses inline script when scriptPath and script are both provided, returning a session snapshot path', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wf-scriptpath-inline-'))
     const scriptPath = join(dir, 'file.js')
     try {
@@ -677,7 +677,50 @@ return 'ok'
 
       expect(result.data.summary).toBe('Inline workflow wins')
       expect(result.data.error).toBeUndefined()
-      expect(result.data.scriptPath).toBe(resolve(scriptPath))
+      expect(result.data.scriptPath).toContain(`${result.data.runId}/script.js`)
+      expect(result.data.scriptPath).not.toBe(scriptPath)
+      expect(existsSync(result.data.scriptPath!)).toBe(true)
+      expect(readFileSync(result.data.scriptPath!, 'utf8')).toContain(
+        "name: 'inline-flow'",
+      )
+      expect(loadRunMeta(result.data.runId!)?.scriptPath).toBe(
+        result.data.scriptPath,
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reads scriptPath sources while returning the editable session snapshot path', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wf-scriptpath-file-'))
+    const scriptPath = join(dir, 'file.js')
+    const fileSource = `
+export const meta = { name: 'file-flow', description: 'File workflow wins' }
+return 'ok'
+`
+    try {
+      writeFileSync(scriptPath, fileSource)
+
+      const result = await WorkflowTool.call!(
+        {
+          scriptPath,
+        },
+        {
+          abortController: new AbortController(),
+          setAppState: () => {},
+        } as never,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(result.data.summary).toBe('File workflow wins')
+      expect(result.data.error).toBeUndefined()
+      expect(result.data.scriptPath).toContain(`${result.data.runId}/script.js`)
+      expect(result.data.scriptPath).not.toBe(scriptPath)
+      expect(existsSync(result.data.scriptPath!)).toBe(true)
+      expect(readFileSync(result.data.scriptPath!, 'utf8')).toBe(fileSource)
+      expect(loadRunMeta(result.data.runId!)?.scriptPath).toBe(
+        result.data.scriptPath,
+      )
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
