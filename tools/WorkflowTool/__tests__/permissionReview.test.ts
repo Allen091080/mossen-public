@@ -72,7 +72,7 @@ describe('buildWorkflowPermissionReview', () => {
     expect(review.meta?.description).toBe('Validate a change before shipping')
   })
 
-  test('uses scriptPath before inline script in the review payload', () => {
+  test('uses inline script before scriptPath in the review payload', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mossen-workflow-review-priority-'))
     const scriptPath = join(dir, 'ship-check.js')
     try {
@@ -81,16 +81,38 @@ describe('buildWorkflowPermissionReview', () => {
       const review = buildWorkflowPermissionReview({
         scriptPath,
         script: `
-export const meta = { name: 'inline-flow', description: 'Inline review loses' }
+export const meta = { name: 'inline-flow', description: 'Inline review wins' }
 return 'ok'
 `,
       })
 
-      expect(review.sourceKind).toBe('file')
-      expect(review.sourceLabel).toBe(scriptPath)
-      expect(review.meta?.name).toBe('ship-check')
-      expect(review.meta?.description).toBe('Validate a change before shipping')
-      expect(review.scriptSource).toBe(WORKFLOW_SOURCE)
+      expect(review.sourceKind).toBe('inline')
+      expect(review.sourceLabel).toBe('inline script')
+      expect(review.meta?.name).toBe('inline-flow')
+      expect(review.meta?.description).toBe('Inline review wins')
+      expect(review.scriptSource).toContain("name: 'inline-flow'")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('does not read a missing scriptPath when inline script is provided', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mossen-workflow-review-inline-missing-'))
+    const scriptPath = join(dir, 'missing.js')
+    try {
+      const review = buildWorkflowPermissionReview({
+        scriptPath,
+        script: `
+export const meta = { name: 'inline-missing', description: 'Inline path ignored' }
+return 'ok'
+`,
+      })
+
+      expect(review.sourceKind).toBe('inline')
+      expect(review.sourceLabel).toBe('inline script')
+      expect(review.meta?.name).toBe('inline-missing')
+      expect(review.metaError).toBeNull()
+      expect(review.scriptSource).toContain("name: 'inline-missing'")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
