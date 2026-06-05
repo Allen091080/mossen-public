@@ -33,13 +33,19 @@ import {
   workflowNeedsUsageConsentPrompt,
 } from './usageConsent.js'
 
-type WorkflowOptionValue =
+export type WorkflowOptionValue =
   | 'yes'
   | 'yes-always'
   | 'yes-source-always'
   | 'yes-skip-warning'
   | 'toggle-script'
   | 'no'
+
+export type WorkflowPermissionOptionSpec = {
+  value: WorkflowOptionValue
+  label: { en: string; zh: string }
+  acceptsPromptAmend?: boolean
+}
 
 const MAX_RAW_SCRIPT_CHARS = 4000
 const WORKFLOW_PROMPT_FEEDBACK_CONFIG = {
@@ -53,6 +59,79 @@ const WORKFLOW_PROMPT_FEEDBACK_CONFIG = {
 function truncateRawScript(source: string): string {
   if (source.length <= MAX_RAW_SCRIPT_CHARS) return source
   return `${source.slice(0, MAX_RAW_SCRIPT_CHARS - 18)}\n... [truncated]`
+}
+
+export function buildWorkflowPermissionOptionSpecs({
+  sourceLabel,
+  hasNamedWorkflowPermissionUpdates,
+  canRememberWorkflowSource,
+  showUsageWarning,
+  hasScriptSource,
+  showRawScript,
+}: {
+  sourceLabel: string
+  hasNamedWorkflowPermissionUpdates: boolean
+  canRememberWorkflowSource: boolean
+  showUsageWarning: boolean
+  hasScriptSource: boolean
+  showRawScript: boolean
+}): WorkflowPermissionOptionSpec[] {
+  const options: WorkflowPermissionOptionSpec[] = [
+    {
+      label: { en: 'Yes, run it', zh: '是，运行' },
+      value: 'yes',
+      acceptsPromptAmend: true,
+    },
+  ]
+  if (hasNamedWorkflowPermissionUpdates) {
+    options.push({
+      label: {
+        en: `Yes, and don't ask again for ${sourceLabel} in this project`,
+        zh: `是，并且在此项目中不再询问 ${sourceLabel}`,
+      },
+      value: 'yes-always',
+      acceptsPromptAmend: true,
+    })
+  }
+  if (canRememberWorkflowSource) {
+    options.push({
+      label: {
+        en: "Yes, and don't ask again for this workflow in this project",
+        zh: '是，并且在此项目中不再询问这个 workflow',
+      },
+      value: 'yes-source-always',
+      acceptsPromptAmend: true,
+    })
+  }
+  if (showUsageWarning) {
+    options.push({
+      label: {
+        en: "Yes, and don't show the workflow usage warning again",
+        zh: '是，并且不再显示 workflow 用量提醒',
+      },
+      value: 'yes-skip-warning',
+      acceptsPromptAmend: true,
+    })
+  }
+  if (hasScriptSource) {
+    options.push({
+      label: showRawScript
+        ? {
+            en: 'View workflow summary',
+            zh: '查看 workflow 摘要',
+          }
+        : {
+            en: 'View raw script',
+            zh: '查看原始脚本',
+          },
+      value: 'toggle-script',
+    })
+  }
+  options.push({
+    label: { en: 'No', zh: '否' },
+    value: 'no',
+  })
+  return options
 }
 
 function DetailRow({
@@ -296,61 +375,22 @@ export function WorkflowPermissionRequest({
   const canRememberWorkflowSource =
     namedWorkflowPermissionUpdates.length === 0 && Boolean(review.usageConsentHash)
 
-  const options: PermissionPromptOption<WorkflowOptionValue>[] = [
-    {
-      label: getLocalizedText({ en: 'Yes, run it', zh: '是，运行' }),
-      value: 'yes',
-      feedbackConfig: WORKFLOW_PROMPT_FEEDBACK_CONFIG,
-    },
-  ]
-  if (namedWorkflowPermissionUpdates.length > 0) {
-    options.push({
-      label: getLocalizedText({
-        en: `Yes, and don't ask again for ${originalReview.sourceLabel} in this project`,
-        zh: `是，并且在此项目中不再询问 ${originalReview.sourceLabel}`,
-      }),
-      value: 'yes-always',
-      feedbackConfig: WORKFLOW_PROMPT_FEEDBACK_CONFIG,
-    })
-  }
-  if (canRememberWorkflowSource) {
-    options.push({
-      label: getLocalizedText({
-        en: "Yes, and don't ask again for this workflow in this project",
-        zh: '是，并且在此项目中不再询问这个 workflow',
-      }),
-      value: 'yes-source-always',
-      feedbackConfig: WORKFLOW_PROMPT_FEEDBACK_CONFIG,
-    })
-  }
-  if (review.showUsageWarning) {
-    options.push({
-      label: getLocalizedText({
-        en: "Yes, and don't show the workflow usage warning again",
-        zh: '是，并且不再显示 workflow 用量提醒',
-      }),
-      value: 'yes-skip-warning',
-      feedbackConfig: WORKFLOW_PROMPT_FEEDBACK_CONFIG,
-    })
-  }
-  if (review.scriptSource) {
-    options.push({
-      label: showRawScript
-        ? getLocalizedText({
-            en: 'View workflow summary',
-            zh: '查看 workflow 摘要',
-          })
-        : getLocalizedText({
-            en: 'View raw script',
-            zh: '查看原始脚本',
-          }),
-      value: 'toggle-script',
-    })
-  }
-  options.push({
-    label: getLocalizedText({ en: 'No', zh: '否' }),
-    value: 'no',
-  })
+  const options: PermissionPromptOption<WorkflowOptionValue>[] =
+    buildWorkflowPermissionOptionSpecs({
+      sourceLabel: originalReview.sourceLabel,
+      hasNamedWorkflowPermissionUpdates:
+        namedWorkflowPermissionUpdates.length > 0,
+      canRememberWorkflowSource,
+      showUsageWarning: review.showUsageWarning,
+      hasScriptSource: Boolean(review.scriptSource),
+      showRawScript,
+    }).map(option => ({
+      label: getLocalizedText(option.label),
+      value: option.value,
+      ...(option.acceptsPromptAmend
+        ? { feedbackConfig: WORKFLOW_PROMPT_FEEDBACK_CONFIG }
+        : {}),
+    }))
 
   const toolAnalyticsContext: ToolAnalyticsContext = {
     toolName: sanitizeToolNameForAnalytics(toolUseConfirm.tool.name),
