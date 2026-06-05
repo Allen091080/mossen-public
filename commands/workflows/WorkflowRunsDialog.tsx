@@ -147,6 +147,12 @@ function sumAgents(
   return agents.reduce((sum, agent) => sum + (agent[field] ?? 0), 0)
 }
 
+export function sumAgentElapsedMs(
+  agents: readonly WorkflowAgentTaskProgress[],
+): number {
+  return agents.reduce((sum, agent) => sum + agentElapsed(agent), 0)
+}
+
 function statusSummary(agents: readonly WorkflowAgentTaskProgress[]): string {
   const counts = new Map<string, number>()
   for (const agent of agents) {
@@ -556,6 +562,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
                     ))
                   : phases.map((phase, index) => {
                       const phaseAgents = selectedRun.task.agents.filter(agent => agent.phase === phase)
+                      const phaseElapsedMs = sumAgentElapsedMs(phaseAgents)
                       const selected = index === selectedPhaseIndex
                       return (
                         <Text key={phase} color={selected ? 'suggestion' : undefined}>
@@ -565,6 +572,9 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
                             · {phaseAgents.length} agents · {statusSummary(phaseAgents)}
                             {' '}· {formatNumber(sumAgents(phaseAgents, 'tokens'))} tok
                             {' '}· {formatNumber(sumAgents(phaseAgents, 'toolCalls'))} tools
+                            {phaseElapsedMs > 0
+                              ? ` · ${formatDuration(phaseElapsedMs, { mostSignificantOnly: true })}`
+                              : ''}
                           </Text>
                         </Text>
                       )

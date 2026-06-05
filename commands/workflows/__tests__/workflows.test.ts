@@ -16,6 +16,7 @@ import { deriveWorkflowSaveName, saveRun } from '../saveWorkflow.js'
 import {
   shouldRouteWorkflowAgentControl,
   shouldShowRunLevelAgents,
+  sumAgentElapsedMs,
   workflowAgentBackTarget,
   workflowRunOpenTarget,
 } from '../WorkflowRunsDialog.js'
@@ -228,6 +229,39 @@ return 'ok'
       runId: 'wf_cmd_phased',
       phase: 'Scan',
     })
+  })
+
+  test('interactive progress view totals elapsed time across phase agents', () => {
+    const agents: LocalWorkflowTaskState['agents'] = [
+      {
+        agentNumber: 1,
+        label: 'Scan routes',
+        phase: 'Scan',
+        status: 'completed',
+        tokens: 10,
+        toolCalls: 1,
+        durationMs: 1200,
+      },
+      {
+        agentNumber: 2,
+        label: 'Review findings',
+        phase: 'Scan',
+        status: 'completed',
+        tokens: 20,
+        toolCalls: 2,
+        durationMs: 3400,
+      },
+      {
+        agentNumber: 3,
+        label: 'Queued follow-up',
+        phase: 'Scan',
+        status: 'queued',
+        tokens: 0,
+        toolCalls: 0,
+      },
+    ]
+
+    expect(sumAgentElapsedMs(agents)).toBe(4600)
   })
 
   test('queues an official-shaped Workflow tool call with scriptPath, resumeFromRunId, and args', () => {
