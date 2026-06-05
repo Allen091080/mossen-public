@@ -26,7 +26,6 @@ import {
 import {
   appendWorkflowResultLogLine,
   MAX_WORKFLOW_RESULT_LOG_LINES,
-  setWorkflowRemoteDepsForTest,
   WorkflowTool,
 } from '../WorkflowTool.js'
 import { WORKFLOW_TOOL_NAME } from '../constants.js'
@@ -308,8 +307,8 @@ return 'ok'
   })
 })
 
-describe('WorkflowTool remote workflow launch', () => {
-  it('launches a remote-workflow task when permission prompts cannot be shown', async () => {
+describe('WorkflowTool headless launch', () => {
+  it('runs locally when permission prompts cannot be shown', async () => {
     let state = {
       tasks: {},
       toolPermissionContext: {
@@ -317,82 +316,41 @@ describe('WorkflowTool remote workflow launch', () => {
         shouldAvoidPermissionPrompts: true,
       },
     } as unknown as AppState
-    let launched: {
-      initialMessage: string
-      description: string
-      title: string
-      model?: string
-    } | null = null
-    let polling:
-      | {
-          taskId: string
-          sessionId: string
-        }
-      | null = null
-    const reset = setWorkflowRemoteDepsForTest({
-      launch: async options => {
-        launched = options
-        return { id: 'session_remote_workflow_1', title: 'Remote workflow title' }
-      },
-      getSessionUrl: id => `https://example.invalid/code/${id}`,
-      startPolling: params => {
-        polling = params
-        return () => {}
-      },
-    })
 
-    try {
-      const result = await WorkflowTool.call!(
-        {
-          script: `
-export const meta = { name: 'remote-flow', description: 'Remote workflow launch', model: 'sonnet' }
-return agent('inspect remotely')
+    const result = await WorkflowTool.call!(
+      {
+        script: `
+export const meta = { name: 'headless-flow', description: 'Headless workflow launch', model: 'sonnet' }
+return 'ok'
 `,
-          args: { ticket: 42 },
-          timeoutMs: 1234,
+        args: { ticket: 42 },
+        timeoutMs: 1234,
+      },
+      {
+        abortController: new AbortController(),
+        toolUseId: 'toolu_headless_wf',
+        getAppState: () => state,
+        setAppState: (updater: (prev: AppState) => AppState) => {
+          state = updater(state)
         },
-        {
-          abortController: new AbortController(),
-          toolUseId: 'toolu_remote_wf',
-          getAppState: () => state,
-          setAppState: (updater: (prev: AppState) => AppState) => {
-            state = updater(state)
-          },
-        } as unknown as ToolUseContext,
-        async () => ({ behavior: 'allow' }) as never,
-      )
+      } as unknown as ToolUseContext,
+      async () => ({ behavior: 'allow' }) as never,
+    )
 
-      expect(result.data).toEqual({
-        status: 'remote_launched',
-        taskId: expect.stringMatching(/^r[a-z0-9]{8}$/),
-        summary: 'Remote workflow launch',
-        sessionUrl: 'https://example.invalid/code/session_remote_workflow_1',
-      })
-      expect(result.data.runId).toBeUndefined()
-      expect(result.data.scriptPath).toBeUndefined()
-      expect(result.data.transcriptDir).toBeUndefined()
-      expect(launched?.description).toBe('Remote dynamic workflow: remote-flow')
-      expect(launched?.title).toBe('workflow: remote-flow')
-      expect(launched?.model).toBe('sonnet')
-      expect(launched?.initialMessage).toContain('"ticket": 42')
-      expect(launched?.initialMessage).toContain('"timeoutMs": 1234')
-      expect(polling).toMatchObject({
-        taskId: result.data.taskId,
-        sessionId: 'session_remote_workflow_1',
-      })
-      expect(state.tasks[result.data.taskId]).toMatchObject({
-        type: 'remote_agent',
-        status: 'running',
-        title: 'Remote workflow title',
-        description: 'Remote workflow launch',
-        sessionId: 'session_remote_workflow_1',
-        sessionUrl: 'https://example.invalid/code/session_remote_workflow_1',
-        remoteTaskType: 'remote-workflow',
-        isBackgrounded: true,
-      })
-    } finally {
-      reset()
-    }
+    expect(result.data.status).toBe('async_launched')
+    expect(result.data.taskId).toMatch(/^[a-z0-9]{9}$/)
+    expect(result.data.runId).toMatch(/^wf_[a-z0-9]+$/)
+    expect(result.data.summary).toBe('Headless workflow launch')
+    expect(result.data.transcriptDir).toContain(`/workflows/${result.data.runId}`)
+    expect(result.data.scriptPath).toContain(`/${result.data.runId}/script.js`)
+    expect((result.data as { sessionUrl?: string }).sessionUrl).toBeUndefined()
+    expect(state.tasks[result.data.taskId]).toMatchObject({
+      type: 'local_workflow',
+      status: 'running',
+      workflowName: 'headless-flow',
+      description: 'Headless workflow launch',
+      isBackgrounded: true,
+    })
   })
 })
 
