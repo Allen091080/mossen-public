@@ -202,8 +202,9 @@ function selectedAgent(
 
 export function shouldRouteWorkflowAgentControl(
   mode: WorkflowDialogMode,
+  runLevelAgentSelected = false,
 ): boolean {
-  return mode === 'phase' || mode === 'agent'
+  return mode === 'phase' || mode === 'agent' || (mode === 'run' && runLevelAgentSelected)
 }
 
 export function shouldShowRunLevelAgents(
@@ -394,6 +395,10 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
     }
 
     const liveRun = selectedRun?.kind === 'live' ? selectedRun : null
+    const routeToSelectedAgent =
+      showRunLevelAgents && currentAgent
+        ? shouldRouteWorkflowAgentControl(view.mode, true)
+        : shouldRouteWorkflowAgentControl(view.mode)
     if (_input === 'p') {
       if (liveRun && liveRun.task.status === 'running' && !liveRun.task.paused) {
         const ok = pauseWorkflowTask(liveRun.task.id, setAppState)
@@ -404,7 +409,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
       return
     }
     if (_input === 'x' && liveRun) {
-      if (shouldRouteWorkflowAgentControl(view.mode) && currentAgent) {
+      if (routeToSelectedAgent && currentAgent) {
         skipWorkflowAgent(liveRun.task.id, currentAgent.agentNumber, setAppState)
         setMessage(
           t('cmd.workflows.agentStopped', {
@@ -421,7 +426,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
     if (
       _input === 'r' &&
       liveRun &&
-      shouldRouteWorkflowAgentControl(view.mode) &&
+      routeToSelectedAgent &&
       currentAgent
     ) {
       if (currentAgent.status !== 'running') {

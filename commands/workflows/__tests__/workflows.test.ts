@@ -193,8 +193,25 @@ return 'ok'
     expect(shouldRouteWorkflowAgentControl('phase')).toBe(true)
     expect(shouldRouteWorkflowAgentControl('agent')).toBe(true)
     expect(shouldRouteWorkflowAgentControl('run')).toBe(false)
+    expect(shouldRouteWorkflowAgentControl('run', true)).toBe(true)
     expect(shouldRouteWorkflowAgentControl('list')).toBe(false)
     expect(shouldRouteWorkflowAgentControl('save')).toBe(false)
+  })
+
+  test('unphased run view treats the selected run-level row as an agent target', () => {
+    const agent = runningWorkflowTask({
+      taskId: 'wtaskcmd_run_level_control',
+      runId: 'wf_cmd_run_level_control',
+    }).agents[0]!
+
+    expect(shouldShowRunLevelAgents(0, 1)).toBe(true)
+    expect(workflowRunOpenTarget('wf_cmd_run_level_control', [], 0, agent)).toEqual({
+      mode: 'agent',
+      runId: 'wf_cmd_run_level_control',
+      agentNumber: 1,
+    })
+    expect(shouldRouteWorkflowAgentControl('run', true)).toBe(true)
+    expect(shouldRouteWorkflowAgentControl('run', false)).toBe(false)
   })
 
   test('interactive run view can drill into agents when a workflow has no phases', () => {
