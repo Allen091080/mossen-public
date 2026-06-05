@@ -290,7 +290,6 @@ export function WorkflowPermissionRequest({
     {
       label: getLocalizedText({ en: 'Yes, run it', zh: '是，运行' }),
       value: 'yes',
-      feedbackConfig: { type: 'accept' },
     },
   ]
   if (namedWorkflowPermissionUpdates.length > 0) {
@@ -300,7 +299,6 @@ export function WorkflowPermissionRequest({
         zh: `是，并且在此项目中不再询问 ${originalReview.sourceLabel}`,
       }),
       value: 'yes-always',
-      feedbackConfig: { type: 'accept' },
     })
   }
   if (review.showUsageWarning && review.usageConsentHash) {
@@ -310,7 +308,6 @@ export function WorkflowPermissionRequest({
         zh: '是，并记住这个 workflow',
       }),
       value: 'yes-record-consent',
-      feedbackConfig: { type: 'accept' },
     })
   }
   if (review.showUsageWarning) {
@@ -320,7 +317,6 @@ export function WorkflowPermissionRequest({
         zh: '是，并且不再显示 workflow 用量提醒',
       }),
       value: 'yes-skip-warning',
-      feedbackConfig: { type: 'accept' },
     })
   }
   if (review.scriptSource) {
@@ -340,7 +336,6 @@ export function WorkflowPermissionRequest({
   options.push({
     label: getLocalizedText({ en: 'No', zh: '否' }),
     value: 'no',
-    feedbackConfig: { type: 'reject' },
   })
 
   const toolAnalyticsContext: ToolAnalyticsContext = {
@@ -413,9 +408,7 @@ export function WorkflowPermissionRequest({
     onDone()
   }
 
-  const handleKeyDown = (event: KeyboardEvent) => {
-    if (!event.ctrl || event.key !== 'g') return
-    event.preventDefault()
+  const openCurrentScriptInEditor = () => {
     if (!currentScript) return
     if (!editorName) {
       setEditorStatus(
@@ -442,6 +435,16 @@ export function WorkflowPermissionRequest({
         }),
       )
     }
+  }
+
+  const handleKeyDown = (event: KeyboardEvent) => {
+    const editShortcut =
+      event.key === 'tab' ||
+      (event.ctrl && event.key === 'g')
+    if (!editShortcut) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    openCurrentScriptInEditor()
   }
 
   const title = getLocalizedText({
@@ -481,7 +484,7 @@ export function WorkflowPermissionRequest({
       </PermissionDialog>
       {currentScript && editorName ? (
         <Box flexDirection="row" gap={1} paddingX={1} marginTop={1}>
-          <Text dimColor>ctrl+g to edit script in </Text>
+          <Text dimColor>Tab or ctrl+g to edit script in </Text>
           <Text bold dimColor>
             {editorName}
           </Text>
