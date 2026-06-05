@@ -473,6 +473,7 @@ return 'ok'
           tokensSpent: 55,
           totalToolCalls: 3,
           durationMs: 4600,
+          result: 'Final historical report\n- Found routes and reviews.',
         },
       )
       appendJournalStartedEntry(runId, {
@@ -522,8 +523,63 @@ return 'ok'
       expect(message).toContain(`history-flow (${runId})`)
       expect(message).toContain('Scan · 1 agent(s) · 1 completed · 25 tok · 1 tools')
       expect(message).toContain('Review · 1 agent(s) · 1 completed · 30 tok · 2 tools')
+      expect(message).toMatch(/(?:Result|结果):/)
+      expect(message).toContain('Final historical report')
+      expect(message).toContain('- Found routes and reviews.')
       expect(message).toContain('#1 [Scan] Scan routes · completed · 25 tok · 1 tools')
       expect(message).toContain('Found historical routes.')
+    } finally {
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('run detail shows completed final result even when there are no agent journal entries', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const root = mkdtempSync(join(tmpdir(), 'wf-history-result-only-'))
+    const sessionId =
+      '77777777-7777-4777-8777-777777777777' as ReturnType<typeof getSessionId>
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      const runId = 'wf_history_result_only'
+      initRunArtifacts(
+        runId,
+        'return "final"',
+        {
+          runId,
+          workflowName: 'result-only-flow',
+          description: 'Result only flow',
+          createdAt: new Date(0).toISOString(),
+          status: 'completed',
+          result: 'Top-level report\n- answer: 42',
+        },
+      )
+
+      let message = ''
+      await call(
+        nextMessage => {
+          message = nextMessage
+        },
+        workflowCommandContext({ tasks: {} }) as never,
+        runId,
+      )
+
+      expect(message).toContain(`result-only-flow (${runId})`)
+      expect(message).toMatch(/(?:Result|结果):/)
+      expect(message).toContain('Top-level report')
+      expect(message).toContain('- answer: 42')
+      expect(message).toMatch(/(?:No progress recorded for this run|没有记录执行过程)/)
     } finally {
       switchSession(priorSession, priorProjectDir)
       setProjectRoot(priorRoot)

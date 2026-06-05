@@ -85,6 +85,18 @@ function compact(value: unknown, maxLength = 180): string | null {
   return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text
 }
 
+function resultBlock(value: unknown, maxLength = 4000): string[] {
+  if (value == null) return []
+  const text = String(value).trim()
+  if (!text) return []
+  const rendered =
+    text.length > maxLength ? `${text.slice(0, maxLength)}…` : text
+  return [
+    `${t('cmd.workflows.result')}:`,
+    ...rendered.split('\n').map(line => `  ${line}`),
+  ]
+}
+
 function taskElapsedMs(task: WorkflowTaskSnapshot, now = Date.now()): number {
   if (
     task.status !== 'running' &&
@@ -230,6 +242,7 @@ function renderLiveRunDetail(
       ? [t('cmd.workflows.agentsDetail'), ...agents.map(agent => agentLine(agent, now))]
       : []
 
+  const resultLines = resultBlock(task.result)
   const log = task.logs ?? task.log ?? []
   const progressLines =
     log.length > 0
@@ -240,6 +253,8 @@ function renderLiveRunDetail(
   return [
     ...header,
     '',
+    ...resultLines,
+    ...(resultLines.length > 0 ? [''] : []),
     ...phaseLines,
     ...(phaseLines.length > 0 ? [''] : []),
     ...agentLines,
@@ -287,6 +302,7 @@ function renderRunDetail(
       phases: meta.phases?.map(phase => phase.title) ?? [],
       failures: meta.failures,
       durationMs: meta.durationMs,
+      result: meta.result,
       agents: historyAgents,
       log,
       logs: log,
@@ -312,7 +328,14 @@ function renderRunDetail(
     log.length > 0
       ? [t('cmd.workflows.progress'), ...log.map(l => `  ${l}`)]
       : [t('cmd.workflows.noProgress')]
-  return [...header, '', ...body].join('\n')
+  const resultLines = resultBlock(meta.result)
+  return [
+    ...header,
+    '',
+    ...resultLines,
+    ...(resultLines.length > 0 ? [''] : []),
+    ...body,
+  ].join('\n')
 }
 
 function renderAgentDetail(
