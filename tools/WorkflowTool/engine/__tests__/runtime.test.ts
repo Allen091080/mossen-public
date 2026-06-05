@@ -708,6 +708,51 @@ describe('runtime journal (resume)', () => {
     expect(j2.hits()).toBe(1)
   })
 
+  test('replays the latest append-only record for a previously diverged index', async () => {
+    let calls = 0
+    const counting: RunOneAgent = async () => {
+      calls++
+      return { value: `live-${calls}`, tokens: 1, ok: true }
+    }
+    const prior = {
+      runId: 'wf_resume',
+      entries: [
+        {
+          index: 0,
+          hash: hashCall('same', {}),
+          value: 'cached-same',
+          tokens: 1,
+          ok: true,
+        },
+        {
+          index: 1,
+          hash: hashCall('old branch', {}),
+          value: 'cached-old',
+          tokens: 1,
+          ok: true,
+        },
+        {
+          index: 1,
+          hash: hashCall('new branch', {}),
+          value: 'cached-new',
+          tokens: 1,
+          ok: true,
+        },
+      ],
+    }
+    const journal = createJournal('wf_resume', prior)
+    const { rt, events } = harness(counting, { journal })
+    const agent = rt.scope.agent as (p: string) => Promise<unknown>
+
+    expect(await agent('same')).toBe('cached-same')
+    expect(await agent('new branch')).toBe('cached-new')
+    expect(calls).toBe(0)
+    expect(journal.hits()).toBe(2)
+    expect(events.map(e => e.kind)).toEqual(['agent_end', 'agent_end'])
+    expect((events[1] as AgentEndEvent).status).toBe('cached')
+    expect((events[1] as AgentEndEvent).resultPreview).toBe('cached-new')
+  })
+
   test('started-only prior entries respawn instead of replaying a cache hit', async () => {
     let calls = 0
     const counting: RunOneAgent = async () => {

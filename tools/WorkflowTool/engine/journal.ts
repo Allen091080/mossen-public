@@ -111,6 +111,10 @@ export function createJournal(
 ): Journal {
   const priorEntries = prior?.entries ?? []
   const priorStarted = prior?.started ?? []
+  const latestPriorEntriesByIndex = new Map<number, JournalEntry>()
+  for (const entry of priorEntries) {
+    latestPriorEntriesByIndex.set(entry.index, entry)
+  }
   const completedKeys = new Set(priorEntries.map(e => `${e.index}\0${e.hash}`))
   const recorded: JournalEntry[] = []
   const started: JournalStartedEntry[] = []
@@ -121,7 +125,7 @@ export function createJournal(
   return {
     lookup(index, hash) {
       if (index >= invalidatedFrom) return null
-      const entry = priorEntries.find(e => e.index === index)
+      const entry = latestPriorEntriesByIndex.get(index)
       if (!entry || entry.hash !== hash) {
         // Divergence: invalidate this and every later cached entry.
         invalidatedFrom = Math.min(invalidatedFrom, index)
