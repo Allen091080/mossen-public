@@ -313,6 +313,85 @@ return 'ok'
     expect(nextInput).not.toContain('no new script')
   })
 
+  test('resume queues stopped journal runs but not completed history', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const root = mkdtempSync(join(tmpdir(), 'wf-resume-status-'))
+    const sessionId =
+      '44444444-4444-4444-8444-444444444444' as ReturnType<typeof getSessionId>
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      initRunArtifacts(
+        'wf_stopped-resume',
+        'return "stopped"',
+        {
+          runId: 'wf_stopped-resume',
+          workflowName: 'stopped-flow',
+          description: 'Stopped flow',
+          createdAt: new Date(0).toISOString(),
+          status: 'killed',
+          args: { ticket: 42 },
+        },
+      )
+      initRunArtifacts(
+        'wf_completed-history',
+        'return "completed"',
+        {
+          runId: 'wf_completed-history',
+          workflowName: 'completed-flow',
+          description: 'Completed flow',
+          createdAt: new Date(0).toISOString(),
+          status: 'completed',
+        },
+      )
+
+      let stoppedMessage = ''
+      let stoppedNextInput = ''
+      await call(
+        (nextMessage, options) => {
+          stoppedMessage = nextMessage
+          stoppedNextInput = options?.nextInput ?? ''
+        },
+        workflowCommandContext({ tasks: {} }) as never,
+        'resume wf_stopped-resume',
+      )
+
+      expect(stoppedMessage).toContain('wf_stopped-resume')
+      expect(stoppedNextInput).toContain(
+        "Workflow({scriptPath: '",
+      )
+      expect(stoppedNextInput).toContain("resumeFromRunId: 'wf_stopped-resume'")
+      expect(stoppedNextInput).toContain('args: {"ticket":42}')
+
+      let completedMessage = ''
+      let completedNextInput = ''
+      await call(
+        (nextMessage, options) => {
+          completedMessage = nextMessage
+          completedNextInput = options?.nextInput ?? ''
+        },
+        workflowCommandContext({ tasks: {} }) as never,
+        'resume wf_completed-history',
+      )
+
+      expect(completedMessage).toContain('wf_completed-history')
+      expect(completedNextInput).toBe('')
+    } finally {
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('pause resolves a workflow run id to the separated background task id', async () => {
     const taskId = 'wtaskcmd1'
     const runId = 'wf_cmd_lookup'

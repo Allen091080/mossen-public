@@ -26,6 +26,7 @@ import { saveRun } from './saveWorkflow.js'
 import {
   buildWorkflowResumeNextInput,
   buildWorkflowResumeResult,
+  isResumableWorkflowRunStatus,
   resumeRunFromJournal,
   type WorkflowCommandResult,
 } from './resumeWorkflow.js'
@@ -422,7 +423,7 @@ function resumeTaskRun(
 }
 
 function isResumableWorkflowTaskStatus(status: string | undefined): boolean {
-  return status === 'paused' || status === 'killed'
+  return isResumableWorkflowRunStatus(status)
 }
 
 function parseWorkflowAgentNumber(agentId: string | undefined): number | null {

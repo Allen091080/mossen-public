@@ -24,6 +24,7 @@ import { KeyboardShortcutHint } from '../../components/design-system/KeyboardSho
 import { deriveWorkflowSaveName, saveRun } from './saveWorkflow.js'
 import {
   buildWorkflowResumeResult,
+  isResumableWorkflowRunStatus,
   resumeRunFromJournal,
 } from './resumeWorkflow.js'
 
@@ -403,8 +404,13 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
       if (liveRun && liveRun.task.status === 'running' && !liveRun.task.paused) {
         const ok = pauseWorkflowTask(liveRun.task.id, setAppState)
         setMessage(ok ? t('cmd.workflows.paused', { runId: liveRun.runId }) : null)
-      } else if (selectedRun) {
+      } else if (
+        selectedRun &&
+        isResumableWorkflowRunStatus(selectedRun.status)
+      ) {
         resumeSelectedRun(selectedRun)
+      } else if (selectedRun) {
+        setMessage(t('cmd.workflows.notPaused', { runId: selectedRun.runId }))
       }
       return
     }
