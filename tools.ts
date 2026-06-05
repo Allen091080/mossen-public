@@ -130,13 +130,15 @@ const SnipTool = feature('HISTORY_SNIP')
 const ListPeersTool = feature('UDS_INBOX')
   ? require('./tools/ListPeersTool/ListPeersTool.js').ListPeersTool
   : null
-const WorkflowTool = feature('WORKFLOW_SCRIPTS')
-  ? (() => {
-      if (!isWorkflowRuntimeEnabled()) return null
-      require('./tools/WorkflowTool/bundled/index.js').initBundledWorkflows()
-      return require('./tools/WorkflowTool/WorkflowTool.js').WorkflowTool
-    })()
-  : null
+let cachedWorkflowTool: Tool | null | undefined
+function getWorkflowTool(): Tool | null {
+  if (!feature('WORKFLOW_SCRIPTS')) return null
+  if (cachedWorkflowTool !== undefined) return cachedWorkflowTool
+  require('./tools/WorkflowTool/bundled/index.js').initBundledWorkflows()
+  cachedWorkflowTool =
+    require('./tools/WorkflowTool/WorkflowTool.js').WorkflowTool
+  return cachedWorkflowTool
+}
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import type { ToolPermissionContext } from './Tool.js'
 import { getDenyRuleForTool } from './utils/permissions/permissions.js'
@@ -146,7 +148,6 @@ import { isLspToolEnabled } from './services/lsp/settings.js'
 import { isPowerShellToolEnabled } from './utils/shell/shellToolUtils.js'
 import { isAgentSwarmsEnabled } from './utils/agentSwarmsEnabled.js'
 import { isWorktreeModeEnabled } from './utils/worktreeModeEnabled.js'
-import { isWorkflowRuntimeEnabled } from './utils/workflowAvailability.js'
 import {
   REPL_TOOL_NAME,
   REPL_ONLY_TOOLS,
@@ -198,6 +199,7 @@ export function getToolsForDefaultPreset(): string[] {
  * NOTE: This MUST stay in sync with https://console.statsig.com/4aF3Ewatb6xPVpCwxb5nA3/dynamic_configs/mossen_code_global_system_caching, in order to cache the system prompt across users.
  */
 export function getAllBaseTools(): Tools {
+  const workflowTool = getWorkflowTool()
   return [
     AgentTool,
     TaskOutputTool,
@@ -241,7 +243,7 @@ export function getAllBaseTools(): Tools {
       : []),
     ...(VerifyPlanExecutionTool ? [VerifyPlanExecutionTool] : []),
     ...(process.env.USER_TYPE === ('a' + 'nt') && REPLTool ? [REPLTool] : []),
-    ...(WorkflowTool ? [WorkflowTool] : []),
+    ...(workflowTool ? [workflowTool] : []),
     ...(SleepTool ? [SleepTool] : []),
     ...cronTools,
     ...(RemoteTriggerTool ? [RemoteTriggerTool] : []),
