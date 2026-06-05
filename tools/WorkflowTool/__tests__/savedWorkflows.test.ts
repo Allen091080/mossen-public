@@ -36,6 +36,7 @@ import {
 } from '../engine/runtime.js'
 import { WORKFLOW_TOOL_NAME } from '../constants.js'
 import type { WorkflowProgressEvent } from '../engine/types.js'
+import { WORKFLOW_DISABLE_ENV } from '../../../utils/workflowAvailability.js'
 
 // Tests target loadWorkflowCommandsFrom (the UNGATED core) so the disk-read +
 // meta-parse contract is asserted for real regardless of the WORKFLOW_SCRIPTS
@@ -99,9 +100,11 @@ describe('savedWorkflows loader (S3)', () => {
   let root: string
   let wfDir: string
   let previousWorkflowHome: string | undefined
+  let previousWorkflowDisableEnv: string | undefined
 
   beforeEach(() => {
     previousWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    previousWorkflowDisableEnv = process.env[WORKFLOW_DISABLE_ENV]
     previousWebSearchEnv = {}
     for (const key of WEB_SEARCH_ENV_KEYS) {
       previousWebSearchEnv[key] = process.env[key]
@@ -119,6 +122,11 @@ describe('savedWorkflows loader (S3)', () => {
       delete process.env[WORKFLOW_HOME_ENV]
     } else {
       process.env[WORKFLOW_HOME_ENV] = previousWorkflowHome
+    }
+    if (previousWorkflowDisableEnv === undefined) {
+      delete process.env[WORKFLOW_DISABLE_ENV]
+    } else {
+      process.env[WORKFLOW_DISABLE_ENV] = previousWorkflowDisableEnv
     }
   })
 
@@ -323,6 +331,17 @@ describe('savedWorkflows loader (S3)', () => {
       expect(gatedResult).toEqual([])
       expect(loadWorkflowCommandsFrom(root).some(c => c.name === 'gated')).toBe(true)
     }
+  })
+
+  test('runtime disable hides bundled and saved workflow slash commands', async () => {
+    writeFileSync(join(wfDir, 'g.js'), META('gated', 'g'))
+    process.env[WORKFLOW_DISABLE_ENV] = '1'
+
+    expect(await getWorkflowCommands(root)).toEqual([])
+    expect(loadWorkflowCommandsFrom(root).map(c => c.name)).toContain('gated')
+    expect(loadWorkflowCommandsFromSources(root).map(c => c.name)).toContain(
+      'deep-research',
+    )
   })
 
   test('plugin workflow dirs become plugin-namespaced commands', async () => {

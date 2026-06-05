@@ -54,4 +54,21 @@ describe('workflowAvailability', () => {
       }),
     ).toBe(false)
   })
+
+  test('runtime disable also disables keyword triggers', () => {
+    expect(
+      isWorkflowKeywordTriggerEnabled({
+        disableWorkflows: true,
+        workflowKeywordTriggerEnabled: true,
+      }),
+    ).toBe(false)
+
+    process.env[WORKFLOW_DISABLE_ENV] = '1'
+    expect(
+      isWorkflowKeywordTriggerEnabled({
+        enableWorkflows: true,
+        workflowKeywordTriggerEnabled: true,
+      }),
+    ).toBe(false)
+  })
 })
