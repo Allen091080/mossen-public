@@ -19,6 +19,7 @@ import {
 import type { PermissionRequestProps } from '../../components/permissions/PermissionRequest.js'
 import { PermissionRuleExplanation } from '../../components/permissions/PermissionRuleExplanation.js'
 import { logUnaryPermissionEvent } from '../../components/permissions/utils.js'
+import { getProjectRoot } from '../../bootstrap/state.js'
 import {
   buildWorkflowPermissionReview,
   type WorkflowPermissionReview,
@@ -99,6 +100,7 @@ function truncateRawScript(source: string): string {
 
 export function buildWorkflowPermissionOptionSpecs({
   sourceLabel,
+  projectPathLabel,
   hasNamedWorkflowPermissionUpdates,
   canRememberWorkflowSource,
   showUsageWarning,
@@ -106,6 +108,7 @@ export function buildWorkflowPermissionOptionSpecs({
   showRawScript,
 }: {
   sourceLabel: string
+  projectPathLabel?: string
   hasNamedWorkflowPermissionUpdates: boolean
   canRememberWorkflowSource: boolean
   showUsageWarning: boolean
@@ -120,10 +123,15 @@ export function buildWorkflowPermissionOptionSpecs({
     },
   ]
   if (hasNamedWorkflowPermissionUpdates) {
+    const projectLabel = projectPathLabel?.trim()
     options.push({
       label: {
-        en: `Yes, and don't ask again for ${sourceLabel} in this project`,
-        zh: `是，并且在此项目中不再询问 ${sourceLabel}`,
+        en: projectLabel
+          ? `Yes, and don't ask again for ${sourceLabel} in ${projectLabel}`
+          : `Yes, and don't ask again for ${sourceLabel} in this project`,
+        zh: projectLabel
+          ? `是，并且在 ${projectLabel} 中不再询问 ${sourceLabel}`
+          : `是，并且在此项目中不再询问 ${sourceLabel}`,
       },
       value: 'yes-always',
       acceptsPromptAmend: true,
@@ -473,6 +481,7 @@ export function WorkflowPermissionRequest({
   const options: PermissionPromptOption<WorkflowOptionValue>[] =
     buildWorkflowPermissionOptionSpecs({
       sourceLabel: originalReview.sourceLabel,
+      projectPathLabel: getProjectRoot(),
       hasNamedWorkflowPermissionUpdates:
         namedWorkflowPermissionUpdates.length > 0,
       canRememberWorkflowSource,

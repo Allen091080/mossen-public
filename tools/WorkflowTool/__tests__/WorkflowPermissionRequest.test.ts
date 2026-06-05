@@ -37,6 +37,7 @@ describe('WorkflowPermissionRequest approval options', () => {
   test('matches the official named-workflow approval surface', () => {
     const options = buildWorkflowPermissionOptionSpecs({
       sourceLabel: 'ship-check',
+      projectPathLabel: '/repo/app',
       hasNamedWorkflowPermissionUpdates: true,
       canRememberWorkflowSource: false,
       showUsageWarning: true,
@@ -55,7 +56,7 @@ describe('WorkflowPermissionRequest approval options', () => {
       'Yes, run it',
     )
     expect(options.find(option => option.value === 'yes-always')?.label.en).toBe(
-      "Yes, and don't ask again for ship-check in this project",
+      "Yes, and don't ask again for ship-check in /repo/app",
     )
     expect(options.find(option => option.value === 'toggle-script')?.label.en).toBe(
       'View raw script',
@@ -99,6 +100,21 @@ describe('WorkflowPermissionRequest approval options', () => {
     )
     expect(options.some(option => option.value === 'yes-always')).toBe(false)
     expect(options.some(option => option.value === 'yes-skip-warning')).toBe(false)
+  })
+
+  test('falls back to the project wording when no path label is available', () => {
+    const options = buildWorkflowPermissionOptionSpecs({
+      sourceLabel: 'ship-check',
+      hasNamedWorkflowPermissionUpdates: true,
+      canRememberWorkflowSource: false,
+      showUsageWarning: false,
+      hasScriptSource: true,
+      showRawScript: false,
+    })
+
+    expect(options.find(option => option.value === 'yes-always')?.label.en).toBe(
+      "Yes, and don't ask again for ship-check in this project",
+    )
   })
 
   test('omits raw-script toggle when the workflow source cannot be reviewed', () => {
