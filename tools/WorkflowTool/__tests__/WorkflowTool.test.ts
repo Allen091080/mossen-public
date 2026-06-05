@@ -30,7 +30,11 @@ import {
 } from '../WorkflowTool.js'
 import { WORKFLOW_TOOL_NAME } from '../constants.js'
 import { loadRunLog, loadRunMeta } from '../engine/journalStore.js'
-import { getProjectWorkflowsDir } from '../savedWorkflows.js'
+import {
+  getProjectWorkflowsDir,
+  getUserWorkflowsDir,
+  WORKFLOW_HOME_ENV,
+} from '../savedWorkflows.js'
 import {
   killWorkflowTask,
   type LocalWorkflowTaskState,
@@ -1055,6 +1059,63 @@ return args.value * 2
       expect(existsSync(result.data.scriptPath!)).toBe(true)
     } finally {
       setProjectRoot(priorRoot)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('executes named workflows with structured args and project scope priority', async () => {
+    const priorRoot = getProjectRoot()
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    const root = mkdtempSync(join(tmpdir(), 'wf-named-priority-tool-'))
+    try {
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'home')
+      const projectDir = getProjectWorkflowsDir(root)
+      const userDir = getUserWorkflowsDir()
+      mkdirSync(projectDir, { recursive: true })
+      mkdirSync(userDir, { recursive: true })
+      writeFileSync(
+        join(projectDir, 'shared.js'),
+        `
+export const meta = { name: 'shared-flow', description: 'Project flow' }
+return 'project:' + args.value
+`,
+      )
+      writeFileSync(
+        join(userDir, 'shared.js'),
+        `
+export const meta = { name: 'shared-flow', description: 'User flow' }
+return 'user:' + args.value
+`,
+      )
+      setProjectRoot(root)
+
+      const result = await WorkflowTool.call!(
+        {
+          name: 'shared-flow',
+          args: { value: 21 },
+        },
+        {
+          abortController: new AbortController(),
+          setAppState: () => {},
+        } as never,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(result.data.status).toBe('async_launched')
+      expect(await waitForRunMetaStatus(result.data.runId!, 'completed')).toBe(
+        'completed',
+      )
+      const meta = loadRunMeta(result.data.runId!)
+      expect(meta?.description).toBe('Project flow')
+      expect(meta?.args).toEqual({ value: 21 })
+      expect(meta?.result).toBe('project:21')
+    } finally {
+      setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
       rmSync(root, { recursive: true, force: true })
     }
   })

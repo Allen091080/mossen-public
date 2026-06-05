@@ -33,6 +33,7 @@ import { getPluginErrorMessage } from '../../types/plugin.js'
 import { loadAllPluginsCacheOnly } from '../../utils/plugins/pluginLoader.js'
 import { isWorkflowRuntimeEnabled } from '../../utils/workflowAvailability.js'
 import { loadBundledWorkflows } from './bundled/index.js'
+import { WORKFLOW_TOOL_NAME } from './constants.js'
 import { extractMeta } from './engine/meta.js'
 import { readWorkflowScriptFile } from './scriptFile.js'
 
@@ -308,10 +309,22 @@ function workflowArgsLiteral(value: unknown): string {
   return JSON.stringify(value)
 }
 
+function workflowToolInputLiteral(wf: SavedWorkflow, args: unknown): string {
+  return JSON.stringify(
+    {
+      name: wf.commandName,
+      ...(args !== undefined ? { args } : {}),
+    },
+    null,
+    2,
+  )
+}
+
 /**
  * Build the saved-workflow `prompt` command for a parsed entry. Running
- * `/<name>` instructs the model to execute the saved script via the Workflow
- * tool (by path, so the engine snapshots + journals it like any run).
+ * `/<name>` instructs the model to execute the workflow by name through the
+ * Workflow tool. Name resolution stays inside WorkflowTool so project scope
+ * keeps winning over user/plugin/bundled scope at execution time.
  */
 function toCommand(wf: SavedWorkflow): Command {
   return {
@@ -347,31 +360,24 @@ function toCommand(wf: SavedWorkflow): Command {
           },
         }
       : {}),
+    allowedTools: [WORKFLOW_TOOL_NAME],
     progressMessage: 'running workflow',
     contentLength: 0,
     async getPromptForCommand(args: string) {
       const trimmedArgs = args.trim()
       const inferredArgs = inferWorkflowArgsValue(trimmedArgs)
-      const inferredArgLine =
-        inferredArgs !== undefined
-          ? `\n\nInferred Workflow.args literal:\n${workflowArgsLiteral(inferredArgs)}`
-          : ''
+      const toolInput = workflowToolInputLiteral(wf, inferredArgs)
       const argLine = trimmedArgs
-        ? `\n\nCaller arguments:\n${trimmedArgs}${inferredArgLine}\n\nPass the caller arguments as Workflow.args using the inferred literal above unless the user's wording clearly requires a richer structure. Use real arrays, objects, numbers, booleans, or null where appropriate; do not JSON-encode those values into a string. Use a raw string only when no useful structure is clear.`
-        : ` Do not pass args; the workflow script should see args as undefined.`
-      const scriptInstruction = wf.scriptPath
-        ? `with scriptPath="${wf.scriptPath}"`
-        : `with the bundled script named "${wf.name}" as its script input:\n\n${wf.source}`
+        ? `\n\nCaller arguments:\n${trimmedArgs}\n\nInferred structured Workflow.args literal:\n${workflowArgsLiteral(inferredArgs)}`
+        : `\n\nNo caller arguments were provided; omit the args field so the workflow script sees args as undefined.`
       return [
         {
           type: 'text' as const,
           text:
-            `Run the saved workflow "${wf.commandName}" by invoking the Workflow tool ` +
-            scriptInstruction +
-            (trimmedArgs
-              ? `, preserving caller input as structured Workflow.args.`
-              : `.`) +
-            argLine,
+            `Run the saved workflow "${wf.commandName}" by invoking the ${WORKFLOW_TOOL_NAME} tool exactly once with this input:\n\n` +
+            `\`\`\`json\n${toolInput}\n\`\`\`` +
+            argLine +
+            `\n\nUse the JSON value above as the actual tool input. If args is present, pass it as real structured data: use real arrays, objects, numbers, booleans, or null as shown; do not JSON-encode it into a string.`,
         },
       ]
     },

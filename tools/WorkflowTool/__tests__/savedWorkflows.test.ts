@@ -34,6 +34,7 @@ import {
   createWorkflowRuntime,
   type RunOneAgent,
 } from '../engine/runtime.js'
+import { WORKFLOW_TOOL_NAME } from '../constants.js'
 import type { WorkflowProgressEvent } from '../engine/types.js'
 
 // Tests target loadWorkflowCommandsFrom (the UNGATED core) so the disk-read +
@@ -153,24 +154,28 @@ describe('savedWorkflows loader (S3)', () => {
     expect(resolved?.scriptPath).toBe(join(wfDir, 'child.js'))
   })
 
-  test('getPromptForCommand references the script by path + forwards structured args', async () => {
+  test('getPromptForCommand builds exact Workflow input by name with structured args', async () => {
     writeFileSync(join(wfDir, 'audit.js'), META('audit', 'Audit code'))
     const cmds = loadWorkflowCommandsFrom(root)
     const cmd = cmds.find(c => c.name === 'audit')
     expect(cmd?.type).toBe('prompt')
+    expect((cmd as { allowedTools?: string[] }).allowedTools).toEqual([
+      WORKFLOW_TOOL_NAME,
+    ])
     const getPrompt = (cmd as unknown as {
       getPromptForCommand: (a: string) => Promise<Array<{ type: string; text: string }>>
     }).getPromptForCommand
     const blocks = await getPrompt('issues 1024, 1025, and 1030')
     const text = blocks.map(b => b.text).join('')
-    expect(text).toContain('Workflow tool')
-    expect(text).toMatch(/scriptPath=.*audit\.js/)
-    expect(text).toContain('structured Workflow.args')
-    expect(text).toContain('Inferred Workflow.args literal:')
+    expect(text).toContain('Workflow tool exactly once')
+    expect(text).toContain('"name": "audit"')
+    expect(text).toContain('"args": [\n    1024,\n    1025,\n    1030\n  ]')
+    expect(text).toContain('Inferred structured Workflow.args literal:')
     expect(text).toContain('[1024,1025,1030]')
     expect(text).toContain('real arrays, objects, numbers, booleans, or null')
     expect(text).toContain('do not JSON-encode')
     expect(text).toContain('issues 1024, 1025, and 1030')
+    expect(text).not.toContain('scriptPath=')
   })
 
   test('inferWorkflowArgsValue preserves common structured saved-workflow inputs', () => {
@@ -207,7 +212,9 @@ describe('savedWorkflows loader (S3)', () => {
     }).getPromptForCommand
     const text = (await getPrompt('   ')).map(b => b.text).join('')
 
-    expect(text).toContain('Do not pass args')
+    expect(text).toContain('"name": "noargs"')
+    expect(text).not.toContain('"args"')
+    expect(text).toContain('omit the args field')
     expect(text).toContain('args as undefined')
     expect(text).not.toContain('Caller arguments:')
   })
@@ -388,7 +395,8 @@ describe('savedWorkflows loader (S3)', () => {
       getPromptForCommand: (a: string) => Promise<Array<{ type: string; text: string }>>
     }).getPromptForCommand
     const text = (await getPrompt('Node.js permissions')).map(b => b.text).join('')
-    expect(text).toContain('bundled script named "deep-research"')
+    expect(text).toContain('"name": "deep-research"')
+    expect(text).toContain('"args": "Node.js permissions"')
     expect(text).toContain('Node.js permissions')
   })
 
