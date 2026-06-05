@@ -11,6 +11,7 @@ import {
   failWorkflowTask,
   hasPendingWorkflows,
   isWorkflowTaskPaused,
+  killWorkflowTask,
   pauseWorkflowTask,
   pendingWorkflowCount,
   registerWorkflowTask,
@@ -566,6 +567,14 @@ describe('LocalWorkflowTask pause/resume controls', () => {
     expect(resumeWorkflowTask(runId, setAppState)).toBe(false)
     expect(task.logs).toEqual(task.log)
     expect(task.logs).toContain('workflow paused')
+
+    killWorkflowTask(runId, setAppState)
+    const killedTask = state.tasks[runId] as LocalWorkflowTaskState
+    expect(killedTask.status).toBe('killed')
+    expect(killedTask.summary).toBe('stopped')
+    expect(killedTask.paused).toBe(false)
+    expect(killedTask.pauseStartedAt).toBeUndefined()
+    expect(isWorkflowTaskPaused(runId)).toBe(false)
   })
 
   test('completeWorkflowTask finalizes task and clears paused state', () => {

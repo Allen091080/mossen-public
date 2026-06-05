@@ -32,14 +32,13 @@ import { type BackgroundTaskState, isBackgroundTask, type TaskState } from 'src/
 import type { ReadonlyDeep as DeepImmutable } from 'type-fest';
 import { intersperse } from 'src/utils/array.js';
 import { TEAM_LEAD_NAME } from 'src/utils/swarm/constants.js';
-import type { CommandResultDisplay } from '../../commands.js';
 import { useRegisterOverlay } from '../../context/overlayContext.js';
 import type { ExitState } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text, useInput } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
-import { getCommandName } from '../../types/command.js';
+import { getCommandName, type LocalJSXCommandOnDone } from '../../types/command.js';
 import { count } from '../../utils/array.js';
 import { getLocalizedCommandDescription } from '../../utils/commandDescription.js';
 import { isEnvTruthy } from '../../utils/envUtils.js';
@@ -95,9 +94,7 @@ type ViewState = {
   itemId: string;
 };
 type Props = {
-  onDone: (result?: string, options?: {
-    display?: CommandResultDisplay;
-  }) => void;
+  onDone: LocalJSXCommandOnDone;
   toolUseContext: ToolUseContext;
   initialDetailTaskId?: string;
   agentView?: boolean;
@@ -225,6 +222,7 @@ const workflowTaskModule = feature('WORKFLOW_SCRIPTS') ? require('src/tasks/Loca
 const killWorkflowTask = workflowTaskModule?.killWorkflowTask ?? null;
 const pauseWorkflowTask = workflowTaskModule?.pauseWorkflowTask ?? null;
 const resumeWorkflowTask = workflowTaskModule?.resumeWorkflowTask ?? null;
+const buildWorkflowResumePrompt = workflowTaskModule?.buildWorkflowResumePrompt ?? null;
 const skipWorkflowAgent = workflowTaskModule?.skipWorkflowAgent ?? null;
 const retryWorkflowAgent = workflowTaskModule?.retryWorkflowAgent ?? null;
 // Relative path, not `src/...` path-mapping — Bun's DCE can statically
@@ -255,6 +253,14 @@ function isActiveBackgroundStatus(status: ListItem['status']): boolean {
 
 function isInterruptibleBackgroundStatus(status: ListItem['status']): boolean {
   return status === 'running';
+}
+
+function isStoppableWorkflowStatus(status: ListItem['status']): boolean {
+  return status === 'running' || status === 'paused';
+}
+
+function canResumeWorkflowTaskPanel(task: DeepImmutable<LocalWorkflowTaskState>): boolean {
+  return task.status === 'paused' || (task.status === 'running' && task.paused === true);
 }
 
 function matchesAgentViewQuery(item: ListItem, query: string): boolean {
@@ -1120,7 +1126,7 @@ function BackgroundTasksDialogImpl({
         void killAgentTask(currentSelection_0.id);
       } else if (currentSelection_0.type === 'in_process_teammate' && isInterruptibleBackgroundStatus(currentSelection_0.status)) {
         void killTeammateTask(currentSelection_0.id);
-      } else if (currentSelection_0.type === 'local_workflow' && isInterruptibleBackgroundStatus(currentSelection_0.status) && killWorkflowTask) {
+      } else if (currentSelection_0.type === 'local_workflow' && isStoppableWorkflowStatus(currentSelection_0.status) && killWorkflowTask) {
         killWorkflowTask(currentSelection_0.id, setAppState);
       } else if (currentSelection_0.type === 'monitor_mcp' && isInterruptibleBackgroundStatus(currentSelection_0.status) && killMonitorMcp) {
         killMonitorMcp(currentSelection_0.id, setAppState);
@@ -1136,7 +1142,7 @@ function BackgroundTasksDialogImpl({
         void killAgentTask(currentSelection_0.id);
       } else if (currentSelection_0.type === 'in_process_teammate' && isInterruptibleBackgroundStatus(currentSelection_0.status)) {
         void killTeammateTask(currentSelection_0.id);
-      } else if (currentSelection_0.type === 'local_workflow' && isInterruptibleBackgroundStatus(currentSelection_0.status) && killWorkflowTask) {
+      } else if (currentSelection_0.type === 'local_workflow' && isStoppableWorkflowStatus(currentSelection_0.status) && killWorkflowTask) {
         killWorkflowTask(currentSelection_0.id, setAppState);
       } else if (currentSelection_0.type === 'monitor_mcp' && isInterruptibleBackgroundStatus(currentSelection_0.status) && killMonitorMcp) {
         killMonitorMcp(currentSelection_0.id, setAppState);
@@ -1373,7 +1379,24 @@ function BackgroundTasksDialogImpl({
         } : undefined} onAttach={agentView ? () => attachAgentTaskToMainView(task_0.id) : undefined} key={`teammate-${task_0.id}`} />;
       case 'local_workflow':
         if (!WorkflowDetailDialog) return null;
-        return <WorkflowDetailDialog workflow={task_0} onDone={onDone} onKill={isInterruptibleBackgroundStatus(task_0.status) && killWorkflowTask ? () => killWorkflowTask(task_0.id, setAppState) : undefined} onPause={isInterruptibleBackgroundStatus(task_0.status) && pauseWorkflowTask ? () => pauseWorkflowTask(task_0.id, setAppState) : undefined} onResume={isInterruptibleBackgroundStatus(task_0.status) && resumeWorkflowTask ? () => resumeWorkflowTask(task_0.id, setAppState) : undefined} onSkipAgent={isInterruptibleBackgroundStatus(task_0.status) && skipWorkflowAgent ? agentId => skipWorkflowAgent(task_0.id, agentId, setAppState) : undefined} onRetryAgent={isInterruptibleBackgroundStatus(task_0.status) && retryWorkflowAgent ? agentId_0 => retryWorkflowAgent(task_0.id, agentId_0, setAppState) : undefined} onBack={goBackToList} key={`workflow-${task_0.id}`} />;
+        return <WorkflowDetailDialog workflow={task_0} onDone={onDone} onKill={isStoppableWorkflowStatus(task_0.status) && killWorkflowTask ? () => killWorkflowTask(task_0.id, setAppState) : undefined} onPause={isInterruptibleBackgroundStatus(task_0.status) && !task_0.paused && pauseWorkflowTask ? () => pauseWorkflowTask(task_0.id, setAppState) : undefined} onResume={canResumeWorkflowTaskPanel(task_0) && (resumeWorkflowTask || buildWorkflowResumePrompt) ? () => {
+          if (task_0.status === 'paused') {
+            const resumePrompt = buildWorkflowResumePrompt?.(task_0) ?? null;
+            if (resumePrompt) {
+              onDone('Workflow resume queued', {
+                display: 'system',
+                nextInput: resumePrompt,
+                submitNextInput: true
+              });
+              return;
+            }
+            onDone('Workflow resume metadata is missing for this task; open /workflows to resume it.', {
+              display: 'system'
+            });
+            return;
+          }
+          resumeWorkflowTask?.(task_0.id, setAppState);
+        } : undefined} onSkipAgent={isInterruptibleBackgroundStatus(task_0.status) && skipWorkflowAgent ? agentId => skipWorkflowAgent(task_0.id, agentId, setAppState) : undefined} onRetryAgent={isInterruptibleBackgroundStatus(task_0.status) && retryWorkflowAgent ? agentId_0 => retryWorkflowAgent(task_0.id, agentId_0, setAppState) : undefined} onBack={goBackToList} key={`workflow-${task_0.id}`} />;
       case 'monitor_mcp':
         if (!MonitorMcpDetailDialog) return null;
         return <MonitorMcpDetailDialog task={task_0} onKill={isInterruptibleBackgroundStatus(task_0.status) && killMonitorMcp ? () => killMonitorMcp(task_0.id, setAppState) : undefined} onBack={goBackToList} key={`monitor-mcp-${task_0.id}`} />;
@@ -1416,7 +1439,7 @@ function BackgroundTasksDialogImpl({
     ]),
     <KeyboardShortcutHint key="stop" shortcut="Ctrl+X" action={agentDismissPending || supervisorDismissPending ? t('ui.agentView.confirmDismiss') : t('ui.agentView.stop')} />,
     <KeyboardShortcutHint key="help" shortcut="?" action={t('ui.agentView.help')} />,
-  ] : [<KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />, <KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />, ...(currentSelection?.type === 'in_process_teammate' && isInterruptibleBackgroundStatus(currentSelection.status) ? [<KeyboardShortcutHint key="foreground" shortcut="f" action="foreground" />] : []), ...((currentSelection?.type === 'local_bash' || currentSelection?.type === 'local_agent' || currentSelection?.type === 'in_process_teammate' || currentSelection?.type === 'local_workflow' || currentSelection?.type === 'monitor_mcp' || currentSelection?.type === 'dream' || currentSelection?.type === 'remote_agent') && isInterruptibleBackgroundStatus(currentSelection.status) ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />] : []), ...(agentTasks.some(t => isInterruptibleBackgroundStatus(t.status)) ? [<KeyboardShortcutHint key="kill-all" shortcut={killAgentsShortcut} action="stop all agents" />] : []), <KeyboardShortcutHint key="esc" shortcut="←/Esc" action="close" />];
+  ] : [<KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />, <KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />, ...(currentSelection?.type === 'in_process_teammate' && isInterruptibleBackgroundStatus(currentSelection.status) ? [<KeyboardShortcutHint key="foreground" shortcut="f" action="foreground" />] : []), ...((currentSelection?.type === 'local_bash' || currentSelection?.type === 'local_agent' || currentSelection?.type === 'in_process_teammate' || currentSelection?.type === 'local_workflow' || currentSelection?.type === 'monitor_mcp' || currentSelection?.type === 'dream' || currentSelection?.type === 'remote_agent') && (isInterruptibleBackgroundStatus(currentSelection.status) || (currentSelection.type === 'local_workflow' && isStoppableWorkflowStatus(currentSelection.status))) ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />] : []), ...(agentTasks.some(t => isInterruptibleBackgroundStatus(t.status)) ? [<KeyboardShortcutHint key="kill-all" shortcut={killAgentsShortcut} action="stop all agents" />] : []), <KeyboardShortcutHint key="esc" shortcut="←/Esc" action="close" />];
   const handleCancel = () => {
     if (agentView) {
       setAgentSupervisorDispatchError(t('ui.agentView.rootBackHint'));

@@ -1,6 +1,5 @@
 import React from 'react'
 import type { ReadonlyDeep as DeepImmutable } from 'type-fest'
-import type { CommandResultDisplay } from '../../commands.js'
 import { useElapsedTime } from '../../hooks/useElapsedTime.js'
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js'
 import { Box, Text } from '../../ink.js'
@@ -8,6 +7,7 @@ import type {
   LocalWorkflowTaskState,
   WorkflowAgentTaskProgress,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import { formatDuration, formatNumber } from '../../utils/format.js'
 import { Byline } from '../design-system/Byline.js'
 import { Dialog } from '../design-system/Dialog.js'
@@ -20,16 +20,38 @@ import {
 type Props = {
   key?: React.Key
   workflow: DeepImmutable<LocalWorkflowTaskState>
-  onDone: (
-    result?: string,
-    options?: { display?: CommandResultDisplay },
-  ) => void
+  onDone: LocalJSXCommandOnDone
   onKill?: () => void
   onPause?: () => void
   onResume?: () => void
   onSkipAgent?: (agentId: string) => void
   onRetryAgent?: (agentId: string) => void
   onBack?: () => void
+}
+
+type WorkflowDetailActionState = Pick<
+  LocalWorkflowTaskState,
+  'status' | 'paused'
+>
+
+export function canPauseWorkflowDetail(
+  workflow: WorkflowDetailActionState,
+): boolean {
+  return workflow.status === 'running' && !workflow.paused
+}
+
+export function canResumeWorkflowDetail(
+  workflow: WorkflowDetailActionState,
+): boolean {
+  return workflow.status === 'paused' || (
+    workflow.status === 'running' && workflow.paused === true
+  )
+}
+
+export function canStopWorkflowDetail(
+  workflow: WorkflowDetailActionState,
+): boolean {
+  return workflow.status === 'running' || workflow.status === 'paused'
 }
 
 function agentStatusColor(
@@ -113,6 +135,9 @@ export function WorkflowDetailDialog({
     workflow.totalPausedMs ?? 0,
   )
   const runningAgent = pickRunningAgent(workflow)
+  const canStopWorkflow = canStopWorkflowDetail(workflow)
+  const canPauseWorkflow = canPauseWorkflowDetail(workflow)
+  const canResumeWorkflow = canResumeWorkflowDetail(workflow)
   const handleClose = () =>
     onDone('Workflow details dismissed', { display: 'system' })
   const handleKeyDown = (event: KeyboardEvent) => {
@@ -126,22 +151,20 @@ export function WorkflowDetailDialog({
       onBack()
       return
     }
-    if (event.key === 'x' && workflow.status === 'running' && onKill) {
+    if (event.key === 'x' && canStopWorkflow && onKill) {
       event.preventDefault()
       onKill()
       return
     }
-    if (event.key === 'p' && workflow.status === 'running') {
-      if (workflow.paused && onResume) {
-        event.preventDefault()
-        onResume()
-        return
-      }
-      if (!workflow.paused && onPause) {
-        event.preventDefault()
-        onPause()
-        return
-      }
+    if (event.key === 'p' && canResumeWorkflow && onResume) {
+      event.preventDefault()
+      onResume()
+      return
+    }
+    if (event.key === 'p' && canPauseWorkflow && onPause) {
+      event.preventDefault()
+      onPause()
+      return
     }
     if (event.key === 's' && runningAgent && onSkipAgent) {
       event.preventDefault()
@@ -172,13 +195,13 @@ export function WorkflowDetailDialog({
     <Byline>
       {onBack ? <KeyboardShortcutHint shortcut="←" action="go back" /> : null}
       <KeyboardShortcutHint shortcut="Esc/Enter/Space" action="close" />
-      {workflow.status === 'running' && onKill ? (
+      {canStopWorkflow && onKill ? (
         <KeyboardShortcutHint shortcut="x" action="stop" />
       ) : null}
-      {workflow.status === 'running' && workflow.paused && onResume ? (
+      {canResumeWorkflow && onResume ? (
         <KeyboardShortcutHint shortcut="p" action="resume" />
       ) : null}
-      {workflow.status === 'running' && !workflow.paused && onPause ? (
+      {canPauseWorkflow && onPause ? (
         <KeyboardShortcutHint shortcut="p" action="pause" />
       ) : null}
       {runningAgent && onSkipAgent ? (

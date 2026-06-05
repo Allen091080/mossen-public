@@ -701,7 +701,7 @@ export function finishWorkflowTask(
 ): void {
   let taskForNotification: LocalWorkflowTaskState | null = null
   updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => {
-    if (task.notified) return task
+    if (task.notified && task.status !== 'paused') return task
     const next: LocalWorkflowTaskState = {
       ...task,
       ...patch,
@@ -859,11 +859,14 @@ export function killWorkflowTask(
   setAppState: SetAppState,
 ): void {
   let controller: AbortController | undefined
+  let killed = false
   updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => {
-    if (task.status !== 'running') return task
+    if (task.status !== 'running' && task.status !== 'paused') return task
     controller = task.abortController
+    killed = true
     return task
   })
+  if (!killed) return
   controller?.abort('workflow_killed')
   finishWorkflowTask(taskId, 'killed', setAppState)
 }
