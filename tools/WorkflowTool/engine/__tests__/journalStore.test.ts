@@ -9,8 +9,21 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import {
+  getSessionId,
+  getSessionProjectDir,
+  switchSession,
+} from '../../../../bootstrap/state.js'
 import { createJournal } from '../journal.js'
-import { reapRunsUnder, RUN_RETENTION_MS } from '../journalStore.js'
+import {
+  initRunArtifacts,
+  listWorkflowRuns,
+  loadJournal,
+  loadRunMeta,
+  loadRunScript,
+  reapRunsUnder,
+  RUN_RETENTION_MS,
+} from '../journalStore.js'
 
 describe('reapRunsUnder (run-artifact retention, path-injectable)', () => {
   let root: string
@@ -220,5 +233,61 @@ describe('journal onRecord sink (disk-persistence contract, S1)', () => {
       })
     expect(parsed).toHaveLength(1)
     expect(parsed[0]).toMatchObject({ index: 0 })
+  })
+})
+
+describe('journalStore session scoping', () => {
+  let root: string
+  let previousHome: string | undefined
+  const previousSession = getSessionId()
+  const previousProjectDir = getSessionProjectDir()
+  const sessionA = '11111111-1111-4111-8111-111111111111' as ReturnType<
+    typeof getSessionId
+  >
+  const sessionB = '22222222-2222-4222-8222-222222222222' as ReturnType<
+    typeof getSessionId
+  >
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'wf-session-scope-'))
+    previousHome = process.env.MOSSEN_HOME
+    process.env.MOSSEN_HOME = root
+    switchSession(sessionA)
+  })
+
+  afterEach(() => {
+    switchSession(previousSession, previousProjectDir)
+    if (previousHome === undefined) {
+      delete process.env.MOSSEN_HOME
+    } else {
+      process.env.MOSSEN_HOME = previousHome
+    }
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  test('current-session workflow views do not expose runs from a different session', () => {
+    const runId = 'wf_session_a'
+    const source = `
+export const meta = { name: 'session-a', description: 'session A flow' }
+return 1
+`
+    initRunArtifacts(runId, source, {
+      runId,
+      workflowName: 'session-a',
+      description: 'session A flow',
+      createdAt: new Date(0).toISOString(),
+      status: 'running',
+    })
+
+    expect(listWorkflowRuns().map(run => run.runId)).toEqual([runId])
+    expect(loadRunMeta(runId)?.workflowName).toBe('session-a')
+    expect(loadRunScript(runId)).toContain("name: 'session-a'")
+
+    switchSession(sessionB)
+
+    expect(listWorkflowRuns()).toEqual([])
+    expect(loadRunMeta(runId)).toBeNull()
+    expect(loadRunScript(runId)).toBeNull()
+    expect(loadJournal(runId)).toBeNull()
   })
 })
