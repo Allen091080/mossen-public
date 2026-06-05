@@ -33,6 +33,13 @@ import {
   resumeRunFromJournal,
   type WorkflowCommandResult,
 } from './resumeWorkflow.js'
+import {
+  buildWorkflowPhaseMetricSummary,
+  buildWorkflowRunMetricSummary,
+  formatWorkflowPhaseMetricSummary,
+  workflowAgentElapsedMs,
+  workflowFiniteNumber,
+} from './progressSummary.js'
 
 type WorkflowAgentSnapshot = Partial<WorkflowAgentTaskProgress> & {
   agentNumber?: number
@@ -74,10 +81,6 @@ function statusGlyph(status: WorkflowRunMeta['status']): string {
   }
 }
 
-function asNumber(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0
-}
-
 function compact(value: unknown, maxLength = 180): string | null {
   if (value == null) return null
   const text = String(value).replace(/\s+/g, ' ').trim()
@@ -95,41 +98,6 @@ function resultBlock(value: unknown, maxLength = 4000): string[] {
     `${t('cmd.workflows.result')}:`,
     ...rendered.split('\n').map(line => `  ${line}`),
   ]
-}
-
-function taskElapsedMs(task: WorkflowTaskSnapshot, now = Date.now()): number {
-  if (
-    task.status !== 'running' &&
-    task.status !== 'paused' &&
-    typeof task.durationMs === 'number'
-  ) {
-    return Math.max(0, task.durationMs)
-  }
-  const start = asNumber(task.startTime)
-  if (!start) return 0
-  const end =
-    task.status === 'running' || task.status === 'paused'
-      ? now
-      : asNumber(task.endTime) || now
-  return Math.max(0, end - start - asNumber(task.totalPausedMs))
-}
-
-function agentElapsedMs(agent: WorkflowAgentSnapshot, now = Date.now()): number {
-  if (typeof agent.durationMs === 'number') return Math.max(0, agent.durationMs)
-  const startedAt = asNumber(agent.startedAt)
-  if (!startedAt) return 0
-  return Math.max(0, now - startedAt)
-}
-
-function statusSummary(agents: readonly WorkflowAgentSnapshot[]): string {
-  const counts = new Map<string, number>()
-  for (const agent of agents) {
-    const status = agent.status ?? 'unknown'
-    counts.set(status, (counts.get(status) ?? 0) + 1)
-  }
-  return Array.from(counts.entries())
-    .map(([status, count]) => `${count} ${status}`)
-    .join(', ')
 }
 
 function phaseTitlesForTask(task: WorkflowTaskSnapshot): string[] {
@@ -167,10 +135,10 @@ function agentLine(agent: WorkflowAgentSnapshot, now = Date.now()): string {
   const parts = [
     `#${agent.agentNumber ?? '?'} ${agent.phase ? `[${agent.phase}] ` : ''}${agent.label ?? 'agent'}`,
     agent.status ?? 'unknown',
-    `${formatNumber(asNumber(agent.tokens))} tok`,
-    `${formatNumber(asNumber(agent.toolCalls))} tools`,
+    `${formatNumber(workflowFiniteNumber(agent.tokens))} tok`,
+    `${formatNumber(workflowFiniteNumber(agent.toolCalls))} tools`,
   ]
-  const elapsed = agentElapsedMs(agent, now)
+  const elapsed = workflowAgentElapsedMs(agent, now)
   if (elapsed > 0) parts.push(formatDuration(elapsed, { mostSignificantOnly: true }))
   const tool = compact(
     recentToolCalls(agent).at(-1)
@@ -192,13 +160,14 @@ function renderLiveRunDetail(
   const now = Date.now()
   const agents = task.agents ?? []
   const phaseTitles = phaseTitlesForTask(task)
+  const runSummary = buildWorkflowRunMetricSummary(task, agents, now)
   const header = [
     `${statusGlyph((task.status as WorkflowRunMeta['status']) ?? 'running')} ${task.workflowName ?? runId} (${task.workflowRunId ?? task.runId ?? runId})`,
     `${t('cmd.workflows.status')}: ${task.paused ? 'paused' : (task.status ?? 'unknown')}`,
-    `${t('cmd.workflows.agents')}: ${task.agentCount ?? agents.length}`,
-    `${t('cmd.workflows.tokens')}: ~${formatNumber(asNumber(task.tokensSpent))}`,
-    `${t('cmd.workflows.duration')}: ${formatDuration(taskElapsedMs(task, now), { mostSignificantOnly: true })}`,
-    `${t('cmd.workflows.tools')}: ${formatNumber(asNumber(task.totalToolCalls))}`,
+    `${t('cmd.workflows.agents')}: ${runSummary.agentCount}`,
+    `${t('cmd.workflows.tokens')}: ~${formatNumber(runSummary.tokens)}`,
+    `${t('cmd.workflows.duration')}: ${formatDuration(runSummary.elapsedMs, { mostSignificantOnly: true })}`,
+    `${t('cmd.workflows.tools')}: ${formatNumber(runSummary.toolCalls)}`,
     task.failures?.length
       ? `${t('cmd.workflows.failures')}: ${task.failures.length}`
       : null,
@@ -210,29 +179,12 @@ function renderLiveRunDetail(
           t('cmd.workflows.phases'),
           ...phaseTitles.map((phase, index) => {
             const phaseAgents = agents.filter(agent => agent.phase === phase)
-            const tokens = phaseAgents.reduce(
-              (sum, agent) => sum + asNumber(agent.tokens),
-              0,
+            const summary = buildWorkflowPhaseMetricSummary(
+              phase,
+              phaseAgents,
+              now,
             )
-            const tools = phaseAgents.reduce(
-              (sum, agent) => sum + asNumber(agent.toolCalls),
-              0,
-            )
-            const elapsed = phaseAgents.reduce(
-              (sum, agent) => sum + agentElapsedMs(agent, now),
-              0,
-            )
-            const counts = statusSummary(phaseAgents)
-            const meta = [
-              `${phaseAgents.length} agent(s)`,
-              counts,
-              `${formatNumber(tokens)} tok`,
-              `${formatNumber(tools)} tools`,
-              elapsed > 0
-                ? formatDuration(elapsed, { mostSignificantOnly: true })
-                : null,
-            ].filter((part): part is string => Boolean(part))
-            return `  ${index + 1}. ${phase}${meta.length ? ` · ${meta.join(' · ')}` : ''}`
+            return `  ${index + 1}. ${formatWorkflowPhaseMetricSummary(summary)}`
           }),
         ]
       : []
@@ -294,10 +246,16 @@ function renderRunDetail(
       agentCount: meta.agentCount ?? historyAgents.length,
       totalToolCalls:
         meta.totalToolCalls ??
-        historyAgents.reduce((sum, agent) => sum + asNumber(agent.toolCalls), 0),
+        historyAgents.reduce(
+          (sum, agent) => sum + workflowFiniteNumber(agent.toolCalls),
+          0,
+        ),
       tokensSpent:
         meta.tokensSpent ??
-        historyAgents.reduce((sum, agent) => sum + asNumber(agent.tokens), 0),
+        historyAgents.reduce(
+          (sum, agent) => sum + workflowFiniteNumber(agent.tokens),
+          0,
+        ),
       phaseDefinitions: meta.phases,
       phases: meta.phases?.map(phase => phase.title) ?? [],
       failures: meta.failures,
@@ -369,10 +327,10 @@ function renderAgentDetail(
     `${t('cmd.workflows.agentDetail')}: #${agentNumber} ${agent.label ?? 'agent'}`,
     `${t('cmd.workflows.status')}: ${agent.status ?? 'unknown'}`,
     agent.phase ? `${t('cmd.workflows.phase')}: ${agent.phase}` : null,
-    `${t('cmd.workflows.tokens')}: ~${formatNumber(asNumber(agent.tokens))}`,
-    `${t('cmd.workflows.tools')}: ${formatNumber(asNumber(agent.toolCalls))}`,
-    agentElapsedMs(agent) > 0
-      ? `${t('cmd.workflows.duration')}: ${formatDuration(agentElapsedMs(agent), { mostSignificantOnly: true })}`
+    `${t('cmd.workflows.tokens')}: ~${formatNumber(workflowFiniteNumber(agent.tokens))}`,
+    `${t('cmd.workflows.tools')}: ${formatNumber(workflowFiniteNumber(agent.toolCalls))}`,
+    workflowAgentElapsedMs(agent) > 0
+      ? `${t('cmd.workflows.duration')}: ${formatDuration(workflowAgentElapsedMs(agent), { mostSignificantOnly: true })}`
       : null,
     agent.agentType ? `agentType: ${agent.agentType}` : null,
     agent.model ? `model: ${agent.model}` : null,

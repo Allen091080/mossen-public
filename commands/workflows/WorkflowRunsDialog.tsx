@@ -28,6 +28,12 @@ import {
   isResumableWorkflowRunStatus,
   resumeRunFromJournal,
 } from './resumeWorkflow.js'
+import {
+  buildWorkflowPhaseMetricSummary,
+  buildWorkflowRunMetricSummary,
+  workflowAgentElapsedMs,
+  workflowSumAgentElapsedMs,
+} from './progressSummary.js'
 
 type Props = {
   onDone: LocalJSXCommandOnDone
@@ -112,11 +118,6 @@ function statusColor(status: string): 'success' | 'error' | 'warning' | 'backgro
   }
 }
 
-function elapsedMs(startTime?: number, endTime?: number, pausedMs = 0): number {
-  if (!startTime) return 0
-  return Math.max(0, (endTime ?? Date.now()) - startTime - pausedMs)
-}
-
 function compact(value: unknown, maxLength = 140): string | null {
   if (value == null) return null
   const text = String(value).replace(/\s+/g, ' ').trim()
@@ -197,33 +198,10 @@ function phaseTitles(task: LocalWorkflowTaskState): string[] {
   return phaseTitlesFromProgress(task.phaseDefinitions, task.phases, task.agents ?? [])
 }
 
-function agentElapsed(agent: WorkflowAgentTaskProgress): number {
-  if (typeof agent.durationMs === 'number') return Math.max(0, agent.durationMs)
-  if (!agent.startedAt) return 0
-  return Math.max(0, Date.now() - agent.startedAt)
-}
-
-function sumAgents(
-  agents: readonly WorkflowAgentTaskProgress[],
-  field: 'tokens' | 'toolCalls',
-): number {
-  return agents.reduce((sum, agent) => sum + (agent[field] ?? 0), 0)
-}
-
 export function sumAgentElapsedMs(
   agents: readonly WorkflowAgentTaskProgress[],
 ): number {
-  return agents.reduce((sum, agent) => sum + agentElapsed(agent), 0)
-}
-
-function statusSummary(agents: readonly WorkflowAgentTaskProgress[]): string {
-  const counts = new Map<string, number>()
-  for (const agent of agents) {
-    counts.set(agent.status, (counts.get(agent.status) ?? 0) + 1)
-  }
-  return Array.from(counts.entries())
-    .map(([status, count]) => `${count} ${status}`)
-    .join(', ')
+  return workflowSumAgentElapsedMs(agents)
 }
 
 export function recentToolCallLines(agent: WorkflowAgentTaskProgress): string[] {
@@ -403,6 +381,11 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
     view.mode === 'agent'
       ? agents.find(agent => agent.agentNumber === view.agentNumber) ?? null
       : agents[selectedAgentIndex] ?? null
+  const selectedRunMetricSummary = selectedRun
+    ? selectedRun.kind === 'live'
+      ? buildWorkflowRunMetricSummary(selectedRun.task, selectedRun.task.agents)
+      : buildWorkflowRunMetricSummary(selectedRun.meta, historyAgents)
+    : null
 
   const close = (result = t('cmd.workflows.dismissed')) =>
     onDone(result, { display: 'system' })
@@ -645,17 +628,10 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
           {selectedRun.kind === 'live' ? (
             <>
               <Text dimColor>
-                {formatNumber(selectedRun.task.agentCount)} agents ·{' '}
-                {formatNumber(selectedRun.task.tokensSpent)} tok ·{' '}
-                {formatNumber(selectedRun.task.totalToolCalls)} tools ·{' '}
-                {formatDuration(
-                  elapsedMs(
-                    selectedRun.task.startTime,
-                    selectedRun.task.endTime,
-                    selectedRun.task.totalPausedMs ?? 0,
-                  ),
-                  { mostSignificantOnly: true },
-                )}
+                {formatNumber(selectedRunMetricSummary?.agentCount ?? 0)} agents ·{' '}
+                {formatNumber(selectedRunMetricSummary?.tokens ?? 0)} tok ·{' '}
+                {formatNumber(selectedRunMetricSummary?.toolCalls ?? 0)} tools ·{' '}
+                {formatDuration(selectedRunMetricSummary?.elapsedMs ?? 0, { mostSignificantOnly: true })}
               </Text>
               <Box flexDirection="column" marginTop={1}>
                 {showRunLevelAgents
@@ -671,35 +647,38 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
                     ))
                   : phases.map((phase, index) => {
                       const phaseAgents = selectedRun.task.agents.filter(agent => agent.phase === phase)
-                      const phaseElapsedMs = sumAgentElapsedMs(phaseAgents)
+                      const phaseSummary = buildWorkflowPhaseMetricSummary(
+                        phase,
+                        phaseAgents,
+                      )
                       const selected = index === selectedPhaseIndex
                       return (
                         <Text key={phase} color={selected ? 'suggestion' : undefined}>
                           {selected ? '> ' : '  '}
                           {phase}{' '}
                           <Text dimColor>
-                            · {phaseAgents.length} agents · {statusSummary(phaseAgents)}
-                            {' '}· {formatNumber(sumAgents(phaseAgents, 'tokens'))} tok
-                            {' '}· {formatNumber(sumAgents(phaseAgents, 'toolCalls'))} tools
-                            {phaseElapsedMs > 0
-                              ? ` · ${formatDuration(phaseElapsedMs, { mostSignificantOnly: true })}`
+                            · {phaseSummary.agentCount} agents · {phaseSummary.statusSummary}
+                            {' '}· {formatNumber(phaseSummary.tokens)} tok
+                            {' '}· {formatNumber(phaseSummary.toolCalls)} tools
+                            {phaseSummary.elapsedMs > 0
+                              ? ` · ${formatDuration(phaseSummary.elapsedMs, { mostSignificantOnly: true })}`
                               : ''}
                           </Text>
                         </Text>
                       )
-                    })}
+                  })}
               </Box>
             </>
           ) : (
             <Box flexDirection="column">
               <Text dimColor>
-                {formatNumber(selectedRun.meta.agentCount ?? agents.length)} agents · ~
-                {formatNumber(selectedRun.meta.tokensSpent ?? sumAgents(agents, 'tokens'))} tok
+                {formatNumber(selectedRunMetricSummary?.agentCount ?? 0)} agents · ~
+                {formatNumber(selectedRunMetricSummary?.tokens ?? 0)} tok
                 {selectedRun.meta.totalToolCalls != null || agents.length > 0
-                  ? ` · ${formatNumber(selectedRun.meta.totalToolCalls ?? sumAgents(agents, 'toolCalls'))} tools`
+                  ? ` · ${formatNumber(selectedRunMetricSummary?.toolCalls ?? 0)} tools`
                   : ''}
-                {selectedRun.meta.durationMs != null
-                  ? ` · ${formatDuration(selectedRun.meta.durationMs, { mostSignificantOnly: true })}`
+                {(selectedRunMetricSummary?.elapsedMs ?? 0) > 0
+                  ? ` · ${formatDuration(selectedRunMetricSummary?.elapsedMs ?? 0, { mostSignificantOnly: true })}`
                   : ''}
               </Text>
               {agents.length > 0 ? (
@@ -717,18 +696,21 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
                       ))
                     : phases.map((phase, index) => {
                         const phaseAgents = agents.filter(agent => agent.phase === phase)
-                        const phaseElapsedMs = sumAgentElapsedMs(phaseAgents)
+                        const phaseSummary = buildWorkflowPhaseMetricSummary(
+                          phase,
+                          phaseAgents,
+                        )
                         const selected = index === selectedPhaseIndex
                         return (
                           <Text key={phase} color={selected ? 'suggestion' : undefined}>
                             {selected ? '> ' : '  '}
                             {phase}{' '}
                             <Text dimColor>
-                              · {phaseAgents.length} agents · {statusSummary(phaseAgents)}
-                              {' '}· {formatNumber(sumAgents(phaseAgents, 'tokens'))} tok
-                              {' '}· {formatNumber(sumAgents(phaseAgents, 'toolCalls'))} tools
-                              {phaseElapsedMs > 0
-                                ? ` · ${formatDuration(phaseElapsedMs, { mostSignificantOnly: true })}`
+                              · {phaseSummary.agentCount} agents · {phaseSummary.statusSummary}
+                              {' '}· {formatNumber(phaseSummary.tokens)} tok
+                              {' '}· {formatNumber(phaseSummary.toolCalls)} tools
+                              {phaseSummary.elapsedMs > 0
+                                ? ` · ${formatDuration(phaseSummary.elapsedMs, { mostSignificantOnly: true })}`
                                 : ''}
                             </Text>
                           </Text>
@@ -768,7 +750,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
             <Text dimColor>
               {' '}· {formatNumber(currentAgent.tokens)} tok ·{' '}
               {formatNumber(currentAgent.toolCalls)} tools ·{' '}
-              {formatDuration(agentElapsed(currentAgent), { mostSignificantOnly: true })}
+              {formatDuration(workflowAgentElapsedMs(currentAgent), { mostSignificantOnly: true })}
             </Text>
           </Text>
           {[
