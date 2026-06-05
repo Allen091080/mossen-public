@@ -12,9 +12,9 @@
  *  1. The script body runs inside a `node:vm` context so synchronous runaway
  *     loops are cut off by `runInContext(..., { timeout })`, matching the
  *     official workflow runner's first-frame timeout behavior.
- *  2. The allowed surface (primitives) is injected as globals, while dangerous
- *     names (`process`, `fetch`, `Function`, `globalThis`, etc.) are shadowed
- *     to `undefined` inside the context.
+ *  2. The allowed surface (primitives) is injected as globals through VM-native
+ *     wrappers, while dangerous names (`process`, `fetch`, `Function`,
+ *     `globalThis`, etc.) are shadowed to `undefined` inside the context.
  *  3. VM-native builtins are used where possible. `Math.random` and `Date`
  *     are patched inside the VM context so nondeterministic calls throw without
  *     handing host constructors to the workflow script.
@@ -167,6 +167,118 @@ const DETERMINISTIC_GUARDS = `
 })()
 `
 
+type HostCallable = (...args: unknown[]) => unknown
+type HostFunctionBridge = (id: number, args: unknown[]) => unknown
+
+type ScopeAdapter = {
+  toSandboxValue(value: unknown, freezeObjects?: boolean): unknown
+}
+
+function createScopeAdapter(context: vm.Context): ScopeAdapter {
+  const hostFunctions = new Map<number, HostCallable>()
+  let nextHostFunctionId = 1
+
+  const makeHostFunction = vm.runInContext(
+    `((bridge, id) => {
+      const wrapped = (...args) => bridge(id, args)
+      Object.defineProperty(wrapped, 'constructor', {
+        value: undefined,
+        enumerable: false,
+        configurable: false,
+      })
+      Object.defineProperty(wrapped, 'prototype', {
+        value: undefined,
+        enumerable: false,
+        configurable: false,
+      })
+      Object.setPrototypeOf(wrapped, null)
+      return Object.freeze(wrapped)
+    })`,
+    context,
+  ) as (bridge: HostFunctionBridge, id: number) => unknown
+
+  const makeEmptyObject = vm.runInContext(
+    `(() => Object.create(null))`,
+    context,
+  ) as () => object
+
+  const defineObjectEntries = vm.runInContext(
+    `((out, entries, freezeObjects) => {
+      for (const [key, value] of entries) {
+        Object.defineProperty(out, key, {
+          value,
+          enumerable: true,
+          writable: !freezeObjects,
+          configurable: !freezeObjects,
+        })
+      }
+      return freezeObjects ? Object.freeze(out) : out
+    })`,
+    context,
+  ) as (
+    out: object,
+    entries: Array<[string, unknown]>,
+    freezeObjects: boolean,
+  ) => unknown
+
+  const makeArray = vm.runInContext(
+    `((items, freezeObjects) => {
+      const out = Array.from(items)
+      return freezeObjects ? Object.freeze(out) : out
+    })`,
+    context,
+  ) as (items: unknown[], freezeObjects: boolean) => unknown
+
+  const toSandboxValue = (
+    value: unknown,
+    freezeObjects = false,
+    seen = new WeakMap<object, unknown>(),
+  ): unknown => {
+    if (value == null || (typeof value !== 'object' && typeof value !== 'function')) {
+      return value
+    }
+
+    if (typeof value === 'function') {
+      const id = nextHostFunctionId++
+      hostFunctions.set(id, value as HostCallable)
+      return makeHostFunction(bridge, id)
+    }
+
+    const objectValue = value as object
+    const seenValue = seen.get(objectValue)
+    if (seenValue) return seenValue
+
+    if (Array.isArray(value)) {
+      const items = value.map(item => toSandboxValue(item, freezeObjects, seen))
+      const out = makeArray(items, freezeObjects)
+      seen.set(objectValue, out)
+      return out
+    }
+
+    const out = makeEmptyObject()
+    seen.set(objectValue, out)
+    const descriptors = Object.getOwnPropertyDescriptors(value)
+    const entries: Array<[string, unknown]> = []
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (!descriptor.enumerable || !('value' in descriptor)) continue
+      entries.push([key, toSandboxValue(descriptor.value, freezeObjects, seen)])
+    }
+    return defineObjectEntries(out, entries, freezeObjects)
+  }
+
+  const bridge: HostFunctionBridge = (id, args) => {
+    const fn = hostFunctions.get(id)
+    if (!fn) throw new WorkflowScriptError('Workflow host function is no longer available.')
+    const result = fn(...args)
+    if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+      return Promise.resolve(result).then(value => toSandboxValue(value))
+    }
+    return toSandboxValue(result)
+  }
+
+  return { toSandboxValue }
+}
+
 function isVmTimeout(err: unknown): boolean {
   const message =
     typeof err === 'object' && err !== null && 'message' in err
@@ -243,13 +355,18 @@ export function checkWorkflowScriptSyntax(
 }
 
 function createContext(scope: SandboxScope, timeoutMs: number): vm.Context {
-  const context = vm.createContext({ ...scope })
+  const context = vm.createContext({})
   new vm.Script(DETERMINISTIC_GUARDS, {
     filename: 'workflow-determinism-guards.js',
   }).runInContext(context, { timeout: timeoutMs })
 
   for (const name of SHADOWED_GLOBALS) {
     context[name] = undefined
+  }
+
+  const adapter = createScopeAdapter(context)
+  for (const [name, value] of Object.entries(scope)) {
+    context[name] = adapter.toSandboxValue(value, true)
   }
   return context
 }

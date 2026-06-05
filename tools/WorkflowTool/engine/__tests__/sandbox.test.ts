@@ -114,6 +114,40 @@ describe('runSandbox — blocked surface', () => {
     expect(out).toBe('undefined,undefined')
   })
 
+  test('injected host functions cannot escape through constructor chains', async () => {
+    const out = await runSandbox({
+      ...base,
+      scope: {
+        agent: async () => ({ ok: true }),
+        budget: {
+          total: 100,
+          spent: () => 0,
+          remaining: () => 100,
+        },
+      },
+      source: `
+        const result = await agent('task')
+        let escape = 'blocked'
+        try {
+          escape = agent.constructor.constructor('return typeof process')()
+        } catch {}
+        return [
+          escape,
+          typeof agent.constructor,
+          Object.getPrototypeOf(agent) === null,
+          typeof result.constructor,
+          Object.getPrototypeOf(result) === null,
+          result.ok,
+          budget.spent(),
+          typeof budget.spent.constructor,
+          Object.getPrototypeOf(budget) === null,
+        ].join(':')
+      `,
+    })
+
+    expect(out).toBe('blocked:undefined:true:undefined:true:true:0:undefined:true')
+  })
+
   test('eval is rejected before execution', async () => {
     await expect(
       runSandbox({ ...base, source: `return eval('1+1')` }),
