@@ -497,7 +497,7 @@ return 'ok'
     expect(WorkflowTool.requiresUserInteraction?.()).toBe(true)
   })
 
-  it('allows repeated default-mode inline workflow launches after local source consent', async () => {
+  it('allows repeated default-mode inline workflow launches after explicit local source consent', async () => {
     const priorCwd = getOriginalCwd()
     const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
     const tempRoot = mkdtempSync(join(tmpdir(), 'mossen-workflow-default-consent-'))
@@ -534,6 +534,54 @@ return 'ok'
         workflowUsageConsentHash(AUTO_CONSENT_WORKFLOW),
       ])
       expect(JSON.stringify(localSettings)).not.toContain('auto-flow')
+    } finally {
+      setOriginalCwd(priorCwd)
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
+      resetSettingsCache()
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('does not reuse auto-mode user consent as default or acceptEdits launch consent', async () => {
+    const priorCwd = getOriginalCwd()
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mossen-workflow-mode-consent-'))
+    const configRoot = join(tempRoot, 'config')
+    try {
+      setOriginalCwd(tempRoot)
+      process.env.MOSSEN_CONFIG_DIR = configRoot
+      resetSettingsCache()
+
+      expect(recordWorkflowUsageConsent(
+        workflowUsageConsentHash(AUTO_CONSENT_WORKFLOW),
+        'userSettings',
+      )).toBe(true)
+
+      const autoDecision = await WorkflowTool.checkPermissions(
+        { script: AUTO_CONSENT_WORKFLOW },
+        toolUseContextWithWorkflowRules({ mode: 'auto' }),
+      )
+      expect(autoDecision.behavior).toBe('allow')
+
+      const defaultDecision = await WorkflowTool.checkPermissions(
+        { script: AUTO_CONSENT_WORKFLOW },
+        toolUseContextWithWorkflowRules({ mode: 'default' }),
+      )
+      expect(defaultDecision.behavior).toBe('ask')
+      if (defaultDecision.behavior !== 'ask') {
+        throw new Error(`Expected ask, got ${defaultDecision.behavior}`)
+      }
+      expect(defaultDecision.message).toBe('Run dynamic workflow')
+
+      const acceptEditsDecision = await WorkflowTool.checkPermissions(
+        { script: AUTO_CONSENT_WORKFLOW },
+        toolUseContextWithWorkflowRules({ mode: 'acceptEdits' }),
+      )
+      expect(acceptEditsDecision.behavior).toBe('ask')
     } finally {
       setOriginalCwd(priorCwd)
       if (priorConfigDir === undefined) {

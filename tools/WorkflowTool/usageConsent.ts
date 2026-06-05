@@ -13,6 +13,14 @@ const TRUSTED_CONSENT_SOURCES = [
   'flagSettings',
   'policySettings',
 ] as const
+type TrustedConsentSource = (typeof TRUSTED_CONSENT_SOURCES)[number]
+
+export const WORKFLOW_AUTO_LAUNCH_CONSENT_SOURCES = TRUSTED_CONSENT_SOURCES
+export const WORKFLOW_PROJECT_LAUNCH_CONSENT_SOURCES = [
+  'localSettings',
+  'flagSettings',
+  'policySettings',
+] as const
 
 export function workflowUsageConsentHash(source: string): string {
   return `${WORKFLOW_USAGE_CONSENT_PREFIX}${createHash('sha256')
@@ -43,9 +51,10 @@ export function hasTrustedWorkflowUsageWarningBypass(): boolean {
 
 export function hasRecordedWorkflowUsageConsent(
   consentHash: string | null | undefined,
+  sources: readonly TrustedConsentSource[] = TRUSTED_CONSENT_SOURCES,
 ): boolean {
   if (!isWorkflowUsageConsentHash(consentHash)) return false
-  return TRUSTED_CONSENT_SOURCES.some(source =>
+  return sources.some(source =>
     settingsConsentHashes(getSettingsForSource(source)).includes(consentHash),
   )
 }

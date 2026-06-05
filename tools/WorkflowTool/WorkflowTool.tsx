@@ -71,7 +71,11 @@ import {
 import { buildWorkflowPermissionReview } from './permissionReview.js'
 import { readWorkflowScriptFile } from './scriptFile.js'
 import { isWorkflowRuntimeEnabled } from '../../utils/workflowAvailability.js'
-import { hasRecordedWorkflowUsageConsent } from './usageConsent.js'
+import {
+  hasRecordedWorkflowUsageConsent,
+  WORKFLOW_AUTO_LAUNCH_CONSENT_SOURCES,
+  WORKFLOW_PROJECT_LAUNCH_CONSENT_SOURCES,
+} from './usageConsent.js'
 import {
   registerRemoteAgentTask,
   startRemoteAgentTaskPolling,
@@ -527,6 +531,20 @@ function getWorkflowLaunchConsentHash(input: WorkflowInput): string | null {
   }
 }
 
+function hasRecordedWorkflowLaunchConsent(
+  input: WorkflowInput,
+  permissionContext: ReturnType<ToolUseContext['getAppState']>['toolPermissionContext'],
+): boolean {
+  const sources =
+    permissionContext.mode === 'auto'
+      ? WORKFLOW_AUTO_LAUNCH_CONSENT_SOURCES
+      : WORKFLOW_PROJECT_LAUNCH_CONSENT_SOURCES
+  return hasRecordedWorkflowUsageConsent(
+    getWorkflowLaunchConsentHash(input),
+    sources,
+  )
+}
+
 export const WorkflowTool = buildTool({
   name: WORKFLOW_TOOL_NAME,
   aliases: ['RunWorkflow'],
@@ -691,7 +709,7 @@ export const WorkflowTool = buildTool({
       }
     }
 
-    if (hasRecordedWorkflowUsageConsent(getWorkflowLaunchConsentHash(input))) {
+    if (hasRecordedWorkflowLaunchConsent(input, permissionContext)) {
       return {
         behavior: 'allow',
         updatedInput: input,
