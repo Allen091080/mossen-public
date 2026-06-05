@@ -35,6 +35,17 @@ const MULTI_AGENT_REQUEST_RE =
 const FANOUT_AGENT_REQUEST_RE =
   /\bfan[-\s]?out\s+(?:with|to|across)\s+(?:multiple|many)\s+(?:agents|subagents)\b/i
 const suppressedWorkflowReminderPrompts = new Set<string>()
+const MACOS_OPTION_W_CHAR = '∑'
+
+type WorkflowKeywordDismissKey = {
+  meta?: boolean
+  ctrl?: boolean
+  backspace?: boolean
+}
+
+type WorkflowTriggerPosition = {
+  end: number
+}
 
 export function hasWorkflowKeyword(text: string): boolean {
   return hasWorkflowDirectRequest(text)
@@ -85,6 +96,35 @@ export function findWorkflowTriggerPositions(text: string): Array<{
   }
 
   return positions
+}
+
+export function isWorkflowKeywordDismissShortcut(
+  char: string,
+  key: WorkflowKeywordDismissKey,
+): boolean {
+  if (key.ctrl) return false
+  return (
+    (key.meta === true && char.toLowerCase() === 'w') ||
+    char === MACOS_OPTION_W_CHAR
+  )
+}
+
+export function shouldDismissWorkflowKeywordOnBackspace({
+  cursorOffset,
+  dismissed,
+  key,
+  triggers,
+}: {
+  cursorOffset: number
+  dismissed: boolean
+  key: WorkflowKeywordDismissKey
+  triggers: WorkflowTriggerPosition[]
+}): boolean {
+  return (
+    key.backspace === true &&
+    !dismissed &&
+    triggers.some(trigger => trigger.end === cursorOffset)
+  )
 }
 
 /**

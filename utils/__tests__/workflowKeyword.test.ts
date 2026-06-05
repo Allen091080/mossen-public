@@ -8,6 +8,8 @@ import {
   hasUltracodeKeyword,
   hasWorkflowDirectRequest,
   hasWorkflowKeyword,
+  isWorkflowKeywordDismissShortcut,
+  shouldDismissWorkflowKeywordOnBackspace,
   suppressNextWorkflowReminderFor,
 } from '../workflowKeyword.js'
 
@@ -138,6 +140,57 @@ describe('workflowKeyword', () => {
       expect(first).toEqual(second)
       expect(first).toHaveLength(1)
       expect(first[0]!.start).toBe(4)
+    })
+  })
+
+  describe('workflow keyword dismiss controls', () => {
+    test('matches official Alt/Option+W shortcut without matching Ctrl+W', () => {
+      expect(isWorkflowKeywordDismissShortcut('w', { meta: true })).toBe(true)
+      expect(isWorkflowKeywordDismissShortcut('W', { meta: true })).toBe(true)
+      expect(isWorkflowKeywordDismissShortcut('w', { ctrl: true })).toBe(false)
+      expect(isWorkflowKeywordDismissShortcut('x', { meta: true })).toBe(false)
+    })
+
+    test('matches macOS Option+W character when Option is not sent as Meta', () => {
+      expect(isWorkflowKeywordDismissShortcut('∑', {})).toBe(true)
+      expect(isWorkflowKeywordDismissShortcut('∑', { ctrl: true })).toBe(false)
+    })
+
+    test('backspace dismisses only at the end of a workflow trigger keyword', () => {
+      const triggers = findWorkflowTriggerPositions('use ultracode now')
+
+      expect(
+        shouldDismissWorkflowKeywordOnBackspace({
+          cursorOffset: 13,
+          dismissed: false,
+          key: { backspace: true },
+          triggers,
+        }),
+      ).toBe(true)
+      expect(
+        shouldDismissWorkflowKeywordOnBackspace({
+          cursorOffset: 12,
+          dismissed: false,
+          key: { backspace: true },
+          triggers,
+        }),
+      ).toBe(false)
+      expect(
+        shouldDismissWorkflowKeywordOnBackspace({
+          cursorOffset: 13,
+          dismissed: true,
+          key: { backspace: true },
+          triggers,
+        }),
+      ).toBe(false)
+      expect(
+        shouldDismissWorkflowKeywordOnBackspace({
+          cursorOffset: 13,
+          dismissed: false,
+          key: {},
+          triggers,
+        }),
+      ).toBe(false)
     })
   })
 

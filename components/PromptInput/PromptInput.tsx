@@ -94,7 +94,13 @@ import { writeToMailbox } from '../../utils/teammateMailbox.js';
 import type { TextHighlight } from '../../utils/textHighlighting.js';
 import type { Theme } from '../../utils/theme.js';
 import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../utils/thinking.js';
-import { findWorkflowTriggerPositions, isWorkflowKeywordEnabled, suppressNextWorkflowReminderFor } from '../../utils/workflowKeyword.js';
+import {
+  findWorkflowTriggerPositions,
+  isWorkflowKeywordDismissShortcut,
+  isWorkflowKeywordEnabled,
+  shouldDismissWorkflowKeywordOnBackspace,
+  suppressNextWorkflowReminderFor
+} from '../../utils/workflowKeyword.js';
 import { t as translate } from '../../utils/i18n/index.js';
 import { findTokenBudgetPositions } from '../../utils/tokenBudget.js';
 import { AutoModeOptInDialog } from '../AutoModeOptInDialog.js';
@@ -1998,17 +2004,18 @@ function PromptInput({
 
     // NOTE: ctrl+_ and ctrl+s are handled via Chat context keybindings above.
     // ctrl+g is reserved by the goal overlay handler when a session goal exists.
-    if (key.meta && !key.ctrl && char.toLowerCase() === 'w' && inputWorkflowTriggers.length > 0) {
+    if (isWorkflowKeywordDismissShortcut(char, key) && inputWorkflowTriggers.length > 0) {
       setWorkflowTriggerDismissed(true);
       removeNotification('workflow-keyword-active');
       event.stopImmediatePropagation();
       return;
     }
-    if (
-      key.backspace &&
-      !workflowTriggerDismissed &&
-      inputWorkflowTriggers.some(trigger => trigger.end === cursorOffset)
-    ) {
+    if (shouldDismissWorkflowKeywordOnBackspace({
+      cursorOffset,
+      dismissed: workflowTriggerDismissed,
+      key,
+      triggers: inputWorkflowTriggers
+    })) {
       setWorkflowTriggerDismissed(true);
       removeNotification('workflow-keyword-active');
       event.stopImmediatePropagation();
