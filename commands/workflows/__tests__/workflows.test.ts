@@ -27,7 +27,10 @@ import {
 import {
   appendJournalEntry,
   appendJournalStartedEntry,
+  clearActiveWorkflowRunsForTests,
   initRunArtifacts,
+  loadRunMeta,
+  STALE_RUNNING_WORKFLOW_MESSAGE,
 } from '../../../tools/WorkflowTool/engine/journalStore.js'
 import {
   getProjectWorkflowsDir,
@@ -453,6 +456,18 @@ return 'ok'
           status: 'completed',
         },
       )
+      initRunArtifacts(
+        'wf_stale-running',
+        'return "stale"',
+        {
+          runId: 'wf_stale-running',
+          workflowName: 'stale-flow',
+          description: 'Stale flow',
+          createdAt: new Date(0).toISOString(),
+          status: 'running',
+        },
+      )
+      clearActiveWorkflowRunsForTests()
 
       let stoppedMessage = ''
       let stoppedNextInput = ''
@@ -485,7 +500,26 @@ return 'ok'
 
       expect(completedMessage).toContain('wf_completed-history')
       expect(completedNextInput).toBe('')
+
+      let staleMessage = ''
+      let staleNextInput = ''
+      await call(
+        (nextMessage, options) => {
+          staleMessage = nextMessage
+          staleNextInput = options?.nextInput ?? ''
+        },
+        workflowCommandContext({ tasks: {} }) as never,
+        'resume wf_stale-running',
+      )
+
+      expect(staleMessage).toContain('wf_stale-running')
+      expect(staleNextInput).toBe('')
+      expect(loadRunMeta('wf_stale-running')?.status).toBe('failed')
+      expect(loadRunMeta('wf_stale-running')?.failures).toContain(
+        STALE_RUNNING_WORKFLOW_MESSAGE,
+      )
     } finally {
+      clearActiveWorkflowRunsForTests()
       switchSession(priorSession, priorProjectDir)
       setProjectRoot(priorRoot)
       if (priorHome === undefined) {

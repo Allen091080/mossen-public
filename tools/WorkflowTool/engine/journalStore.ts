@@ -39,6 +39,9 @@ const JOURNAL_FILE = 'journal.jsonl'
 const SCRIPT_FILE = 'script.js'
 const META_FILE = 'run.json'
 const LOG_FILE = 'progress.log'
+export const STALE_RUNNING_WORKFLOW_MESSAGE =
+  'Workflow run was interrupted because the previous process exited; relaunch the workflow to start fresh.'
+const activeWorkflowRunIds = new Set<string>()
 
 /** Persisted run header alongside the journal (for /workflows listing + resume). */
 export type WorkflowRunMeta = {
@@ -101,6 +104,8 @@ export function initRunArtifacts(
   source: string,
   meta: WorkflowRunMeta,
 ): void {
+  if (meta.status === 'running') activeWorkflowRunIds.add(runId)
+  else activeWorkflowRunIds.delete(runId)
   reapOnceLazily()
   try {
     const dir = runDir(runId)
@@ -143,6 +148,9 @@ export function finalizeRunMeta(
   runId: string,
   patch: Partial<WorkflowRunMeta>,
 ): void {
+  if (patch.status && patch.status !== 'running') {
+    activeWorkflowRunIds.delete(runId)
+  }
   try {
     const dir = runDir(runId)
     const path = join(dir, META_FILE)
@@ -190,7 +198,8 @@ export function loadRunMeta(runId: string): WorkflowRunMeta | null {
   try {
     const path = join(runDir(runId), META_FILE)
     if (!existsSync(path)) return null
-    return JSON.parse(readFileSync(path, 'utf8')) as WorkflowRunMeta
+    const meta = JSON.parse(readFileSync(path, 'utf8')) as WorkflowRunMeta
+    return normalizeLoadedRunMeta(meta, path)
   } catch {
     return null
   }
@@ -253,7 +262,8 @@ export function listWorkflowRuns(): WorkflowRunMeta[] {
       const metaPath = join(root, name, META_FILE)
       if (!existsSync(metaPath)) continue
       try {
-        runs.push(JSON.parse(readFileSync(metaPath, 'utf8')) as WorkflowRunMeta)
+        const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as WorkflowRunMeta
+        runs.push(normalizeLoadedRunMeta(meta, metaPath))
       } catch {
         // skip a torn/partial run.json
       }
@@ -280,8 +290,9 @@ function runAgeMs(runPath: string, nowMs: number): number {
   if (existsSync(metaPath)) {
     try {
       const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as WorkflowRunMeta
-      // Never reap a run that still reports itself as in-flight.
-      if (meta.status === 'running') return -1
+      if (meta.status === 'running' && activeWorkflowRunIds.has(meta.runId)) {
+        return -1
+      }
       const t = Date.parse(meta.createdAt)
       if (!Number.isNaN(t)) return nowMs - t
     } catch {
@@ -299,8 +310,9 @@ function runAgeMs(runPath: string, nowMs: number): number {
  * Reap workflow run artifact dirs older than `maxAgeMs`, across ALL sessions
  * (every `<projectsDir>/<session>/subagents/workflows/<runId>/`). Best-effort
  * and synchronous-by-design — called once at startup. `nowMs` is injected so
- * the reap window is testable without touching the clock. Runs still marked
- * `running` are skipped. Returns the number of run dirs removed.
+ * the reap window is testable without touching the clock. Running runs owned by
+ * this process are skipped; stale running dirs from a previous process follow
+ * the normal retention window. Returns the number of run dirs removed.
  */
 export function cleanupOldWorkflowRuns(
   nowMs: number,
@@ -313,6 +325,37 @@ export function cleanupOldWorkflowRuns(
     return 0
   }
   return reapRunsUnder(projectsRoot, nowMs, maxAgeMs)
+}
+
+function normalizeLoadedRunMeta(
+  meta: WorkflowRunMeta,
+  path: string,
+): WorkflowRunMeta {
+  if (meta.status !== 'running' || activeWorkflowRunIds.has(meta.runId)) {
+    return meta
+  }
+  const failures = meta.failures?.includes(STALE_RUNNING_WORKFLOW_MESSAGE)
+    ? meta.failures
+    : [...(meta.failures ?? []), STALE_RUNNING_WORKFLOW_MESSAGE]
+  const normalized: WorkflowRunMeta = {
+    ...meta,
+    status: 'failed',
+    failures,
+  }
+  try {
+    writeFileSync(path, JSON.stringify(normalized, null, 2), 'utf8')
+  } catch {
+    // Best-effort display normalization; callers still get the safe status.
+  }
+  return normalized
+}
+
+export function clearActiveWorkflowRunsForTests(): void {
+  activeWorkflowRunIds.clear()
+}
+
+export function markActiveWorkflowRunForTests(runId: string): void {
+  activeWorkflowRunIds.add(runId)
 }
 
 /**

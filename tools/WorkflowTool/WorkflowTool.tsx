@@ -38,6 +38,7 @@ import {
   finalizeRunMeta,
   initRunArtifacts,
   loadJournal,
+  loadRunMeta,
   runScriptPath,
   saveRunLog,
 } from './engine/journalStore.js'
@@ -325,6 +326,26 @@ function workflowResumeRunningMessage(
   return `Workflow ${resumeRunId} is still running (task ${taskId}). Stop it first with TaskStop({task_id: "${taskId}"}) before resuming.`
 }
 
+function isWorkflowRunMetaResumable(status: string | undefined): boolean {
+  return status === 'paused' || status === 'killed'
+}
+
+function workflowResumeStatusMessage(
+  resumeRunId: string,
+  status: string | undefined,
+): string {
+  return `Workflow ${resumeRunId} cannot be resumed from status "${status ?? 'unknown'}". Relaunch the workflow without resumeFromRunId to start fresh.`
+}
+
+function validateWorkflowResumeStatus(resumeRunId: string | null): string | null {
+  if (!resumeRunId) return null
+  const meta = loadRunMeta(resumeRunId)
+  if (!meta) return null
+  return isWorkflowRunMetaResumable(meta.status)
+    ? null
+    : workflowResumeStatusMessage(resumeRunId, meta.status)
+}
+
 function removeInactiveWorkflowResumeTasks(
   tasks: Record<string, unknown> | null | undefined,
   resumeRunId: string | null,
@@ -565,6 +586,14 @@ export const WorkflowTool = buildTool({
         errorCode: 3,
       }
     }
+    const resumeStatusMessage = validateWorkflowResumeStatus(resumeRunId)
+    if (resumeStatusMessage) {
+      return {
+        result: false,
+        message: resumeStatusMessage,
+        errorCode: 3,
+      }
+    }
 
     return { result: true }
   },
@@ -691,6 +720,10 @@ export const WorkflowTool = buildTool({
       throw new Error(
         workflowResumeRunningMessage(resumeRunId, runningResumeTask.taskId),
       )
+    }
+    const resumeStatusMessage = validateWorkflowResumeStatus(resumeRunId)
+    if (resumeStatusMessage) {
+      throw new Error(resumeStatusMessage)
     }
     const setTaskState =
       toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState

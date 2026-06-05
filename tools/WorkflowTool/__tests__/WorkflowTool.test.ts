@@ -37,10 +37,12 @@ import { WORKFLOW_TOOL_NAME } from '../constants.js'
 import { hashCall } from '../engine/journal.js'
 import {
   appendJournalEntry,
+  clearActiveWorkflowRunsForTests,
   initRunArtifacts,
   loadJournal,
   loadRunLog,
   loadRunMeta,
+  STALE_RUNNING_WORKFLOW_MESSAGE,
 } from '../engine/journalStore.js'
 import {
   getProjectWorkflowsDir,
@@ -280,6 +282,92 @@ return 'ok'
         'Workflow wf_resume1 is still running (task wf_live_task). Stop it first with TaskStop({task_id: "wf_live_task"}) before resuming.',
       errorCode: 3,
     })
+  })
+
+  it('refuses resumeFromRunId for stale running runs from a previous process', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const root = mkdtempSync(join(tmpdir(), 'wf-stale-running-resume-'))
+    const sessionId =
+      '66666666-6666-4666-8666-666666666666' as ReturnType<typeof getSessionId>
+    const runId = 'wf_stale-running'
+    const script = `
+export const meta = { name: 'stale-running', description: 'stale running flow' }
+const result = await agent('should not reuse cached result')
+return result
+`
+
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      initRunArtifacts(runId, script, {
+        runId,
+        workflowName: 'stale-running',
+        description: 'stale running flow',
+        createdAt: new Date(0).toISOString(),
+        status: 'running',
+      })
+      appendJournalEntry(runId, {
+        index: 0,
+        hash: hashCall('should not reuse cached result', {}),
+        value: 'stale cached result',
+        tokens: 7,
+        toolCalls: 1,
+        ok: true,
+      })
+      clearActiveWorkflowRunsForTests()
+
+      const validation = await WorkflowTool.validateInput!(
+        {
+          script,
+          resumeFromRunId: runId,
+        },
+        workflowValidationContext(),
+      )
+
+      expect(validation).toEqual({
+        result: false,
+        message:
+          'Workflow wf_stale-running cannot be resumed from status "failed". Relaunch the workflow without resumeFromRunId to start fresh.',
+        errorCode: 3,
+      })
+      expect(loadRunMeta(runId)?.failures).toContain(
+        STALE_RUNNING_WORKFLOW_MESSAGE,
+      )
+      await expect(
+        WorkflowTool.call!(
+          {
+            script,
+            resumeFromRunId: runId,
+          },
+          {
+            abortController: new AbortController(),
+            toolUseId: 'toolu_stale_running_wf',
+            getAppState: () => ({
+              tasks: {},
+              toolPermissionContext: getEmptyToolPermissionContext(),
+            }),
+            setAppState: () => {},
+          } as unknown as ToolUseContext,
+          async () => ({ behavior: 'allow' }) as never,
+        ),
+      ).rejects.toThrow(
+        'Workflow wf_stale-running cannot be resumed from status "failed". Relaunch the workflow without resumeFromRunId to start fresh.',
+      )
+    } finally {
+      clearActiveWorkflowRunsForTests()
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 

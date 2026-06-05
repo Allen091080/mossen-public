@@ -16,13 +16,16 @@ import {
 } from '../../../../bootstrap/state.js'
 import { createJournal } from '../journal.js'
 import {
+  clearActiveWorkflowRunsForTests,
   initRunArtifacts,
   listWorkflowRuns,
   loadJournal,
   loadRunMeta,
   loadRunScript,
+  markActiveWorkflowRunForTests,
   reapRunsUnder,
   RUN_RETENTION_MS,
+  STALE_RUNNING_WORKFLOW_MESSAGE,
 } from '../journalStore.js'
 
 describe('reapRunsUnder (run-artifact retention, path-injectable)', () => {
@@ -33,6 +36,7 @@ describe('reapRunsUnder (run-artifact retention, path-injectable)', () => {
     root = mkdtempSync(join(tmpdir(), 'wf-reap-'))
   })
   afterEach(() => {
+    clearActiveWorkflowRunsForTests()
     rmSync(root, { recursive: true, force: true })
   })
 
@@ -67,10 +71,28 @@ describe('reapRunsUnder (run-artifact retention, path-injectable)', () => {
     expect(existsSync(fresh)).toBe(true)
   })
 
-  test('never reaps a run still marked running, however old', () => {
-    const running = makeRun('sessA', 'wf_run', {
-      runId: 'wf_run',
+  test('reaps stale running runs but protects this-process active runs', () => {
+    const staleRunning = makeRun('sessA', 'wf_run_stale', {
+      runId: 'wf_run_stale',
       createdAt: ageDaysAgo(100),
+      status: 'running',
+    })
+    const activeRunning = makeRun('sessA', 'wf_run_active', {
+      runId: 'wf_run_active',
+      createdAt: ageDaysAgo(100),
+      status: 'running',
+    })
+    markActiveWorkflowRunForTests('wf_run_active')
+
+    expect(reapRunsUnder(root, NOW, RUN_RETENTION_MS)).toBe(1)
+    expect(existsSync(staleRunning)).toBe(false)
+    expect(existsSync(activeRunning)).toBe(true)
+  })
+
+  test('keeps fresh stale running runs inside the retention window', () => {
+    const running = makeRun('sessA', 'wf_run_fresh_stale', {
+      runId: 'wf_run_fresh_stale',
+      createdAt: ageDaysAgo(1),
       status: 'running',
     })
     expect(reapRunsUnder(root, NOW, RUN_RETENTION_MS)).toBe(0)
@@ -256,6 +278,7 @@ describe('journalStore session scoping', () => {
   })
 
   afterEach(() => {
+    clearActiveWorkflowRunsForTests()
     switchSession(previousSession, previousProjectDir)
     if (previousHome === undefined) {
       delete process.env.MOSSEN_HOME
@@ -289,5 +312,28 @@ return 1
     expect(loadRunMeta(runId)).toBeNull()
     expect(loadRunScript(runId)).toBeNull()
     expect(loadJournal(runId)).toBeNull()
+  })
+
+  test('stale running metadata is archived as interrupted instead of shown as live', () => {
+    const runId = 'wf_interrupted_run'
+    const source = `
+export const meta = { name: 'interrupted', description: 'interrupted flow' }
+return 1
+`
+    initRunArtifacts(runId, source, {
+      runId,
+      workflowName: 'interrupted',
+      description: 'interrupted flow',
+      createdAt: new Date(0).toISOString(),
+      status: 'running',
+    })
+    clearActiveWorkflowRunsForTests()
+
+    const meta = loadRunMeta(runId)
+    expect(meta?.status).toBe('failed')
+    expect(meta?.failures).toContain(STALE_RUNNING_WORKFLOW_MESSAGE)
+    expect(listWorkflowRuns().find(run => run.runId === runId)?.status).toBe(
+      'failed',
+    )
   })
 })
