@@ -37,6 +37,18 @@ import { extractMeta } from './engine/meta.js'
 import { readWorkflowScriptFile } from './scriptFile.js'
 
 const COMPAT_WORKFLOW_CONFIG_DIR = `.${'cla' + 'ude'}`
+const JSON_LIKE_RE = /^(?:\{[\s\S]*\}|\[[\s\S]*\]|"(?:[^"\\]|\\.)*")$/
+const NUMBER_RE = /^[+-]?(?:\d+|\d*\.\d+)$/
+const KEY_VALUE_RE = /^([A-Za-z_][A-Za-z0-9_-]*)=(.+)$/
+const NUMBER_TOKEN_RE = /(?:^|[^\w.-])#?(\d+)(?=$|[^\w.-])/g
+const LIST_MARKER_RE =
+  /\b(?:issues?|tickets?|prs?|pull requests?|items?|ids?|numbers?)\b/i
+export const WORKFLOW_HOME_ENV = 'MOSSEN_CODE_WORKFLOW_HOME'
+
+function workflowHomeDir(): string {
+  const configured = process.env[WORKFLOW_HOME_ENV]?.trim()
+  return configured || homedir()
+}
 
 /** Project-scoped saved workflows live here (relative to the project root). */
 export const PROJECT_WORKFLOWS_SUBDIR = join(
@@ -47,11 +59,11 @@ export const PROJECT_WORKFLOWS_SUBDIR = join(
 export const LEGACY_PROJECT_WORKFLOWS_SUBDIR = join('.mossen', 'workflows')
 /** User-scoped saved workflows live here. */
 export function getUserWorkflowsDir(): string {
-  return join(homedir(), COMPAT_WORKFLOW_CONFIG_DIR, 'workflows')
+  return join(workflowHomeDir(), COMPAT_WORKFLOW_CONFIG_DIR, 'workflows')
 }
 /** Legacy user-scoped saved workflows are still read for migration compatibility. */
 export function getLegacyUserWorkflowsDir(): string {
-  return join(homedir(), '.mossen', 'workflows')
+  return join(workflowHomeDir(), '.mossen', 'workflows')
 }
 export function getProjectWorkflowsDir(projectRoot: string): string {
   return join(projectRoot, PROJECT_WORKFLOWS_SUBDIR)
@@ -226,6 +238,76 @@ export function isWorkflowRefEnabled(wf: SavedWorkflowRef): boolean {
   return wf.isEnabled?.() ?? true
 }
 
+function coerceWorkflowArgAtom(value: string): unknown {
+  const trimmed = value.trim()
+  if (trimmed === 'true') return true
+  if (trimmed === 'false') return false
+  if (trimmed === 'null') return null
+  if (NUMBER_RE.test(trimmed)) return Number(trimmed)
+  return trimmed
+}
+
+function tryParseWorkflowArgJson(value: string): unknown | null {
+  if (!JSON_LIKE_RE.test(value)) return null
+  try {
+    return JSON.parse(value) as unknown
+  } catch {
+    return null
+  }
+}
+
+function tryParseWorkflowArgKeyValues(value: string): Record<string, unknown> | null {
+  const pairs = value
+    .split(/\s+/)
+    .map(part => part.match(KEY_VALUE_RE))
+    .filter((match): match is RegExpMatchArray => match !== null)
+  if (pairs.length === 0) return null
+  const consumed = pairs.map(match => match[0]).join(' ')
+  if (consumed !== value.trim()) return null
+  const out: Record<string, unknown> = {}
+  for (const match of pairs) {
+    out[match[1]!] = coerceWorkflowArgAtom(match[2]!)
+  }
+  return out
+}
+
+function tryParseWorkflowArgNumberList(value: string): number[] | null {
+  const numbers = Array.from(value.matchAll(NUMBER_TOKEN_RE), match =>
+    Number(match[1]),
+  )
+  if (numbers.length < 2) return null
+  if (!LIST_MARKER_RE.test(value) && !/[,;]/.test(value)) return null
+  return numbers
+}
+
+function tryParseWorkflowArgCommaList(value: string): unknown[] | null {
+  if (!value.includes(',')) return null
+  const parts = value
+    .split(',')
+    .map(part => part.trim())
+    .filter(Boolean)
+  if (parts.length < 2) return null
+  if (parts.some(part => /\s/.test(part))) return null
+  return parts.map(coerceWorkflowArgAtom)
+}
+
+export function inferWorkflowArgsValue(args: string): unknown | undefined {
+  const trimmed = args.trim()
+  if (!trimmed) return undefined
+
+  return (
+    tryParseWorkflowArgJson(trimmed) ??
+    tryParseWorkflowArgKeyValues(trimmed) ??
+    tryParseWorkflowArgNumberList(trimmed) ??
+    tryParseWorkflowArgCommaList(trimmed) ??
+    coerceWorkflowArgAtom(trimmed)
+  )
+}
+
+function workflowArgsLiteral(value: unknown): string {
+  return JSON.stringify(value)
+}
+
 /**
  * Build the saved-workflow `prompt` command for a parsed entry. Running
  * `/<name>` instructs the model to execute the saved script via the Workflow
@@ -269,8 +351,13 @@ function toCommand(wf: SavedWorkflow): Command {
     contentLength: 0,
     async getPromptForCommand(args: string) {
       const trimmedArgs = args.trim()
+      const inferredArgs = inferWorkflowArgsValue(trimmedArgs)
+      const inferredArgLine =
+        inferredArgs !== undefined
+          ? `\n\nInferred Workflow.args literal:\n${workflowArgsLiteral(inferredArgs)}`
+          : ''
       const argLine = trimmedArgs
-        ? `\n\nCaller arguments:\n${trimmedArgs}\n\nPass the caller arguments as Workflow.args using the most specific structured value you can infer. Use real arrays, objects, numbers, booleans, or null where appropriate; do not JSON-encode those values into a string. Use a raw string only when no useful structure is clear.`
+        ? `\n\nCaller arguments:\n${trimmedArgs}${inferredArgLine}\n\nPass the caller arguments as Workflow.args using the inferred literal above unless the user's wording clearly requires a richer structure. Use real arrays, objects, numbers, booleans, or null where appropriate; do not JSON-encode those values into a string. Use a raw string only when no useful structure is clear.`
         : ` Do not pass args; the workflow script should see args as undefined.`
       const scriptInstruction = wf.scriptPath
         ? `with scriptPath="${wf.scriptPath}"`

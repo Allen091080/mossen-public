@@ -19,8 +19,10 @@ import {
   resolveSavedWorkflow,
   getWorkflowCommands,
   getUserWorkflowsDir,
+  inferWorkflowArgsValue,
   LEGACY_PROJECT_WORKFLOWS_SUBDIR,
   PROJECT_WORKFLOWS_SUBDIR,
+  WORKFLOW_HOME_ENV,
 } from '../savedWorkflows.js'
 import { MAX_WORKFLOW_SCRIPT_FILE_BYTES } from '../scriptFile.js'
 
@@ -62,20 +64,28 @@ function restoreWebSearchProviderEnv(): void {
 describe('savedWorkflows loader (S3)', () => {
   let root: string
   let wfDir: string
+  let previousWorkflowHome: string | undefined
 
   beforeEach(() => {
+    previousWorkflowHome = process.env[WORKFLOW_HOME_ENV]
     previousWebSearchEnv = {}
     for (const key of WEB_SEARCH_ENV_KEYS) {
       previousWebSearchEnv[key] = process.env[key]
     }
     clearWebSearchProviderEnv()
     root = mkdtempSync(join(tmpdir(), 'wf-saved-'))
+    process.env[WORKFLOW_HOME_ENV] = join(root, 'home')
     wfDir = getProjectWorkflowsDir(root)
     mkdirSync(wfDir, { recursive: true })
   })
   afterEach(() => {
     rmSync(root, { recursive: true, force: true })
     restoreWebSearchProviderEnv()
+    if (previousWorkflowHome === undefined) {
+      delete process.env[WORKFLOW_HOME_ENV]
+    } else {
+      process.env[WORKFLOW_HOME_ENV] = previousWorkflowHome
+    }
   })
 
   test('dir layout uses official-compatible project/user dirs and legacy fallbacks', () => {
@@ -123,9 +133,36 @@ describe('savedWorkflows loader (S3)', () => {
     expect(text).toContain('Workflow tool')
     expect(text).toMatch(/scriptPath=.*audit\.js/)
     expect(text).toContain('structured Workflow.args')
+    expect(text).toContain('Inferred Workflow.args literal:')
+    expect(text).toContain('[1024,1025,1030]')
     expect(text).toContain('real arrays, objects, numbers, booleans, or null')
     expect(text).toContain('do not JSON-encode')
     expect(text).toContain('issues 1024, 1025, and 1030')
+  })
+
+  test('inferWorkflowArgsValue preserves common structured saved-workflow inputs', () => {
+    expect(inferWorkflowArgsValue('issues 1024, 1025, and 1030')).toEqual([
+      1024,
+      1025,
+      1030,
+    ])
+    expect(inferWorkflowArgsValue('target=src/routes includeTests=true')).toEqual({
+      target: 'src/routes',
+      includeTests: true,
+    })
+    expect(inferWorkflowArgsValue('["src/routes","src/api"]')).toEqual([
+      'src/routes',
+      'src/api',
+    ])
+    expect(inferWorkflowArgsValue('src/routes,src/api')).toEqual([
+      'src/routes',
+      'src/api',
+    ])
+    expect(inferWorkflowArgsValue('42')).toBe(42)
+    expect(inferWorkflowArgsValue('research Node.js permissions')).toBe(
+      'research Node.js permissions',
+    )
+    expect(inferWorkflowArgsValue('   ')).toBeUndefined()
   })
 
   test('getPromptForCommand omits args when caller provided no input', async () => {
@@ -205,45 +242,33 @@ describe('savedWorkflows loader (S3)', () => {
   })
 
   test('project workflows win over user workflows with the same command name', () => {
-    const previousHome = process.env.HOME
-    const fakeHome = join(root, 'home')
+    const userDir = getUserWorkflowsDir()
+    mkdirSync(userDir, { recursive: true })
 
-    try {
-      process.env.HOME = fakeHome
-      const userDir = getUserWorkflowsDir()
-      mkdirSync(userDir, { recursive: true })
+    const projectPath = join(wfDir, 'project-shared.js')
+    const userPath = join(userDir, 'user-shared.js')
+    writeFileSync(projectPath, META('shared-flow', 'Project flow'))
+    writeFileSync(userPath, META('shared-flow', 'User flow'))
 
-      const projectPath = join(wfDir, 'project-shared.js')
-      const userPath = join(userDir, 'user-shared.js')
-      writeFileSync(projectPath, META('shared-flow', 'Project flow'))
-      writeFileSync(userPath, META('shared-flow', 'User flow'))
+    const workflows = getAllWorkflows(root).filter(
+      wf => wf.commandName === 'shared-flow',
+    )
+    expect(workflows).toHaveLength(1)
+    expect(workflows[0]?.scope).toBe('project')
+    expect(workflows[0]?.scriptPath).toBe(projectPath)
+    expect(workflows[0]?.description).toBe('Project flow')
 
-      const workflows = getAllWorkflows(root).filter(
-        wf => wf.commandName === 'shared-flow',
-      )
-      expect(workflows).toHaveLength(1)
-      expect(workflows[0]?.scope).toBe('project')
-      expect(workflows[0]?.scriptPath).toBe(projectPath)
-      expect(workflows[0]?.description).toBe('Project flow')
+    const commands = loadWorkflowCommandsFromSources(root).filter(
+      c => c.name === 'shared-flow',
+    )
+    expect(commands).toHaveLength(1)
+    expect((commands[0] as { source?: string }).source).toBe(
+      'projectSettings',
+    )
 
-      const commands = loadWorkflowCommandsFromSources(root).filter(
-        c => c.name === 'shared-flow',
-      )
-      expect(commands).toHaveLength(1)
-      expect((commands[0] as { source?: string }).source).toBe(
-        'projectSettings',
-      )
-
-      expect(resolveWorkflowFromSources(root, 'shared-flow')?.scriptPath).toBe(
-        projectPath,
-      )
-    } finally {
-      if (previousHome === undefined) {
-        delete process.env.HOME
-      } else {
-        process.env.HOME = previousHome
-      }
-    }
+    expect(resolveWorkflowFromSources(root, 'shared-flow')?.scriptPath).toBe(
+      projectPath,
+    )
   })
 
   test('gated wrapper returns [] when the feature is off, delegates when on', async () => {
