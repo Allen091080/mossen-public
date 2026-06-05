@@ -169,12 +169,20 @@ type WorkflowRunOneAgentMeta = Parameters<RunOneAgent>[2]
 function asWorkflowAgentDefinition(
   agentDefinition: AgentDefinition,
 ): AgentDefinition {
-  if (agentDefinition.permissionMode === 'acceptEdits') return agentDefinition
+  const needsPermissionMode =
+    agentDefinition.permissionMode !== 'acceptEdits'
+  const needsModelInherit =
+    agentDefinition.model !== undefined && agentDefinition.model !== 'inherit'
+  if (!needsPermissionMode && !needsModelInherit) return agentDefinition
   return {
     ...agentDefinition,
     // Official workflows always run subagents in acceptEdits, regardless of the
     // parent session mode or an agent file's own permissionMode frontmatter.
     permissionMode: 'acceptEdits',
+    // Official workflows also keep agents on the session model unless the
+    // workflow script routes a phase/agent to another model. Agent frontmatter
+    // defaults are for normal Agent tool calls, not workflow orchestration.
+    model: 'inherit',
   }
 }
 

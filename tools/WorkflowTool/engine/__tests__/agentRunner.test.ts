@@ -205,6 +205,8 @@ describe('workflow local agent resolution', () => {
     const observed: Array<{
       mode: PermissionMode
       agentPermissionMode?: PermissionMode
+      agentModel?: string
+      runAgentModel?: string
       allowRules: string[]
       askRules: string[]
       denyRules: string[]
@@ -213,12 +215,19 @@ describe('workflow local agent resolution', () => {
     }> = []
     const runAgentImpl: NonNullable<
       WorkflowAgentRunnerDeps['runAgentImpl']
-    > = async function* ({ agentDefinition, toolUseContext, availableTools }) {
+    > = async function* ({
+      agentDefinition,
+      toolUseContext,
+      availableTools,
+      model,
+    }) {
       const permissionContext =
         toolUseContext.getAppState().toolPermissionContext
       observed.push({
         mode: permissionContext.mode,
         agentPermissionMode: agentDefinition.permissionMode,
+        agentModel: agentDefinition.model,
+        runAgentModel: model,
         allowRules: [
           ...(permissionContext.alwaysAllowRules.localSettings ?? []),
         ],
@@ -244,6 +253,7 @@ describe('workflow local agent resolution', () => {
     const agent = {
       ...testAgent('general-purpose'),
       permissionMode: 'plan',
+      model: 'haiku',
     } as AgentDefinition
     const runner = createWorkflowAgentRunner({
       toolUseContext: workflowRunnerContext({
@@ -277,6 +287,8 @@ describe('workflow local agent resolution', () => {
       {
         mode: 'acceptEdits',
         agentPermissionMode: 'acceptEdits',
+        agentModel: 'inherit',
+        runAgentModel: undefined,
         allowRules: ['Bash(npm test)'],
         askRules: ['WebFetch(example.com)'],
         denyRules: ['Bash(rm -rf *)'],
@@ -287,6 +299,53 @@ describe('workflow local agent resolution', () => {
           SEND_USER_FILE_TOOL_NAME,
           PUSH_NOTIFICATION_TOOL_NAME,
         ]),
+      },
+    ])
+  })
+
+  test('preserves workflow script model routing over agent frontmatter defaults', async () => {
+    const observed: Array<{ agentModel?: string; runAgentModel?: string }> = []
+    const runAgentImpl: NonNullable<
+      WorkflowAgentRunnerDeps['runAgentImpl']
+    > = async function* ({ agentDefinition, model }) {
+      observed.push({
+        agentModel: agentDefinition.model,
+        runAgentModel: model,
+      })
+      yield {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'ok' }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      } as never
+    }
+    const runner = createWorkflowAgentRunner({
+      toolUseContext: workflowRunnerContext({
+        agents: [
+          {
+            ...testAgent('general-purpose'),
+            model: 'haiku',
+          } as AgentDefinition,
+        ],
+      }),
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      runId: 'wf-test',
+      runAgentImpl,
+    })
+
+    await expect(
+      runner('inspect the repo', { model: 'sonnet' }, {
+        agentNumber: 1,
+        phase: null,
+        label: 'inspect',
+      }),
+    ).resolves.toMatchObject({ value: 'ok', ok: true })
+
+    expect(observed).toEqual([
+      {
+        agentModel: 'inherit',
+        runAgentModel: 'sonnet',
       },
     ])
   })
