@@ -204,6 +204,48 @@ describe('savedWorkflows loader (S3)', () => {
     expect(dupe[0]?.description).toBe('Primary flow')
   })
 
+  test('project workflows win over user workflows with the same command name', () => {
+    const previousHome = process.env.HOME
+    const fakeHome = join(root, 'home')
+
+    try {
+      process.env.HOME = fakeHome
+      const userDir = getUserWorkflowsDir()
+      mkdirSync(userDir, { recursive: true })
+
+      const projectPath = join(wfDir, 'project-shared.js')
+      const userPath = join(userDir, 'user-shared.js')
+      writeFileSync(projectPath, META('shared-flow', 'Project flow'))
+      writeFileSync(userPath, META('shared-flow', 'User flow'))
+
+      const workflows = getAllWorkflows(root).filter(
+        wf => wf.commandName === 'shared-flow',
+      )
+      expect(workflows).toHaveLength(1)
+      expect(workflows[0]?.scope).toBe('project')
+      expect(workflows[0]?.scriptPath).toBe(projectPath)
+      expect(workflows[0]?.description).toBe('Project flow')
+
+      const commands = loadWorkflowCommandsFromSources(root).filter(
+        c => c.name === 'shared-flow',
+      )
+      expect(commands).toHaveLength(1)
+      expect((commands[0] as { source?: string }).source).toBe(
+        'projectSettings',
+      )
+
+      expect(resolveWorkflowFromSources(root, 'shared-flow')?.scriptPath).toBe(
+        projectPath,
+      )
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME
+      } else {
+        process.env.HOME = previousHome
+      }
+    }
+  })
+
   test('gated wrapper returns [] when the feature is off, delegates when on', async () => {
     writeFileSync(join(wfDir, 'g.js'), META('gated', 'g'))
     const gatedResult = await getWorkflowCommands(root)
