@@ -47,8 +47,44 @@ export type WorkflowPermissionOptionSpec = {
   acceptsPromptAmend?: boolean
 }
 
+export type WorkflowPermissionReviewField = {
+  label: string
+  value?: string
+  lines?: string[]
+  tone?: 'normal' | 'dim' | 'warning'
+  wrap?: 'truncate-end'
+}
+
+export type WorkflowPermissionStaticSummaryDisplay = {
+  intro: string
+  phases: {
+    title: string
+    samplePrompts: string[]
+    extraAgentCount: number
+  }[]
+  footer: string
+}
+
+export type WorkflowPermissionDisplayModel = {
+  fields: WorkflowPermissionReviewField[]
+  staticSummary: WorkflowPermissionStaticSummaryDisplay | null
+  usageWarning: string | null
+}
+
 const MAX_RAW_SCRIPT_CHARS = 4000
-const WORKFLOW_PROMPT_FEEDBACK_CONFIG = {
+export const WORKFLOW_PERMISSION_TITLE = {
+  en: 'Review dynamic workflow before running',
+  zh: '运行前审核动态 workflow',
+}
+export const WORKFLOW_PERMISSION_QUESTION = {
+  en: 'Run this dynamic workflow?',
+  zh: '要运行这个动态 workflow 吗？',
+}
+export const WORKFLOW_USAGE_WARNING_MESSAGE =
+  'Dynamic workflows can run multiple subagents and consume tokens quickly. You can inspect running workflows with /workflows or disable them in /config.'
+export const WORKFLOW_STATIC_SUMMARY_INTRO =
+  'This dynamic workflow will spin up multiple subagents across the following phases:'
+export const WORKFLOW_PROMPT_FEEDBACK_CONFIG = {
   type: 'accept' as FeedbackType,
   placeholder: getLocalizedText({
     en: 'adjust the workflow prompt before it runs',
@@ -190,49 +226,163 @@ function promptSamples(phase: WorkflowStaticPhase): string[] {
   return samples
 }
 
-function StaticSummaryDetails({
-  review,
-}: {
-  review: WorkflowPermissionReview
-}): React.ReactNode {
+function buildWorkflowStaticSummaryDisplay(
+  review: WorkflowPermissionReview,
+): WorkflowPermissionStaticSummaryDisplay | null {
   const summary = review.staticSummary
+  if (!summary) return null
+
+  return {
+    intro: WORKFLOW_STATIC_SUMMARY_INTRO,
+    phases: summary.phases.map((phase, index) => {
+      const title = staticPhaseTitle(review, phase, index)
+      const samplePrompts = promptSamples(phase)
+      return {
+        title: `${index + 1}. ${title.title}${
+          title.detail ? ` - ${title.detail}` : ''
+        }`,
+        samplePrompts,
+        extraAgentCount: Math.max(0, phase.agents.length - samplePrompts.length),
+      }
+    }),
+    footer: `Estimated agents: ${summary.estimatedAgents}${
+      summary.hasReturn ? ' - returns a workflow result' : ''
+    }`,
+  }
+}
+
+export function buildWorkflowPermissionDisplayModel(
+  review: WorkflowPermissionReview,
+  {
+    showRawScript,
+  }: {
+    showRawScript: boolean
+  },
+): WorkflowPermissionDisplayModel {
+  const fields: WorkflowPermissionReviewField[] = []
+  const phases = review.meta?.phases ?? []
+  const scriptBody =
+    showRawScript && review.scriptSource
+      ? truncateRawScript(review.scriptSource)
+      : review.scriptPreview
+
+  if (review.meta) {
+    fields.push({ label: 'Name', value: review.meta.name })
+    fields.push({ label: 'Purpose', value: review.meta.description })
+    if (review.meta.whenToUse) {
+      fields.push({ label: 'Use when', value: review.meta.whenToUse })
+    }
+    if (review.meta.model) {
+      fields.push({ label: 'Model', value: review.meta.model })
+    }
+  }
+
+  fields.push({
+    label: 'Source',
+    value: `${review.sourceKind}: ${review.sourceLabel}`,
+  })
+
+  if (review.resumeFromRunId) {
+    fields.push({ label: 'Resume', value: review.resumeFromRunId })
+  }
+  if (review.timeoutMs !== null) {
+    fields.push({ label: 'Timeout', value: `${review.timeoutMs} ms` })
+  }
+  if (review.argsPreview) {
+    fields.push({
+      label: 'Args',
+      value: review.argsPreview,
+      wrap: 'truncate-end',
+    })
+  }
+  if (phases.length) {
+    fields.push({
+      label: 'Phases',
+      lines: phases.map(
+        (phase, index) =>
+          `${index + 1}. ${phase.title}${phase.model ? ` (${phase.model})` : ''}${
+            phase.detail ? ` - ${phase.detail}` : ''
+          }`,
+      ),
+    })
+  }
+  if (review.metaError) {
+    fields.push({
+      label: 'Warning',
+      value: review.metaError,
+      tone: 'warning',
+    })
+  }
+  if (scriptBody) {
+    fields.push({
+      label: 'Script',
+      value: scriptBody,
+      tone: 'dim',
+      wrap: 'truncate-end',
+    })
+  }
+
+  return {
+    fields,
+    staticSummary: buildWorkflowStaticSummaryDisplay(review),
+    usageWarning: review.showUsageWarning
+      ? WORKFLOW_USAGE_WARNING_MESSAGE
+      : null,
+  }
+}
+
+function StaticSummaryDetails({
+  summary,
+}: {
+  summary: WorkflowPermissionStaticSummaryDisplay | null
+}): React.ReactNode {
   if (!summary) return null
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Text>
-        This dynamic workflow will spin up multiple subagents across the
-        following phases:
-      </Text>
-      {summary.phases.map((phase, index) => {
-        const title = staticPhaseTitle(review, phase, index)
-        const samples = promptSamples(phase)
-        return (
-          <Box
-            key={`${phase.kind}-${phase.annotation ?? ''}-${index}`}
-            flexDirection="column"
-          >
-            <Text>
-              {'  '}
-              {index + 1}. {title.title}
-              {title.detail ? ` - ${title.detail}` : ''}
+      <Text>{summary.intro}</Text>
+      {summary.phases.map((phase, index) => (
+        <Box key={`${phase.title}-${index}`} flexDirection="column">
+          <Text>
+            {'  '}
+            {phase.title}
+          </Text>
+          {phase.samplePrompts.length ? (
+            <Text dimColor>
+              {'     '}
+              {phase.samplePrompts.map(sample => `- "${sample}"`).join('  ')}
+              {phase.extraAgentCount ? `  +${phase.extraAgentCount} more` : ''}
             </Text>
-            {samples.length ? (
-              <Text dimColor>
-                {'     '}
-                {samples.map(sample => `- "${sample}"`).join('  ')}
-                {phase.agents.length > samples.length
-                  ? `  +${phase.agents.length - samples.length} more`
-                  : ''}
-              </Text>
-            ) : null}
-          </Box>
-        )
-      })}
-      <Text dimColor>
-        Estimated agents: {summary.estimatedAgents}
-        {summary.hasReturn ? ' - returns a workflow result' : ''}
-      </Text>
+          ) : null}
+        </Box>
+      ))}
+      <Text dimColor>{summary.footer}</Text>
     </Box>
+  )
+}
+
+function ReviewFieldValue({
+  field,
+}: {
+  field: WorkflowPermissionReviewField
+}): React.ReactNode {
+  if (field.lines) {
+    return (
+      <Box flexDirection="column">
+        {field.lines.map((line, index) => (
+          <Text key={`${line}-${index}`}>{line}</Text>
+        ))}
+      </Box>
+    )
+  }
+
+  return (
+    <Text
+      color={field.tone === 'warning' ? 'warning' : undefined}
+      dimColor={field.tone === 'dim'}
+      wrap={field.wrap}
+    >
+      {field.value ?? ''}
+    </Text>
   )
 }
 
@@ -243,75 +393,20 @@ function ReviewDetails({
   review: WorkflowPermissionReview
   showRawScript: boolean
 }): React.ReactNode {
-  const phases = review.meta?.phases ?? []
-  const scriptBody =
-    showRawScript && review.scriptSource
-      ? truncateRawScript(review.scriptSource)
-      : review.scriptPreview
+  const display = buildWorkflowPermissionDisplayModel(review, { showRawScript })
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1}>
-      {review.meta ? (
-        <>
-          <DetailRow label="Name">{review.meta.name}</DetailRow>
-          <DetailRow label="Purpose">{review.meta.description}</DetailRow>
-          {review.meta.whenToUse ? (
-            <DetailRow label="Use when">{review.meta.whenToUse}</DetailRow>
-          ) : null}
-          {review.meta.model ? (
-            <DetailRow label="Model">{review.meta.model}</DetailRow>
-          ) : null}
-        </>
-      ) : null}
-
-      <DetailRow label="Source">
-        <Text>
-          {review.sourceKind}: {review.sourceLabel}
-        </Text>
-      </DetailRow>
-      {review.resumeFromRunId ? (
-        <DetailRow label="Resume">{review.resumeFromRunId}</DetailRow>
-      ) : null}
-      {review.timeoutMs !== null ? (
-        <DetailRow label="Timeout">{String(review.timeoutMs)} ms</DetailRow>
-      ) : null}
-      {review.argsPreview ? (
-        <DetailRow label="Args">
-          <Text wrap="truncate-end">{review.argsPreview}</Text>
-        </DetailRow>
-      ) : null}
-      {phases.length ? (
-        <DetailRow label="Phases">
-          <Box flexDirection="column">
-            {phases.map((phase, index) => (
-              <Text key={`${phase.title}-${index}`}>
-                {index + 1}. {phase.title}
-                {phase.model ? ` (${phase.model})` : ''}
-                {phase.detail ? ` - ${phase.detail}` : ''}
-              </Text>
-            ))}
-          </Box>
-        </DetailRow>
-      ) : null}
-      <StaticSummaryDetails review={review} />
-      {review.metaError ? (
-        <DetailRow label="Warning">
-          <Text color="warning">{review.metaError}</Text>
-        </DetailRow>
-      ) : null}
-      {scriptBody ? (
-        <DetailRow label="Script">
-          <Text dimColor wrap="truncate-end">
-            {scriptBody}
-          </Text>
-        </DetailRow>
-      ) : null}
-      {review.showUsageWarning ? (
+      {display.fields.map((field, index) => (
+        <React.Fragment key={`${field.label}-${index}`}>
+          <DetailRow label={field.label}>
+            <ReviewFieldValue field={field} />
+          </DetailRow>
+        </React.Fragment>
+      ))}
+      <StaticSummaryDetails summary={display.staticSummary} />
+      {display.usageWarning ? (
         <Box marginTop={1}>
-          <Text color="warning">
-            Dynamic workflows can run multiple subagents and consume tokens
-            quickly. You can inspect running workflows with /workflows or
-            disable them in /config.
-          </Text>
+          <Text color="warning">{display.usageWarning}</Text>
         </Box>
       ) : null}
     </Box>
@@ -498,16 +593,10 @@ export function WorkflowPermissionRequest({
     openCurrentScriptInEditor()
   }
 
-  const title = getLocalizedText({
-    en: 'Review dynamic workflow before running',
-    zh: '运行前审核动态 workflow',
-  })
+  const title = getLocalizedText(WORKFLOW_PERMISSION_TITLE)
   const question = (
     <Text>
-      {getLocalizedText({
-        en: 'Run this dynamic workflow?',
-        zh: '要运行这个动态 workflow 吗？',
-      })}
+      {getLocalizedText(WORKFLOW_PERMISSION_QUESTION)}
     </Text>
   )
 
