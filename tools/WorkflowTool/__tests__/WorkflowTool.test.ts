@@ -51,10 +51,15 @@ import {
   WORKFLOW_HOME_ENV,
 } from '../savedWorkflows.js'
 import { saveRun } from '../../../commands/workflows/saveWorkflow.js'
+import { call as workflowsCommandCall } from '../../../commands/workflows/workflows.js'
 import {
   killWorkflowTask,
   type LocalWorkflowTaskState,
 } from '../../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import {
+  WORKFLOW_AGENT_RETRY_ABORT_REASON,
+  WORKFLOW_AGENT_SKIP_ABORT_REASON,
+} from '../engine/types.js'
 import { dequeueAll } from '../../../utils/messageQueueManager.js'
 import { resetSettingsCache } from '../../../utils/settings/settingsCache.js'
 import {
@@ -160,6 +165,16 @@ async function waitForTaskAgentStatus(
     await new Promise(resolve => setTimeout(resolve, 5))
   }
   return getTask()
+}
+
+async function waitForCondition(
+  predicate: () => boolean,
+): Promise<boolean> {
+  for (let i = 0; i < 100; i++) {
+    if (predicate()) return true
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  return predicate()
 }
 
 async function waitForWorkflowLogLine(
@@ -1207,6 +1222,211 @@ return { first, second }
       expect(meta?.result).toContain(
         '"second": "live resume result for second resumed task"',
       )
+    } finally {
+      setWorkflowAgentRunnerFactoryForTests(null)
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('routes /workflows stop-agent and restart-agent into live runtime controls', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
+    const root = mkdtempSync(join(tmpdir(), 'wf-tool-agent-controls-'))
+    const sessionId =
+      'abababab-abab-4bab-8bab-abababababab' as ReturnType<typeof getSessionId>
+    const script = `
+export const meta = { name: 'agent-control-flow', description: 'Agent control flow' }
+const skipped = await agent('skip target', { label: 'skip target' })
+const retried = await agent('retry target', { label: 'retry target' })
+return { skipped, retried }
+`
+    let state = {
+      tasks: {},
+      toolPermissionContext: getEmptyToolPermissionContext(),
+    } as unknown as AppState
+    const setAppState = (updater: (prev: AppState) => AppState) => {
+      state = updater(state)
+    }
+    const commandContext = {
+      getAppState: () => state,
+      setAppState,
+      setAppStateForTasks: setAppState,
+    }
+    const prompts: string[] = []
+    const registeredAgents = new Set<number>()
+    let retryAttempts = 0
+
+    const waitForAgentControl = async (
+      signal: AbortSignal,
+    ): Promise<{
+      value: null
+      tokens: 0
+      toolCalls: 0
+      ok: false
+      status: 'skipped' | 'retry_requested' | 'failed'
+    }> => {
+      if (!signal.aborted) {
+        await new Promise<void>(resolve => {
+          signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+      }
+      if (signal.reason === WORKFLOW_AGENT_SKIP_ABORT_REASON) {
+        return {
+          value: null,
+          tokens: 0,
+          toolCalls: 0,
+          ok: false,
+          status: 'skipped',
+        }
+      }
+      if (signal.reason === WORKFLOW_AGENT_RETRY_ABORT_REASON) {
+        return {
+          value: null,
+          tokens: 0,
+          toolCalls: 0,
+          ok: false,
+          status: 'retry_requested',
+        }
+      }
+      return {
+        value: null,
+        tokens: 0,
+        toolCalls: 0,
+        ok: false,
+        status: 'failed',
+      }
+    }
+
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'config')
+      setProjectRoot(root)
+      switchSession(sessionId)
+
+      setWorkflowAgentRunnerFactoryForTests(deps => async (prompt, _opts, meta) => {
+        prompts.push(`${meta.agentNumber}:${prompt}`)
+        const agentController = new AbortController()
+        const unregister = deps.registerAgentController?.(
+          meta.agentNumber,
+          agentController,
+        )
+        registeredAgents.add(meta.agentNumber)
+        try {
+          if (prompt === 'skip target') {
+            return await waitForAgentControl(agentController.signal)
+          }
+          if (prompt === 'retry target') {
+            retryAttempts += 1
+            if (retryAttempts === 1) {
+              return await waitForAgentControl(agentController.signal)
+            }
+            return {
+              value: 'retried result',
+              tokens: 9,
+              toolCalls: 2,
+              ok: true,
+            }
+          }
+          return {
+            value: `unexpected prompt ${prompt}`,
+            tokens: 1,
+            toolCalls: 0,
+            ok: true,
+          }
+        } finally {
+          unregister?.()
+        }
+      })
+
+      const launch = await WorkflowTool.call!(
+        { script },
+        {
+          abortController: new AbortController(),
+          toolUseId: 'toolu_agent_control_wf',
+          getAppState: () => state,
+          setAppState,
+        } as unknown as ToolUseContext,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(launch.data.status).toBe('async_launched')
+      const runId = launch.data.runId!
+      const taskId = launch.data.taskId
+      await waitForTaskAgentStatus(
+        () => state.tasks[taskId] as LocalWorkflowTaskState | undefined,
+        1,
+        'running',
+      )
+      expect(await waitForCondition(() => registeredAgents.has(1))).toBe(true)
+
+      let stopMessage = ''
+      await workflowsCommandCall(
+        nextMessage => {
+          stopMessage = nextMessage ?? ''
+        },
+        commandContext as never,
+        `stop-agent ${runId} 1`,
+      )
+      expect(stopMessage).toContain(runId)
+      expect(stopMessage).toContain('#1')
+
+      await waitForTaskAgentStatus(
+        () => state.tasks[taskId] as LocalWorkflowTaskState | undefined,
+        2,
+        'running',
+      )
+      expect(await waitForCondition(() => registeredAgents.has(2))).toBe(true)
+
+      let retryMessage = ''
+      await workflowsCommandCall(
+        nextMessage => {
+          retryMessage = nextMessage ?? ''
+        },
+        commandContext as never,
+        `restart-agent ${runId} 2`,
+      )
+      expect(retryMessage).toContain(runId)
+      expect(retryMessage).toContain('#2')
+
+      const completedTask = await waitForTaskStatus(
+        () => state.tasks[taskId] as LocalWorkflowTaskState | undefined,
+        'completed',
+      )
+      expect(completedTask?.agents.map(agent => [agent.agentNumber, agent.status])).toEqual([
+        [1, 'skipped'],
+        [2, 'completed'],
+      ])
+      expect(prompts).toEqual([
+        '1:skip target',
+        '2:retry target',
+        '2:retry target',
+      ])
+      expect(completedTask?.log).toContain(
+        'agent #1 skipped: skip target (0 tokens)',
+      )
+      expect(completedTask?.log).toContain('retrying agent #2: retry target')
+      expect(completedTask?.log).toContain(
+        'agent #2 completed: retry target (9 tokens)',
+      )
+      const meta = loadRunMeta(runId)
+      expect(meta?.status).toBe('completed')
+      expect(meta?.result).toContain('"skipped": null')
+      expect(meta?.result).toContain('"retried": "retried result"')
     } finally {
       setWorkflowAgentRunnerFactoryForTests(null)
       switchSession(priorSession, priorProjectDir)
