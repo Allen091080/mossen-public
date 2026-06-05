@@ -22,6 +22,7 @@ import {
   snapshotOutputTokensForTurn,
 } from '../../../bootstrap/state.js'
 import type { AppState } from '../../../state/AppState.js'
+import type { PromptCommand } from '../../../types/command.js'
 import {
   getEmptyToolPermissionContext,
   type ToolUseContext,
@@ -43,8 +44,10 @@ import {
 import {
   getProjectWorkflowsDir,
   getUserWorkflowsDir,
+  loadWorkflowCommandsFrom,
   WORKFLOW_HOME_ENV,
 } from '../savedWorkflows.js'
+import { saveRun } from '../../../commands/workflows/saveWorkflow.js'
 import {
   killWorkflowTask,
   type LocalWorkflowTaskState,
@@ -1256,6 +1259,98 @@ return 'user:' + args.value
       expect(meta?.result).toBe('project:21')
     } finally {
       setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('runs a workflow saved from /workflows as a slash command with structured args', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    const root = mkdtempSync(join(tmpdir(), 'wf-saved-command-chain-'))
+    const sessionId =
+      '88888888-8888-4888-8888-888888888888' as ReturnType<typeof getSessionId>
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      const savedRunId = 'wf_saved_command_chain'
+      initRunArtifacts(
+        savedRunId,
+        `
+export const meta = { name: 'draft-chain', description: 'Saved command chain' }
+return {
+  source: 'saved-command',
+  issues: args.issues.map(issue => issue + 1),
+  urgent: args.urgent,
+}
+`,
+        {
+          runId: savedRunId,
+          workflowName: 'Saved command chain',
+          description: 'Saved command chain',
+          createdAt: new Date(0).toISOString(),
+          status: 'completed',
+        },
+      )
+
+      const saveMessage = saveRun([savedRunId])
+      expect(saveMessage).toContain('/Saved-command-chain')
+
+      const command = loadWorkflowCommandsFrom(root).find(
+        current => current.name === 'Saved-command-chain',
+      )
+      expect(command?.type).toBe('prompt')
+      const promptCommand = command as PromptCommand
+      expect(command?.kind).toBe('workflow')
+      expect(promptCommand.allowedTools).toEqual([WORKFLOW_TOOL_NAME])
+      const prompt = await promptCommand.getPromptForCommand(
+        '{"issues":[1024,1025],"urgent":true}',
+        toolUseContextWithWorkflowRules(),
+      )
+      const promptText = prompt.map(block => block.text).join('\n')
+      expect(promptText).toContain('"name": "Saved-command-chain"')
+      expect(promptText).toContain('"issues": [')
+      expect(promptText).toContain('"urgent": true')
+
+      const result = await WorkflowTool.call!(
+        {
+          name: 'Saved-command-chain',
+          args: { issues: [1024, 1025], urgent: true },
+        },
+        {
+          abortController: new AbortController(),
+          setAppState: () => {},
+        } as never,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(result.data.status).toBe('async_launched')
+      expect(await waitForRunMetaStatus(result.data.runId!, 'completed')).toBe(
+        'completed',
+      )
+      const meta = loadRunMeta(result.data.runId!)
+      expect(meta?.workflowName).toBe('Saved-command-chain')
+      expect(meta?.args).toEqual({ issues: [1024, 1025], urgent: true })
+      expect(meta?.result).toContain('"source": "saved-command"')
+      expect(meta?.result).toContain('"issues": [\n    1025,\n    1026\n  ]')
+      expect(meta?.result).toContain('"urgent": true')
+    } finally {
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
       if (priorWorkflowHome === undefined) {
         delete process.env[WORKFLOW_HOME_ENV]
       } else {
