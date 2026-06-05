@@ -26,7 +26,15 @@ import {
 } from '../savedWorkflows.js'
 import { MAX_WORKFLOW_SCRIPT_FILE_BYTES } from '../scriptFile.js'
 import { extractMeta } from '../engine/meta.js'
-import { checkWorkflowScriptSyntax } from '../engine/sandbox.js'
+import { runSandbox, checkWorkflowScriptSyntax } from '../engine/sandbox.js'
+import { createLimiter } from '../engine/concurrency.js'
+import { createBudget } from '../engine/budget.js'
+import { createJournal } from '../engine/journal.js'
+import {
+  createWorkflowRuntime,
+  type RunOneAgent,
+} from '../engine/runtime.js'
+import type { WorkflowProgressEvent } from '../engine/types.js'
 
 // Tests target loadWorkflowCommandsFrom (the UNGATED core) so the disk-read +
 // meta-parse contract is asserted for real regardless of the WORKFLOW_SCRIPTS
@@ -61,6 +69,29 @@ function restoreWebSearchProviderEnv(): void {
       process.env[key] = value
     }
   }
+}
+
+async function runBundledWorkflowForTest(
+  source: string,
+  args: unknown,
+  runOneAgent: RunOneAgent,
+): Promise<{ result: unknown; events: WorkflowProgressEvent[] }> {
+  const events: WorkflowProgressEvent[] = []
+  const runtime = createWorkflowRuntime({
+    limiter: createLimiter(8),
+    budget: createBudget(null),
+    progress: event => events.push(event),
+    args,
+    runOneAgent,
+    journal: createJournal('bundled-test-run'),
+  })
+  const { scriptBody } = extractMeta(source)
+  const result = await runSandbox({
+    source: scriptBody,
+    scope: runtime.scope,
+    timeoutMs: 5000,
+  })
+  return { result, events }
 }
 
 describe('savedWorkflows loader (S3)', () => {
@@ -359,6 +390,148 @@ describe('savedWorkflows loader (S3)', () => {
     const text = (await getPrompt('Node.js permissions')).map(b => b.text).join('')
     expect(text).toContain('bundled script named "deep-research"')
     expect(text).toContain('Node.js permissions')
+  })
+
+  test('bundled deep-research executes claim voting and filters weak claims', async () => {
+    const deepResearchSource =
+      loadBundledWorkflowRefs().find(wf => wf.name === 'deep-research')?.source ??
+      ''
+    const synthPrompts: string[] = []
+    const runOneAgent: RunOneAgent = async (prompt, opts) => {
+      const label = opts.label ?? ''
+      if (label === 'Plan research angles') {
+        return {
+          value: {
+            angles: [
+              {
+                name: 'Official docs',
+                query: 'workflow official docs',
+                purpose: 'Find the canonical behavior.',
+              },
+              {
+                name: 'Release notes',
+                query: 'workflow release notes',
+                purpose: 'Check recent behavior.',
+              },
+              {
+                name: 'Implementation notes',
+                query: 'workflow implementation notes',
+                purpose: 'Check runtime details.',
+              },
+            ],
+          },
+          tokens: 10,
+          ok: true,
+        }
+      }
+      if (label.startsWith('Search: ')) {
+        const suffix = label.replace(/^Search: /, '').toLowerCase().replace(/\s+/g, '-')
+        return {
+          value: {
+            results: [
+              {
+                title: `${label} source`,
+                url: `https://example.test/${suffix}`,
+                snippet: `Snippet for ${label}`,
+                whyUseful: 'Authoritative source for this angle.',
+              },
+            ],
+          },
+          tokens: 8,
+          ok: true,
+        }
+      }
+      if (label.startsWith('Read: ')) {
+        return {
+          value: {
+            sources: [
+              {
+                title: label.replace(/^Read: /, ''),
+                url: prompt.match(/URL: (\S+)/)?.[1] ?? 'https://example.test/source',
+                summary: 'Source summary',
+                claims: [
+                  'Supported claim: workflows cache completed agents on resume.',
+                  'Weak claim: workflows require manual JSON parsing for args.',
+                ],
+              },
+            ],
+          },
+          tokens: 8,
+          ok: true,
+        }
+      }
+      if (label.startsWith('Vote claim ')) {
+        const claim = prompt.match(/\nClaim: ([^\n]+)/)?.[1] ?? ''
+        const weak = claim.startsWith('Weak claim:')
+        return {
+          value: {
+            supported: !weak,
+            citations: weak ? [] : ['https://example.test/official-docs'],
+            reason: weak ? 'Not supported by the notes.' : 'Directly supported.',
+          },
+          tokens: 3,
+          ok: true,
+        }
+      }
+      if (label === 'Find claim conflicts') {
+        return {
+          value: { conflicts: [] },
+          tokens: 3,
+          ok: true,
+        }
+      }
+      if (label === 'Synthesize cited report') {
+        synthPrompts.push(prompt)
+        return {
+          value:
+            'Supported claim: workflows cache completed agents on resume. https://example.test/official-docs',
+          tokens: 7,
+          ok: true,
+        }
+      }
+      throw new Error(`unexpected bundled agent label: ${label}`)
+    }
+
+    const { result, events } = await runBundledWorkflowForTest(
+      deepResearchSource,
+      'How do workflow resumes behave?',
+      runOneAgent,
+    )
+    const out = result as {
+      verification: {
+        supportedClaims: Array<{ claim: string; citations: string[] }>
+        weakClaims: Array<{ claim: string }>
+      }
+      report: string
+    }
+
+    expect(
+      events
+        .filter(
+          (event): event is Extract<WorkflowProgressEvent, { kind: 'phase' }> =>
+            event.kind === 'phase',
+        )
+        .map(event => event.title),
+    ).toEqual([
+      'Plan searches',
+      'Search web',
+      'Read sources',
+      'Cross-check claims',
+      'Synthesize report',
+    ])
+    expect(out.verification.supportedClaims.map(item => item.claim)).toEqual([
+      'Supported claim: workflows cache completed agents on resume.',
+    ])
+    expect(out.verification.supportedClaims[0]?.citations).toEqual([
+      'https://example.test/official-docs',
+    ])
+    expect(out.verification.weakClaims.map(item => item.claim)).toEqual([
+      'Weak claim: workflows require manual JSON parsing for args.',
+    ])
+    expect(out.report).toContain('https://example.test/official-docs')
+    expect(synthPrompts[0]).toContain(
+      'exclude claims that did not pass majority support',
+    )
   })
 
   test('project workflows win over bundled workflows with the same command name', () => {
