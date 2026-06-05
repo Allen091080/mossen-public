@@ -57,11 +57,11 @@ const SHADOWED_GLOBALS = [
   'require',
   'module',
   'exports',
-  // NOTE: `eval` and `arguments` are deliberately NOT shadowed here — they are
-  // reserved binding names in strict mode, so using them as parameter names is
-  // itself a SyntaxError. They are blocked by static rejection instead (see
-  // rejectModuleSyntax). `Function` (shadowed below) closes the other dynamic
-  // code-eval avenue.
+  // Shadow eval at the VM global layer too. Static rejection catches direct
+  // eval(...), but aliases and constructors can otherwise recover it.
+  'eval',
+  // `arguments` is deliberately not shadowed here — it is not a global, and
+  // binding it in strict mode would itself be a SyntaxError.
   'Function',
   'fetch',
   'XMLHttpRequest',

@@ -155,6 +155,28 @@ describe('runSandbox — blocked surface', () => {
     ).rejects.toThrow(/eval/)
   })
 
+  test('eval aliases and constructor lookups stay unavailable at runtime', async () => {
+    const out = await runSandbox({
+      ...base,
+      source: `
+        let alias = 'blocked'
+        try {
+          const e = eval
+          alias = typeof e === 'undefined' ? 'undefined' : e('1+1')
+        } catch (err) {
+          alias = err instanceof TypeError ? 'typeerror' : 'error'
+        }
+        return JSON.stringify([
+          alias,
+          Object.constructor('return typeof eval')(),
+          Object.constructor('return eval')() === undefined,
+        ])
+      `,
+    })
+
+    expect(JSON.parse(out as string)).toEqual(['undefined', 'undefined', true])
+  })
+
   test('import syntax is rejected before execution', async () => {
     await expect(
       runSandbox({ ...base, source: `import fs from 'fs'\nreturn 1` }),
