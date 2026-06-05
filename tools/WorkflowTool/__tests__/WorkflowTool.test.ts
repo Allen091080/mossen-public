@@ -1773,6 +1773,131 @@ return 'user:' + args.value
     }
   })
 
+  it('executes nested saved workflows with structured args and grouped child progress', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    const root = mkdtempSync(join(tmpdir(), 'wf-nested-tool-'))
+    const sessionId =
+      '99999999-9999-4999-9999-999999999999' as ReturnType<typeof getSessionId>
+    let state = {
+      tasks: {},
+      toolPermissionContext: getEmptyToolPermissionContext(),
+    } as unknown as AppState
+    const setAppState = (updater: (prev: AppState) => AppState) => {
+      state = updater(state)
+    }
+    const prompts: string[] = []
+
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      const workflowDir = getProjectWorkflowsDir(root)
+      mkdirSync(workflowDir, { recursive: true })
+      writeFileSync(
+        join(workflowDir, 'child.js'),
+        `
+export const meta = {
+  name: 'child-nested-flow',
+  description: 'Child nested flow',
+  phases: [{ title: 'Child phase', detail: 'Nested saved workflow' }],
+}
+phase('Child phase')
+log('child args ' + args.topic)
+const detail = await agent('inspect nested ' + args.topic, { label: 'child inspection' })
+return { childTopic: args.topic, detail }
+`,
+      )
+
+      setWorkflowAgentRunnerFactoryForTests(() => async (prompt, _opts, meta) => {
+        prompts.push(`${meta.agentNumber}:${meta.phase}:${meta.label}:${prompt}`)
+        return {
+          value: `agent:${prompt}`,
+          tokens: 12,
+          toolCalls: 2,
+          ok: true,
+        }
+      })
+
+      const result = await WorkflowTool.call!(
+        {
+          script: `
+export const meta = { name: 'parent-nested-flow', description: 'Parent nested flow' }
+const child = await workflow('child-nested-flow', { topic: args.topic })
+return { parentTopic: args.topic, child }
+`,
+          args: { topic: 'alpha' },
+        },
+        {
+          abortController: new AbortController(),
+          toolUseId: 'toolu_nested_wf',
+          getAppState: () => state,
+          setAppState,
+        } as unknown as ToolUseContext,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(result.data.status).toBe('async_launched')
+      expect(await waitForRunMetaStatus(result.data.runId!, 'completed')).toBe(
+        'completed',
+      )
+      const completedTask = await waitForTaskStatus(
+        () => state.tasks[result.data.taskId] as LocalWorkflowTaskState | undefined,
+        'completed',
+      )
+      expect(prompts).toEqual([
+        '1:▶ child-nested-flow:child inspection:inspect nested alpha',
+      ])
+      expect(completedTask?.agents).toHaveLength(1)
+      expect(completedTask?.agents[0]).toMatchObject({
+        agentNumber: 1,
+        phase: '▶ child-nested-flow',
+        label: 'child inspection',
+        status: 'completed',
+        tokens: 12,
+        toolCalls: 2,
+        resultPreview: 'agent:inspect nested alpha',
+      })
+      expect(completedTask?.log).toContain(
+        'phase: ▶ child-nested-flow',
+      )
+      expect(completedTask?.log).toContain(
+        '▶ running dynamic workflow child-nested-flow',
+      )
+      expect(completedTask?.log).toContain(
+        '[child-nested-flow] child args alpha',
+      )
+      expect(completedTask?.log).toContain('▶ child-nested-flow done')
+      const meta = loadRunMeta(result.data.runId!)
+      expect(meta?.args).toEqual({ topic: 'alpha' })
+      expect(meta?.result).toContain('"parentTopic": "alpha"')
+      expect(meta?.result).toContain('"childTopic": "alpha"')
+      expect(meta?.result).toContain('"detail": "agent:inspect nested alpha"')
+      expect(meta?.agentCount).toBe(1)
+      expect(meta?.totalToolCalls).toBe(2)
+      expect(meta?.tokensSpent).toBe(12)
+    } finally {
+      setWorkflowAgentRunnerFactoryForTests(null)
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('runs a workflow saved from /workflows as a slash command with structured args', async () => {
     const priorRoot = getProjectRoot()
     const priorSession = getSessionId()
