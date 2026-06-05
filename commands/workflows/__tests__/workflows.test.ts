@@ -1,9 +1,24 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { isValidElement } from 'react'
+import {
+  getProjectRoot,
+  getSessionId,
+  getSessionProjectDir,
+  setProjectRoot,
+  switchSession,
+} from '../../../bootstrap/state.js'
 import { getTaskOutputPath } from '../../../utils/task/diskOutput.js'
 import { buildWorkflowResumeNextInput, call } from '../workflows.js'
-import { deriveWorkflowSaveName } from '../saveWorkflow.js'
+import { deriveWorkflowSaveName, saveRun } from '../saveWorkflow.js'
 import { shouldRouteWorkflowAgentControl } from '../WorkflowRunsDialog.js'
+import { initRunArtifacts } from '../../../tools/WorkflowTool/engine/journalStore.js'
+import {
+  getProjectWorkflowsDir,
+  loadWorkflowCommandsFrom,
+} from '../../../tools/WorkflowTool/savedWorkflows.js'
 
 function workflowCommandContext(state: { tasks: Record<string, unknown> }) {
   const setAppState = (updater: (prev: typeof state) => typeof state) => {
@@ -93,6 +108,57 @@ describe('/workflows resume', () => {
         explicit: '  release/checklist  ',
       }),
     ).toBe('release-checklist')
+  })
+
+  test('save writes the selected slash command name into workflow meta', () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const root = mkdtempSync(join(tmpdir(), 'wf-save-command-name-'))
+    const sessionId =
+      '33333333-3333-4333-8333-333333333333' as ReturnType<typeof getSessionId>
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      const runId = 'wf_save_command'
+      initRunArtifacts(
+        runId,
+        `
+export const meta = { name: 'generated-flow', description: 'Generated flow' }
+return 'ok'
+`,
+        {
+          runId,
+          workflowName: 'generated-flow',
+          description: 'Generated flow',
+          createdAt: new Date(0).toISOString(),
+          status: 'completed',
+        },
+      )
+
+      const message = saveRun([runId, 'explicit-flow'])
+      const savedPath = join(getProjectWorkflowsDir(root), 'explicit-flow.js')
+
+      expect(message).toContain('/explicit-flow')
+      expect(readFileSync(savedPath, 'utf8')).toContain('name: "explicit-flow"')
+      expect(loadWorkflowCommandsFrom(root).map(command => command.name)).toContain(
+        'explicit-flow',
+      )
+      expect(loadWorkflowCommandsFrom(root).map(command => command.name)).not.toContain(
+        'generated-flow',
+      )
+    } finally {
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   test('opens the interactive workflow progress view with no args', async () => {

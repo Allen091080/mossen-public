@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   extractMeta,
   MAX_WORKFLOW_SCRIPT_BYTES,
+  rewriteWorkflowMetaName,
   validateMeta,
   WorkflowMetaError,
 } from '../meta.js'
@@ -146,6 +147,33 @@ describe('extractMeta', () => {
     expect(() =>
       extractMeta(`export const meta = { name: 'x', description: 'd'`),
     ).toThrow(/Script parse error/)
+  })
+})
+
+describe('rewriteWorkflowMetaName', () => {
+  test('rewrites only meta.name and preserves the workflow body', () => {
+    const src = `export const meta = { name: 'old-flow', description: 'A demo workflow' }
+log('old-flow body should stay')
+return 1
+`
+
+    const rewritten = rewriteWorkflowMetaName(src, 'new-flow')
+
+    expect(extractMeta(rewritten).meta.name).toBe('new-flow')
+    expect(extractMeta(rewritten).meta.description).toBe('A demo workflow')
+    expect(rewritten).toContain("log('old-flow body should stay')")
+    expect(rewritten).toContain('return 1')
+  })
+
+  test('escapes the saved command name as a JavaScript string literal', () => {
+    const src = `export const meta = { name: \`old\`, description: 'A demo workflow' }
+return 1
+`
+
+    const rewritten = rewriteWorkflowMetaName(src, 'quote-"flow')
+
+    expect(extractMeta(rewritten).meta.name).toBe('quote-"flow')
+    expect(rewritten).toContain('"quote-\\"flow"')
   })
 })
 

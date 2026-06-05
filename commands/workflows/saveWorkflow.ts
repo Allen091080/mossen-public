@@ -6,6 +6,7 @@ import {
   listWorkflowRuns,
   loadRunScript,
 } from '../../tools/WorkflowTool/engine/journalStore.js'
+import { rewriteWorkflowMetaName } from '../../tools/WorkflowTool/engine/meta.js'
 import {
   getProjectWorkflowsDir,
   getUserWorkflowsDir,
@@ -45,7 +46,7 @@ export function saveRun(args: string[]): string {
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     const dest = join(dir, `${name}.js`)
-    writeFileSync(dest, script, 'utf8')
+    writeFileSync(dest, rewriteWorkflowMetaName(script, name), 'utf8')
     return t('cmd.workflows.saved', {
       name,
       scope: useUser ? 'user' : 'project',

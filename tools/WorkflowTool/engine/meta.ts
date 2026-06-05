@@ -294,3 +294,54 @@ export function extractMeta(source: string): {
     scriptBody: source.slice(bodyStartIndex),
   }
 }
+
+/**
+ * Rewrite only `meta.name` while preserving the rest of the workflow script.
+ * Saved workflows register slash commands by meta.name, not by filename, so the
+ * saved command name must be reflected in the script itself.
+ */
+export function rewriteWorkflowMetaName(source: string, name: string): string {
+  const nextName = name.trim()
+  if (!nextName) {
+    throw new WorkflowMetaError('meta.name must be a non-empty string.')
+  }
+  assertScriptSize(source)
+  const program = parseProgram(source)
+  const firstStatement = program.body[0]
+  if (!firstStatement) {
+    throw new WorkflowMetaError(
+      '`export const meta = { name, description, phases }` must be the FIRST statement in the script',
+    )
+  }
+  const init = getMetaInitializer(firstStatement)
+  let raw: unknown
+  try {
+    raw = pureObjectLiteral(init)
+  } catch (err) {
+    throw new WorkflowMetaError(
+      `meta must be a pure literal: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+  validateMeta(raw)
+
+  let nameValue: AstNode | null = null
+  const properties = init.properties
+  if (Array.isArray(properties)) {
+    for (const property of properties) {
+      if (!isAstNode(property) || property.type !== 'Property') continue
+      if (propertyKey(property) !== 'name') continue
+      const value = property.value
+      if (!isAstNode(value)) {
+        throw new WorkflowMetaError('meta.name must be a non-empty string.')
+      }
+      // Match object-literal semantics: if duplicate name keys exist, the last
+      // one wins in pureObjectLiteral(), so rewrite the last one too.
+      nameValue = value
+    }
+  }
+  if (!nameValue) {
+    throw new WorkflowMetaError('meta.name must be a non-empty string.')
+  }
+
+  return `${source.slice(0, nameValue.start)}${JSON.stringify(nextName)}${source.slice(nameValue.end)}`
+}
