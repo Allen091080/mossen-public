@@ -12,8 +12,11 @@ import { join } from 'node:path'
 import { isValidElement } from 'react'
 import {
   getProjectRoot,
+  getSessionId,
+  getSessionProjectDir,
   getOriginalCwd,
   setProjectRoot,
+  switchSession,
   setOriginalCwd,
   setUltracodeActive,
   snapshotOutputTokensForTurn,
@@ -26,10 +29,17 @@ import {
 import {
   appendWorkflowResultLogLine,
   MAX_WORKFLOW_RESULT_LOG_LINES,
+  setWorkflowAgentRunnerFactoryForTests,
   WorkflowTool,
 } from '../WorkflowTool.js'
 import { WORKFLOW_TOOL_NAME } from '../constants.js'
-import { loadRunLog, loadRunMeta } from '../engine/journalStore.js'
+import { hashCall } from '../engine/journal.js'
+import {
+  appendJournalEntry,
+  initRunArtifacts,
+  loadRunLog,
+  loadRunMeta,
+} from '../engine/journalStore.js'
 import {
   getProjectWorkflowsDir,
   getUserWorkflowsDir,
@@ -125,6 +135,20 @@ async function waitForTaskStatus(
     await new Promise(resolve => setTimeout(resolve, 5))
   }
   return getTask()
+}
+
+async function waitForWorkflowLogLine(
+  runId: string,
+  fragment: string,
+): Promise<string> {
+  let lines: string[] = []
+  for (let i = 0; i < 100; i++) {
+    lines = loadRunLog(runId)
+    const line = lines.find(current => current.includes(fragment))
+    if (line) return line
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  return lines.find(line => line.includes(fragment)) ?? ''
 }
 
 // Regression for the Ink crash seen in real use: renderToolResultMessage used
@@ -790,6 +814,127 @@ return 'ok'
       'Workflow wf_resume1 is still running (task wf_live_task). Stop it first with TaskStop({task_id: "wf_live_task"}) before resuming.',
     )
     expect(setAppStateCalls).toBe(0)
+  })
+
+  it('resumes from persisted journal entries and runs uncached agents live', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
+    const root = mkdtempSync(join(tmpdir(), 'wf-tool-resume-cache-'))
+    const sessionId =
+      '55555555-5555-4555-8555-555555555555' as ReturnType<typeof getSessionId>
+    const runId = `wf_resume-tool-${Date.now().toString(36)}`
+    const script = `
+export const meta = { name: 'resume-cache-flow', description: 'Resume cache flow' }
+const first = await agent('first persisted task', { label: 'first persisted' })
+const second = await agent('second live task', { label: 'second live' })
+return { first, second }
+`
+    const livePrompts: string[] = []
+    let state = {
+      tasks: {},
+      toolPermissionContext: getEmptyToolPermissionContext(),
+    } as unknown as AppState
+    const setAppState = (updater: (prev: AppState) => AppState) => {
+      state = updater(state)
+    }
+
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'config')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      initRunArtifacts(runId, script, {
+        runId,
+        workflowName: 'resume-cache-flow',
+        description: 'Resume cache flow',
+        createdAt: new Date(0).toISOString(),
+        status: 'killed',
+        args: { ticket: 42 },
+      })
+      appendJournalEntry(runId, {
+        index: 0,
+        hash: hashCall('first persisted task', { label: 'first persisted' }),
+        value: 'cached first result',
+        tokens: 7,
+        toolCalls: 1,
+        ok: true,
+      })
+      setWorkflowAgentRunnerFactoryForTests(() => async prompt => {
+        livePrompts.push(prompt)
+        return {
+          value: `live result for ${prompt}`,
+          tokens: 11,
+          toolCalls: 2,
+          ok: true,
+        }
+      })
+
+      const result = await WorkflowTool.call!(
+        {
+          script,
+          resumeFromRunId: runId,
+          args: { ticket: 42 },
+        },
+        {
+          abortController: new AbortController(),
+          toolUseId: 'toolu_resume_cache_wf',
+          getAppState: () => state,
+          setAppState,
+        } as unknown as ToolUseContext,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(result.data.status).toBe('async_launched')
+      expect(result.data.runId).toBe(runId)
+
+      expect(
+        await waitForWorkflowLogLine(runId, 'first persisted (cached'),
+      ).toContain('~7 tok')
+      const liveLine = await waitForWorkflowLogLine(
+        runId,
+        'second live (completed',
+      )
+      expect(liveLine).toContain('~11 tok')
+      expect(await waitForRunMetaStatus(runId, 'completed')).toBe('completed')
+
+      const task = await waitForTaskStatus(
+        () => state.tasks[result.data.taskId] as LocalWorkflowTaskState | undefined,
+        'completed',
+      )
+      expect(livePrompts).toEqual(['second live task'])
+      expect(task?.log).toContain('agent #1 cached: first persisted (7 tokens)')
+      expect(task?.log).toContain('agent #2 completed: second live (11 tokens)')
+      expect(task?.agents.map(agent => [agent.agentNumber, agent.status])).toEqual(
+        [
+          [1, 'cached'],
+          [2, 'completed'],
+        ],
+      )
+      const meta = loadRunMeta(runId)
+      expect(meta?.result).toContain('"first": "cached first result"')
+      expect(meta?.result).toContain(
+        '"second": "live result for second live task"',
+      )
+      expect(meta?.args).toEqual({ ticket: 42 })
+    } finally {
+      setWorkflowAgentRunnerFactoryForTests(null)
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 

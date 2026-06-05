@@ -189,6 +189,17 @@ type WorkflowSourceResolution = {
   scope?: SavedWorkflowRef['scope'] | 'inline' | 'scriptPath'
 }
 
+type WorkflowAgentRunnerFactory = typeof createWorkflowAgentRunner
+
+let workflowAgentRunnerFactory: WorkflowAgentRunnerFactory =
+  createWorkflowAgentRunner
+
+export function setWorkflowAgentRunnerFactoryForTests(
+  factory: WorkflowAgentRunnerFactory | null,
+): void {
+  workflowAgentRunnerFactory = factory ?? createWorkflowAgentRunner
+}
+
 type RunningWorkflowTask = {
   id?: string
   type?: string
@@ -812,7 +823,7 @@ export const WorkflowTool = buildTool({
       entry => appendJournalEntry(runId, entry),
       entry => appendJournalStartedEntry(runId, entry),
     )
-    const runOneAgent = createWorkflowAgentRunner({
+    const runOneAgent = workflowAgentRunnerFactory({
       toolUseContext,
       canUseTool,
       runId,
