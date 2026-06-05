@@ -21,7 +21,10 @@ import {
   type LocalWorkflowTaskState,
   type WorkflowAgentTaskProgress,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
-import { WorkflowRunsDialog } from './WorkflowRunsDialog.js'
+import {
+  historyAgentsForRun,
+  WorkflowRunsDialog,
+} from './WorkflowRunsDialog.js'
 import { saveRun } from './saveWorkflow.js'
 import {
   buildWorkflowResumeNextInput,
@@ -83,6 +86,13 @@ function compact(value: unknown, maxLength = 180): string | null {
 }
 
 function taskElapsedMs(task: WorkflowTaskSnapshot, now = Date.now()): number {
+  if (
+    task.status !== 'running' &&
+    task.status !== 'paused' &&
+    typeof task.durationMs === 'number'
+  ) {
+    return Math.max(0, task.durationMs)
+  }
   const start = asNumber(task.startTime)
   if (!start) return 0
   const end =
@@ -253,6 +263,35 @@ function renderRunDetail(
     return t('cmd.workflows.notFound', { runId })
   }
   const log = loadRunLog(runId)
+  const historyAgents = historyAgentsForRun(runId)
+  if (historyAgents.length > 0) {
+    return renderLiveRunDetail(runId, {
+      type: 'local_workflow',
+      status: meta.status,
+      id: meta.runId,
+      runId: meta.runId,
+      workflowRunId: meta.runId,
+      workflowName: meta.workflowName,
+      startTime: Date.parse(meta.createdAt) || undefined,
+      ...(meta.durationMs != null
+        ? { endTime: (Date.parse(meta.createdAt) || Date.now()) + meta.durationMs }
+        : {}),
+      agentCount: meta.agentCount ?? historyAgents.length,
+      totalToolCalls:
+        meta.totalToolCalls ??
+        historyAgents.reduce((sum, agent) => sum + asNumber(agent.toolCalls), 0),
+      tokensSpent:
+        meta.tokensSpent ??
+        historyAgents.reduce((sum, agent) => sum + asNumber(agent.tokens), 0),
+      phaseDefinitions: meta.phases,
+      phases: meta.phases?.map(phase => phase.title) ?? [],
+      failures: meta.failures,
+      durationMs: meta.durationMs,
+      agents: historyAgents,
+      log,
+      logs: log,
+    })
+  }
   const header = [
     `${statusGlyph(meta.status)} ${meta.workflowName} (${meta.runId})`,
     `${t('cmd.workflows.status')}: ${meta.status}`,
@@ -284,8 +323,16 @@ function renderAgentDetail(
   const agentNumber = parseWorkflowAgentNumber(agentId)
   if (!runId || !agentNumber) return t('cmd.workflows.agentDetailUsage')
   const found = findWorkflowTaskForRun(tasks, runId)
-  if (!found) return t('cmd.workflows.notFound', { runId })
-  const agent = (found.task.agents ?? []).find(
+  const agentSource = found?.task.agents ?? historyAgentsForRun(runId)
+  if (!found && agentSource.length === 0) {
+    return loadRunMeta(runId)
+      ? t('cmd.workflows.agentNotFound', {
+          runId,
+          agentNumber: String(agentNumber),
+        })
+      : t('cmd.workflows.notFound', { runId })
+  }
+  const agent = agentSource.find(
     item => item.agentNumber === agentNumber,
   )
   if (!agent) {

@@ -21,7 +21,11 @@ import {
   workflowAgentBackTarget,
   workflowRunOpenTarget,
 } from '../WorkflowRunsDialog.js'
-import { initRunArtifacts } from '../../../tools/WorkflowTool/engine/journalStore.js'
+import {
+  appendJournalEntry,
+  appendJournalStartedEntry,
+  initRunArtifacts,
+} from '../../../tools/WorkflowTool/engine/journalStore.js'
 import {
   getProjectWorkflowsDir,
   loadWorkflowCommandsFrom,
@@ -442,6 +446,96 @@ return 'ok'
     expect(message).toContain(`/workflows pause ${runId}`)
   })
 
+  test('run detail reconstructs completed history progress from the journal', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const root = mkdtempSync(join(tmpdir(), 'wf-history-detail-'))
+    const sessionId =
+      '55555555-5555-4555-8555-555555555555' as ReturnType<typeof getSessionId>
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      const runId = 'wf_history_detail'
+      initRunArtifacts(
+        runId,
+        'return "history"',
+        {
+          runId,
+          workflowName: 'history-flow',
+          description: 'History flow',
+          phases: [{ title: 'Scan' }, { title: 'Review' }],
+          createdAt: new Date(0).toISOString(),
+          status: 'completed',
+          agentCount: 2,
+          tokensSpent: 55,
+          totalToolCalls: 3,
+          durationMs: 4600,
+        },
+      )
+      appendJournalStartedEntry(runId, {
+        kind: 'started',
+        index: 0,
+        hash: 'h0',
+        label: 'Scan routes',
+        phase: 'Scan',
+        agentNumber: 1,
+        opts: { model: 'fast', agentType: 'Explore' },
+      })
+      appendJournalEntry(runId, {
+        index: 0,
+        hash: 'h0',
+        value: 'Found historical routes.',
+        tokens: 25,
+        toolCalls: 1,
+        ok: true,
+      })
+      appendJournalStartedEntry(runId, {
+        kind: 'started',
+        index: 1,
+        hash: 'h1',
+        label: 'Review findings',
+        phase: 'Review',
+        agentNumber: 2,
+        opts: {},
+      })
+      appendJournalEntry(runId, {
+        index: 1,
+        hash: 'h1',
+        value: { ok: true },
+        tokens: 30,
+        toolCalls: 2,
+        ok: true,
+      })
+
+      let message = ''
+      await call(
+        nextMessage => {
+          message = nextMessage
+        },
+        workflowCommandContext({ tasks: {} }) as never,
+        runId,
+      )
+
+      expect(message).toContain(`history-flow (${runId})`)
+      expect(message).toContain('Scan · 1 agent(s) · 1 completed · 25 tok · 1 tools')
+      expect(message).toContain('Review · 1 agent(s) · 1 completed · 30 tok · 2 tools')
+      expect(message).toContain('#1 [Scan] Scan routes · completed · 25 tok · 1 tools')
+      expect(message).toContain('Found historical routes.')
+    } finally {
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('agent detail drills into prompt, latest tool, and result preview', async () => {
     const taskId = 'wtaskcmd_agent_detail'
     const runId = 'wf_cmd_agent_detail'
@@ -470,6 +564,74 @@ return 'ok'
     expect(message).toContain('Read commands/workflows/workflows.tsx')
     expect(message).toContain('Found the command detail renderer.')
     expect(message).toContain(`/workflows restart-agent ${runId} 1`)
+  })
+
+  test('agent detail reconstructs completed history agents from the journal', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const root = mkdtempSync(join(tmpdir(), 'wf-history-agent-detail-'))
+    const sessionId =
+      '66666666-6666-4666-8666-666666666666' as ReturnType<typeof getSessionId>
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      const runId = 'wf_history_agent_detail'
+      initRunArtifacts(
+        runId,
+        'return "history"',
+        {
+          runId,
+          workflowName: 'history-agent-flow',
+          description: 'History agent flow',
+          createdAt: new Date(0).toISOString(),
+          status: 'completed',
+        },
+      )
+      appendJournalStartedEntry(runId, {
+        kind: 'started',
+        index: 0,
+        hash: 'h0',
+        label: 'Scan routes',
+        phase: 'Scan',
+        agentNumber: 1,
+        opts: { isolation: 'remote' },
+      })
+      appendJournalEntry(runId, {
+        index: 0,
+        hash: 'h0',
+        value: 'Historical agent result.',
+        tokens: 25,
+        toolCalls: 1,
+        ok: true,
+      })
+
+      let message = ''
+      await call(
+        nextMessage => {
+          message = nextMessage
+        },
+        workflowCommandContext({ tasks: {} }) as never,
+        `agent ${runId} 1`,
+      )
+
+      expect(message).toContain('#1 Scan routes')
+      expect(message).toContain('completed')
+      expect(message).toContain('Scan')
+      expect(message).toContain('isolation: remote')
+      expect(message).toContain('Historical agent result.')
+    } finally {
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   test('stop resolves a workflow run id and kills the backing task', async () => {

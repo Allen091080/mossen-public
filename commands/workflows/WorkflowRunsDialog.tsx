@@ -12,6 +12,7 @@ import {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import {
   listWorkflowRuns,
+  loadJournal,
   loadRunLog,
   runScriptPath,
   type WorkflowRunMeta,
@@ -123,16 +124,77 @@ function compact(value: unknown, maxLength = 140): string | null {
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
 }
 
-function phaseTitles(task: LocalWorkflowTaskState): string[] {
+function compactResultPreview(value: unknown): string | undefined {
+  const preview = compact(
+    typeof value === 'string'
+      ? value
+      : (() => {
+          try {
+            return JSON.stringify(value)
+          } catch {
+            return String(value)
+          }
+        })(),
+    160,
+  )
+  return preview ?? undefined
+}
+
+function workflowAgentStatusFromJournal(
+  entry: NonNullable<ReturnType<typeof loadJournal>>['entries'][number] | undefined,
+): WorkflowAgentTaskProgress['status'] {
+  if (!entry) return 'queued'
+  if (entry.status === 'skipped') return 'skipped'
+  if (entry.status === 'retry_requested') return 'retry_requested'
+  if (entry.status === 'completed') return 'completed'
+  if (entry.ok) return 'completed'
+  return 'failed'
+}
+
+export function historyAgentsForRun(runId: string): WorkflowAgentTaskProgress[] {
+  const journal = loadJournal(runId)
+  const started = journal?.started ?? []
+  if (started.length === 0) return []
+  const completedByCall = new Map(
+    (journal?.entries ?? []).map(entry => [`${entry.index}\0${entry.hash}`, entry]),
+  )
+  return started.map(start => {
+    const completed = completedByCall.get(`${start.index}\0${start.hash}`)
+    return {
+      agentNumber: start.agentNumber,
+      label: start.label,
+      phase: start.phase,
+      status: workflowAgentStatusFromJournal(completed),
+      tokens: completed?.tokens ?? 0,
+      toolCalls: completed?.toolCalls ?? 0,
+      ...(start.opts.agentType ? { agentType: start.opts.agentType } : {}),
+      ...(start.opts.model ? { model: start.opts.model } : {}),
+      ...(start.opts.isolation ? { isolation: start.opts.isolation } : {}),
+      ...(completed?.value !== undefined
+        ? { resultPreview: compactResultPreview(completed.value) }
+        : {}),
+    }
+  })
+}
+
+function phaseTitlesFromProgress(
+  phaseDefinitions: readonly { title: string }[] | undefined,
+  phaseNames: readonly string[] | undefined,
+  agents: readonly Pick<WorkflowAgentTaskProgress, 'phase'>[],
+): string[] {
   const titles: string[] = []
   const add = (title: unknown) => {
     const value = typeof title === 'string' ? title.trim() : ''
     if (value && !titles.includes(value)) titles.push(value)
   }
-  for (const phase of task.phaseDefinitions ?? []) add(phase.title)
-  for (const phase of task.phases ?? []) add(phase)
-  for (const agent of task.agents ?? []) add(agent.phase ?? undefined)
+  for (const phase of phaseDefinitions ?? []) add(phase.title)
+  for (const phase of phaseNames ?? []) add(phase)
+  for (const agent of agents) add(agent.phase ?? undefined)
   return titles
+}
+
+function phaseTitles(task: LocalWorkflowTaskState): string[] {
+  return phaseTitlesFromProgress(task.phaseDefinitions, task.phases, task.agents ?? [])
 }
 
 function agentElapsed(agent: WorkflowAgentTaskProgress): number {
@@ -186,19 +248,12 @@ function findRun(items: readonly WorkflowRunItem[], runId: string): WorkflowRunI
 }
 
 function runPhases(item: WorkflowRunItem): string[] {
-  return item.kind === 'live' ? phaseTitles(item.task) : []
-}
-
-function selectedAgent(
-  item: WorkflowRunItem | null,
-  selectedIndex: number,
-  phase?: string,
-): WorkflowAgentTaskProgress | null {
-  if (!item || item.kind !== 'live') return null
-  const agents = phase
-    ? item.task.agents.filter(agent => agent.phase === phase)
-    : item.task.agents
-  return agents[selectedIndex] ?? null
+  if (item.kind === 'live') return phaseTitles(item.task)
+  return phaseTitlesFromProgress(
+    item.meta.phases,
+    undefined,
+    historyAgentsForRun(item.runId),
+  )
 }
 
 export function shouldRouteWorkflowAgentControl(
@@ -301,20 +356,26 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
     view.mode === 'list'
       ? items[selectedRunIndex] ?? null
       : findRun(items, view.runId)
+  const historyAgents =
+    selectedRun?.kind === 'history'
+      ? historyAgentsForRun(selectedRun.runId)
+      : []
   const phases = selectedRun ? runPhases(selectedRun) : []
   const agents =
     selectedRun?.kind === 'live'
       ? view.mode === 'phase'
         ? selectedRun.task.agents.filter(agent => agent.phase === view.phase)
         : selectedRun.task.agents
+      : selectedRun?.kind === 'history'
+        ? view.mode === 'phase'
+          ? historyAgents.filter(agent => agent.phase === view.phase)
+          : historyAgents
       : []
   const showRunLevelAgents = shouldShowRunLevelAgents(phases.length, agents.length)
   const currentAgent =
     view.mode === 'agent'
-      ? selectedRun?.kind === 'live'
-        ? selectedRun.task.agents.find(agent => agent.agentNumber === view.agentNumber) ?? null
-        : null
-      : selectedAgent(selectedRun, selectedAgentIndex, view.mode === 'phase' ? view.phase : undefined)
+      ? agents.find(agent => agent.agentNumber === view.agentNumber) ?? null
+      : agents[selectedAgentIndex] ?? null
 
   const close = (result = t('cmd.workflows.dismissed')) =>
     onDone(result, { display: 'system' })
@@ -550,7 +611,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
                 {item.kind === 'live'
                   ? ` · ${formatNumber(item.task.agentCount)} agents · ${formatNumber(item.task.tokensSpent)} tok`
                   : item.meta.agentCount != null
-                    ? ` · ${formatNumber(item.meta.agentCount)} agents`
+                    ? ` · ${formatNumber(item.meta.agentCount)} agents${item.meta.tokensSpent != null ? ` · ${formatNumber(item.meta.tokensSpent)} tok` : ''}`
                     : ''}
               </Text>
             </Text>
@@ -612,18 +673,59 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
           ) : (
             <Box flexDirection="column">
               <Text dimColor>
-                {selectedRun.meta.agentCount ?? 0} agents · ~
-                {selectedRun.meta.tokensSpent ?? 0} tok
+                {formatNumber(selectedRun.meta.agentCount ?? agents.length)} agents · ~
+                {formatNumber(selectedRun.meta.tokensSpent ?? sumAgents(agents, 'tokens'))} tok
+                {selectedRun.meta.totalToolCalls != null || agents.length > 0
+                  ? ` · ${formatNumber(selectedRun.meta.totalToolCalls ?? sumAgents(agents, 'toolCalls'))} tools`
+                  : ''}
+                {selectedRun.meta.durationMs != null
+                  ? ` · ${formatDuration(selectedRun.meta.durationMs, { mostSignificantOnly: true })}`
+                  : ''}
               </Text>
-              {loadRunLog(selectedRun.runId).slice(-8).map(line => (
-                <Text key={line} dimColor>{line}</Text>
-              ))}
+              {agents.length > 0 ? (
+                <Box flexDirection="column" marginTop={1}>
+                  {showRunLevelAgents
+                    ? agents.map((agent, index) => (
+                        <Text key={agent.agentNumber} color={index === selectedAgentIndex ? 'suggestion' : undefined}>
+                          {index === selectedAgentIndex ? '> ' : '  '}
+                          #{agent.agentNumber} {agent.label}{' '}
+                          <Text color={statusColor(agent.status)}>{agent.status}</Text>
+                          <Text dimColor>
+                            {' '}· {formatNumber(agent.tokens)} tok · {formatNumber(agent.toolCalls)} tools
+                          </Text>
+                        </Text>
+                      ))
+                    : phases.map((phase, index) => {
+                        const phaseAgents = agents.filter(agent => agent.phase === phase)
+                        const phaseElapsedMs = sumAgentElapsedMs(phaseAgents)
+                        const selected = index === selectedPhaseIndex
+                        return (
+                          <Text key={phase} color={selected ? 'suggestion' : undefined}>
+                            {selected ? '> ' : '  '}
+                            {phase}{' '}
+                            <Text dimColor>
+                              · {phaseAgents.length} agents · {statusSummary(phaseAgents)}
+                              {' '}· {formatNumber(sumAgents(phaseAgents, 'tokens'))} tok
+                              {' '}· {formatNumber(sumAgents(phaseAgents, 'toolCalls'))} tools
+                              {phaseElapsedMs > 0
+                                ? ` · ${formatDuration(phaseElapsedMs, { mostSignificantOnly: true })}`
+                                : ''}
+                            </Text>
+                          </Text>
+                        )
+                      })}
+                </Box>
+              ) : (
+                loadRunLog(selectedRun.runId).slice(-8).map(line => (
+                  <Text key={line} dimColor>{line}</Text>
+                ))
+              )}
             </Box>
           )}
           {message ? <Text color="warning">{message}</Text> : null}
         </Box>
       ) : null}
-      {selectedRun?.kind === 'live' && view.mode === 'phase' ? (
+      {selectedRun && view.mode === 'phase' ? (
         <Box flexDirection="column">
           <Text bold>{view.phase}</Text>
           {agents.map((agent, index) => (
@@ -638,7 +740,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
           ))}
         </Box>
       ) : null}
-      {selectedRun?.kind === 'live' && view.mode === 'agent' && currentAgent ? (
+      {selectedRun && view.mode === 'agent' && currentAgent ? (
         <Box flexDirection="column">
           <Text bold>#{currentAgent.agentNumber} {currentAgent.label}</Text>
           <Text color={statusColor(currentAgent.status)}>
