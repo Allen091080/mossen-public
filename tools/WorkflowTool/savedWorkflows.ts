@@ -344,11 +344,11 @@ export function getAllWorkflows(
   projectRoot: string,
   plugins: readonly WorkflowPluginRef[] = [],
 ): SavedWorkflowRef[] {
-  return [
+  return dedupeWorkflows([
     ...loadSavedWorkflowsFrom(projectRoot),
     ...loadPluginWorkflowsFrom(plugins),
     ...loadBundledWorkflowRefs(),
-  ]
+  ])
 }
 
 async function loadEnabledWorkflowPlugins(): Promise<WorkflowPluginRef[]> {

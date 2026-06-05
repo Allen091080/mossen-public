@@ -281,6 +281,32 @@ describe('savedWorkflows loader (S3)', () => {
     expect(text).toContain('Node.js permissions')
   })
 
+  test('project workflows win over bundled workflows with the same command name', () => {
+    const projectPath = join(wfDir, 'project-deep-research.js')
+    writeFileSync(
+      projectPath,
+      META('deep-research', 'Project-specific research flow'),
+    )
+
+    const workflows = getAllWorkflows(root).filter(
+      wf => wf.commandName === 'deep-research',
+    )
+    expect(workflows).toHaveLength(1)
+    expect(workflows[0]?.scope).toBe('project')
+    expect(workflows[0]?.description).toBe('Project-specific research flow')
+    expect(workflows[0]?.scriptPath).toBe(projectPath)
+
+    const commands = loadWorkflowCommandsFromSources(root).filter(
+      c => c.name === 'deep-research',
+    )
+    expect(commands).toHaveLength(1)
+    expect((commands[0] as { source?: string }).source).toBe('projectSettings')
+
+    expect(resolveWorkflowFromSources(root, 'deep-research')?.scriptPath).toBe(
+      projectPath,
+    )
+  })
+
   test('bundled deep-research follows WebSearch availability', () => {
     expect(isWebSearchAvailableFor('firstParty', 'any-model')).toBe(true)
     expect(isWebSearchAvailableFor('foundry', 'any-model')).toBe(true)
