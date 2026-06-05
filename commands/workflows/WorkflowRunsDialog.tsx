@@ -51,7 +51,7 @@ type WorkflowRunItem =
       meta: WorkflowRunMeta
     }
 
-type SaveScope = 'project' | 'user'
+export type WorkflowSaveScope = 'project' | 'user'
 
 export type WorkflowDialogMode = 'list' | 'run' | 'phase' | 'agent' | 'save'
 
@@ -61,14 +61,14 @@ export type WorkflowMainViewState =
   | { mode: 'phase'; runId: string; phase: string }
   | { mode: 'agent'; runId: string; agentNumber: number }
 
-type ViewState =
-  | WorkflowMainViewState
-  | {
-      mode: 'save'
-      runId: string
-      scope: SaveScope
-      previous: WorkflowMainViewState
-    }
+type ViewState = WorkflowMainViewState | WorkflowSaveViewState
+
+export type WorkflowSaveViewState = {
+  mode: 'save'
+  runId: string
+  scope: WorkflowSaveScope
+  previous: WorkflowMainViewState
+}
 
 function isWorkflowTask(task: unknown): task is LocalWorkflowTaskState {
   return (
@@ -291,6 +291,33 @@ export function workflowAgentBackTarget(
   return phase ? { mode: 'phase', runId, phase } : { mode: 'run', runId }
 }
 
+export function workflowSaveOpenTarget(
+  runId: string,
+  currentView: WorkflowMainViewState | WorkflowSaveViewState,
+): WorkflowSaveViewState {
+  const previous: WorkflowMainViewState =
+    currentView.mode === 'save' ? currentView.previous : currentView
+  return {
+    mode: 'save',
+    runId,
+    scope: 'project',
+    previous,
+  }
+}
+
+export function toggleWorkflowSaveScope(
+  scope: WorkflowSaveScope,
+): WorkflowSaveScope {
+  return scope === 'project' ? 'user' : 'project'
+}
+
+export function workflowSaveRunArgs(
+  runId: string,
+  scope: WorkflowSaveScope,
+): string[] {
+  return scope === 'user' ? [runId, '--user'] : [runId]
+}
+
 function inputGuide(mode: WorkflowDialogMode) {
   return () => (
     <Byline>
@@ -380,21 +407,14 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
   const close = (result = t('cmd.workflows.dismissed')) =>
     onDone(result, { display: 'system' })
 
-  const saveSelectedRun = (runId: string, scope: SaveScope) => {
-    const result = saveRun(scope === 'user' ? [runId, '--user'] : [runId])
+  const saveSelectedRun = (runId: string, scope: WorkflowSaveScope) => {
+    const result = saveRun(workflowSaveRunArgs(runId, scope))
     setMessage(result)
     onDone(result, { display: 'system' })
   }
 
   const openSaveDialog = (run: WorkflowRunItem) => {
-    const previous: WorkflowMainViewState =
-      view.mode === 'save' ? view.previous : view
-    setView({
-      mode: 'save',
-      runId: run.runId,
-      scope: 'project',
-      previous,
-    })
+    setView(workflowSaveOpenTarget(run.runId, view))
   }
 
   const resumeSelectedRun = (run: WorkflowRunItem) => {
@@ -441,7 +461,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
       if (key.tab) {
         setView({
           ...view,
-          scope: view.scope === 'project' ? 'user' : 'project',
+          scope: toggleWorkflowSaveScope(view.scope),
         })
         return
       }

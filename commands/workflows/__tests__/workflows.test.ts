@@ -18,8 +18,11 @@ import {
   shouldRouteWorkflowAgentControl,
   shouldShowRunLevelAgents,
   sumAgentElapsedMs,
+  toggleWorkflowSaveScope,
   workflowAgentBackTarget,
   workflowRunOpenTarget,
+  workflowSaveOpenTarget,
+  workflowSaveRunArgs,
 } from '../WorkflowRunsDialog.js'
 import {
   appendJournalEntry,
@@ -28,7 +31,9 @@ import {
 } from '../../../tools/WorkflowTool/engine/journalStore.js'
 import {
   getProjectWorkflowsDir,
+  getUserWorkflowsDir,
   loadWorkflowCommandsFrom,
+  WORKFLOW_HOME_ENV,
 } from '../../../tools/WorkflowTool/savedWorkflows.js'
 import type { LocalWorkflowTaskState } from '../../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
@@ -131,11 +136,13 @@ describe('/workflows resume', () => {
     const priorSession = getSessionId()
     const priorProjectDir = getSessionProjectDir()
     const priorHome = process.env.MOSSEN_HOME
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
     const root = mkdtempSync(join(tmpdir(), 'wf-save-command-name-'))
     const sessionId =
       '33333333-3333-4333-8333-333333333333' as ReturnType<typeof getSessionId>
     try {
       process.env.MOSSEN_HOME = join(root, 'home')
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
       setProjectRoot(root)
       switchSession(sessionId)
       const runId = 'wf_save_command'
@@ -172,6 +179,100 @@ return 'ok'
         delete process.env.MOSSEN_HOME
       } else {
         process.env.MOSSEN_HOME = priorHome
+      }
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('save dialog maps project/user scopes and user save uses run metadata name', () => {
+    const saveView = workflowSaveOpenTarget('wf_scope_save', {
+      mode: 'run',
+      runId: 'wf_active',
+    })
+    expect(saveView).toEqual({
+      mode: 'save',
+      runId: 'wf_scope_save',
+      scope: 'project',
+      previous: { mode: 'run', runId: 'wf_active' },
+    })
+    expect(
+      workflowSaveOpenTarget('wf_scope_save_again', {
+        ...saveView,
+        scope: 'user',
+      }),
+    ).toEqual({
+      mode: 'save',
+      runId: 'wf_scope_save_again',
+      scope: 'project',
+      previous: { mode: 'run', runId: 'wf_active' },
+    })
+    expect(toggleWorkflowSaveScope('project')).toBe('user')
+    expect(toggleWorkflowSaveScope('user')).toBe('project')
+    expect(workflowSaveRunArgs('wf_scope_save', 'project')).toEqual([
+      'wf_scope_save',
+    ])
+    expect(workflowSaveRunArgs('wf_scope_save', 'user')).toEqual([
+      'wf_scope_save',
+      '--user',
+    ])
+
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    const root = mkdtempSync(join(tmpdir(), 'wf-save-user-scope-'))
+    const sessionId =
+      '66666666-6666-4666-8666-666666666666' as ReturnType<typeof getSessionId>
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      const runId = 'wf_user_scope_save'
+      initRunArtifacts(
+        runId,
+        `
+export const meta = { name: 'draft-name', description: 'Generated flow' }
+return 'ok'
+`,
+        {
+          runId,
+          workflowName: 'Team audit flow',
+          description: 'Generated flow',
+          createdAt: new Date(0).toISOString(),
+          status: 'completed',
+        },
+      )
+
+      const message = saveRun(workflowSaveRunArgs(runId, 'user'))
+      const savedPath = join(getUserWorkflowsDir(), 'Team-audit-flow.js')
+
+      expect(message).toContain('/Team-audit-flow')
+      expect(message).toContain('user')
+      expect(readFileSync(savedPath, 'utf8')).toContain(
+        'name: "Team-audit-flow"',
+      )
+      expect(loadWorkflowCommandsFrom(root).map(command => command.name)).toContain(
+        'Team-audit-flow',
+      )
+    } finally {
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
       }
       rmSync(root, { recursive: true, force: true })
     }
