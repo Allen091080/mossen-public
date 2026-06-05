@@ -25,6 +25,8 @@ import {
   WORKFLOW_HOME_ENV,
 } from '../savedWorkflows.js'
 import { MAX_WORKFLOW_SCRIPT_FILE_BYTES } from '../scriptFile.js'
+import { extractMeta } from '../engine/meta.js'
+import { checkWorkflowScriptSyntax } from '../engine/sandbox.js'
 
 // Tests target loadWorkflowCommandsFrom (the UNGATED core) so the disk-read +
 // meta-parse contract is asserted for real regardless of the WORKFLOW_SCRIPTS
@@ -324,12 +326,23 @@ describe('savedWorkflows loader (S3)', () => {
     expect(bundled.every(wf => typeof wf.source === 'string')).toBe(true)
     expect(bundled[0]?.isEnabled?.()).toBe(true)
 
-    const workflows = getAllWorkflows(root)
-    expect(workflows.map(wf => wf.commandName)).toContain('deep-research')
-    expect(resolveWorkflowFromSources(root, 'deep-research')?.source).toContain(
-      "name: 'deep-research'",
-    )
-    expect(resolveWorkflowFromSources(root, 'project-scan')).toBeNull()
+	    const workflows = getAllWorkflows(root)
+	    expect(workflows.map(wf => wf.commandName)).toContain('deep-research')
+	    const deepResearchSource =
+	      resolveWorkflowFromSources(root, 'deep-research')?.source ?? ''
+	    expect(deepResearchSource).toContain("name: 'deep-research'")
+	    expect(deepResearchSource).toContain('CLAIM_VOTE_SCHEMA')
+	    expect(deepResearchSource).toContain('Vote claim ')
+	    expect(deepResearchSource).toContain('supportedVotes.length >= 2')
+	    expect(deepResearchSource).toContain(
+	      'exclude claims that did not pass majority support',
+	    )
+	    const parsed = extractMeta(deepResearchSource)
+	    expect(parsed.meta.phases?.map(phase => phase.title)).toContain(
+	      'Cross-check claims',
+	    )
+	    expect(checkWorkflowScriptSyntax(parsed.scriptBody)).toEqual({ ok: true })
+	    expect(resolveWorkflowFromSources(root, 'project-scan')).toBeNull()
 
     const deepResearchCommand = loadWorkflowCommandsFromSources(root).find(
       c => c.name === 'deep-research',

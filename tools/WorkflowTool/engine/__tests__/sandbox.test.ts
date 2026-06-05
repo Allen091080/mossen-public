@@ -172,6 +172,21 @@ describe('runSandbox — blocked surface', () => {
     ).rejects.toThrow(WorkflowScriptError)
   })
 
+  test('forbidden words inside strings do not trigger module-syntax rejection', async () => {
+    const out = await runSandbox({
+      ...base,
+      source: `return [
+        'important claims require evidence',
+        'do not eval guesses',
+        'literal import("fs") text',
+      ].join(' | ')`,
+    })
+
+    expect(out).toBe(
+      'important claims require evidence | do not eval guesses | literal import("fs") text',
+    )
+  })
+
   test('syntax error surfaces as WorkflowScriptError', async () => {
     await expect(
       runSandbox({ ...base, source: `return (((` }),

@@ -11,14 +11,14 @@ const DEEP_RESEARCH_SOURCE = `export const meta = {
   name: 'deep-research',
   description: 'Investigate a question across multiple search angles, cross-check claims, and return a cited report.',
   whenToUse: 'Use for research questions that need broad web coverage, source reading, and claim verification before synthesis.',
-  phases: [
-    { title: 'Plan searches', detail: 'Break the question into distinct search angles and source types.' },
-    { title: 'Search web', detail: 'Run independent web searches across the planned angles.' },
-    { title: 'Read sources', detail: 'Fetch and summarize the strongest sources found.' },
-    { title: 'Cross-check claims', detail: 'Verify claims against cited sources and note conflicts.' },
-    { title: 'Synthesize report', detail: 'Write a concise answer with source-backed citations.' },
-  ],
-}
+	  phases: [
+	    { title: 'Plan searches', detail: 'Break the question into distinct search angles and source types.' },
+	    { title: 'Search web', detail: 'Run independent web searches across the planned angles.' },
+	    { title: 'Read sources', detail: 'Fetch and summarize the strongest sources found.' },
+	    { title: 'Cross-check claims', detail: 'Vote on each candidate claim against cited sources and note conflicts.' },
+	    { title: 'Synthesize report', detail: 'Write a concise answer with source-backed citations.' },
+	  ],
+	}
 
 const question =
   typeof args === 'string'
@@ -96,29 +96,39 @@ const SOURCE_NOTES_SCHEMA = {
       },
     },
   },
-}
+	}
 
-const VERIFICATION_SCHEMA = {
-  type: 'object',
-  required: ['supportedClaims', 'weakClaims', 'conflicts'],
-  additionalProperties: false,
-  properties: {
-    supportedClaims: {
-      type: 'array',
-      items: {
-        type: 'object',
-        required: ['claim', 'citations'],
-        additionalProperties: false,
-        properties: {
-          claim: { type: 'string' },
-          citations: { type: 'array', items: { type: 'string' } },
-        },
-      },
-    },
-    weakClaims: { type: 'array', items: { type: 'string' } },
-    conflicts: { type: 'array', items: { type: 'string' } },
-  },
-}
+	const CLAIM_VOTE_SCHEMA = {
+	  type: 'object',
+	  required: ['supported', 'citations', 'reason'],
+	  additionalProperties: false,
+	  properties: {
+	    supported: { type: 'boolean' },
+	    citations: { type: 'array', items: { type: 'string' } },
+	    reason: { type: 'string' },
+	  },
+	}
+
+	const CONFLICT_SCAN_SCHEMA = {
+	  type: 'object',
+	  required: ['conflicts'],
+	  additionalProperties: false,
+	  properties: {
+	    conflicts: {
+	      type: 'array',
+	      items: {
+	        type: 'object',
+	        required: ['claim', 'reason', 'citations'],
+	        additionalProperties: false,
+	        properties: {
+	          claim: { type: 'string' },
+	          reason: { type: 'string' },
+	          citations: { type: 'array', items: { type: 'string' } },
+	        },
+	      },
+	    },
+	  },
+	}
 
 phase('Plan searches')
 const plan = await agent(
@@ -180,25 +190,104 @@ const sourceNotes = await parallel(
 )
 
 const sources = sourceNotes.flatMap(note => note?.sources ?? [])
-if (sources.length === 0) {
-  throw new Error('deep-research could not extract source notes.')
-}
+	if (sources.length === 0) {
+	  throw new Error('deep-research could not extract source notes.')
+	}
 
-phase('Cross-check claims')
-const verification = await agent(
-  'Cross-check these source notes for the research question. Keep only source-backed claims, identify weak claims, and call out conflicts. Question: ' +
-    question +
-    '\\nSource notes JSON: ' +
-    JSON.stringify(sources),
-  { label: 'Verify claims', schema: VERIFICATION_SCHEMA },
-)
+	const claimItems = []
+	const seenClaims = new Set()
+	for (const source of sources) {
+	  for (const claim of source.claims ?? []) {
+	    const normalized = String(claim).replace(/\\s+/g, ' ').trim()
+	    if (!normalized) continue
+	    const key = normalized.toLowerCase()
+	    if (seenClaims.has(key)) continue
+	    seenClaims.add(key)
+	    claimItems.push({
+	      claim: normalized,
+	      sourceTitle: source.title,
+	      sourceUrl: source.url,
+	    })
+	  }
+	}
 
-phase('Synthesize report')
-const report = await agent(
-  'Write the final deep research report. Answer the question directly, cite source URLs inline for each important claim, exclude weak unsupported claims, and mention conflicts or uncertainty. Question: ' +
-    question +
-    '\\nVerified claims JSON: ' +
-    JSON.stringify(verification) +
+	const candidateClaims = claimItems.slice(0, 30)
+	if (candidateClaims.length === 0) {
+	  throw new Error('deep-research could not extract candidate claims to verify.')
+	}
+
+	phase('Cross-check claims')
+	const claimVotes = await parallel(
+	  candidateClaims.map((item, index) => async () => {
+	    const votes = await parallel(
+	      [0, 1, 2].map(voter => () =>
+	        agent(
+	          'Vote independently on whether this claim is directly supported by the source notes for the research question. Default to supported=false if the source notes are ambiguous or only indirectly related. Question: ' +
+	            question +
+	            '\\nClaim: ' +
+	            item.claim +
+	            '\\nOriginal source URL: ' +
+	            item.sourceUrl +
+	            '\\nSource notes JSON: ' +
+	            JSON.stringify(sources),
+	          { label: 'Vote claim ' + (index + 1) + '.' + (voter + 1), schema: CLAIM_VOTE_SCHEMA },
+	        )),
+	    )
+	    const usableVotes = votes.filter(Boolean)
+	    const supportedVotes = usableVotes.filter(vote => vote.supported)
+	    const citations = Array.from(new Set(
+	      supportedVotes
+	        .flatMap(vote => Array.isArray(vote.citations) ? vote.citations : [])
+	        .filter(Boolean),
+	    ))
+	    return {
+	      claim: item.claim,
+	      sourceUrl: item.sourceUrl,
+	      votes: usableVotes,
+	      supportedVotes: supportedVotes.length,
+	      passed: supportedVotes.length >= 2,
+	      citations: citations.length ? citations : [item.sourceUrl].filter(Boolean),
+	    }
+	  }),
+	)
+
+	const supportedClaims = claimVotes
+	  .filter(vote => vote?.passed)
+	  .map(vote => ({
+	    claim: vote.claim,
+	    citations: vote.citations,
+	    supportVotes: vote.supportedVotes,
+	  }))
+	const weakClaims = claimVotes
+	  .filter(vote => vote && !vote.passed)
+	  .map(vote => ({
+	    claim: vote.claim,
+	    supportVotes: vote.supportedVotes,
+	    votes: vote.votes,
+	  }))
+	const conflictScan = await agent(
+	  'Review the source notes and voted claim outcomes for conflicts or unresolved disagreements. Report only conflicts relevant to the question. Question: ' +
+	    question +
+	    '\\nSupported claims JSON: ' +
+	    JSON.stringify(supportedClaims) +
+	    '\\nWeak claims JSON: ' +
+	    JSON.stringify(weakClaims) +
+	    '\\nSource notes JSON: ' +
+	    JSON.stringify(sources),
+	  { label: 'Find claim conflicts', schema: CONFLICT_SCAN_SCHEMA },
+	)
+	const verification = {
+	  supportedClaims,
+	  weakClaims,
+	  conflicts: conflictScan?.conflicts ?? [],
+	}
+
+	phase('Synthesize report')
+	const report = await agent(
+	  'Write the final deep research report. Answer the question directly, cite source URLs inline for each important claim, exclude claims that did not pass majority support, and mention conflicts or uncertainty. Question: ' +
+	    question +
+	    '\\nVerified claims JSON: ' +
+	    JSON.stringify(verification) +
     '\\nSource notes JSON: ' +
     JSON.stringify(sources),
   { label: 'Synthesize cited report' },

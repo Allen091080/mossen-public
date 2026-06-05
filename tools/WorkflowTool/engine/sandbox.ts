@@ -29,6 +29,7 @@
  */
 
 import vm from 'node:vm'
+import { parse } from 'acorn'
 
 export class WorkflowScriptError extends Error {
   constructor(message: string) {
@@ -87,6 +88,11 @@ const SHADOWED_GLOBALS = [
 
 export type SandboxScope = Record<string, unknown>
 
+type AstNode = {
+  type: string
+  [key: string]: unknown
+}
+
 export type RunSandboxOptions = {
   /** Workflow script body; callers must strip the leading meta declaration. */
   source: string
@@ -104,27 +110,96 @@ type WorkflowScriptSyntaxCheck =
   | { ok: true }
   | { ok: false; error: string }
 
-/** Reject module syntax before execution (workflows are self-contained). */
+function workflowImportError(): WorkflowScriptError {
+  return new WorkflowScriptError(
+    'Workflow scripts cannot use import. They run self-contained against the ' +
+      'injected engine surface (agent/parallel/pipeline/phase/log/workflow).',
+  )
+}
+
+function workflowRequireError(): WorkflowScriptError {
+  return new WorkflowScriptError(
+    'Workflow scripts cannot use require. Use the injected engine surface only.',
+  )
+}
+
+function workflowEvalError(): WorkflowScriptError {
+  return new WorkflowScriptError(
+    'Workflow scripts cannot use eval. Use the injected engine surface only.',
+  )
+}
+
+function isAstNode(value: unknown): value is AstNode {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { type?: unknown }).type === 'string'
+  )
+}
+
+function walkAst(node: AstNode, visit: (node: AstNode) => void): void {
+  visit(node)
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'type' || key === 'start' || key === 'end' || key === 'loc') {
+      continue
+    }
+    if (Array.isArray(value)) {
+      for (const child of value) {
+        if (isAstNode(child)) walkAst(child, visit)
+      }
+      continue
+    }
+    if (isAstNode(value)) walkAst(value, visit)
+  }
+}
+
+function parseForForbiddenSyntax(source: string): AstNode | null {
+  try {
+    return parse(wrappedWorkflowSource(source), {
+      ecmaVersion: 'latest',
+      sourceType: 'script',
+    }) as unknown as AstNode
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    // Static import declarations are invalid inside the wrapped async function.
+    // Preserve the workflow-specific error instead of falling through to a generic
+    // parse error when the parser can identify an import token.
+    if (/\bimport\b/i.test(message)) throw workflowImportError()
+    return null
+  }
+}
+
+/** Reject module/eval syntax before execution (workflows are self-contained). */
 function rejectModuleSyntax(source: string): void {
-  // `import x from` / `import(` / bare `import '...'`
-  if (/(^|[^.\w])import\s*[({'"\w*]/.test(source)) {
-    throw new WorkflowScriptError(
-      'Workflow scripts cannot use import. They run self-contained against the ' +
-        'injected engine surface (agent/parallel/pipeline/phase/log/workflow).',
-    )
-  }
-  if (/(^|[^.\w])require\s*\(/.test(source)) {
-    throw new WorkflowScriptError(
-      'Workflow scripts cannot use require. Use the injected engine surface only.',
-    )
-  }
-  // `eval` / `arguments` can't be shadowed as strict-mode params, so reject the
-  // identifiers statically (member accesses like `obj.eval` are left alone).
-  if (/(^|[^.\w])eval\s*\(/.test(source)) {
-    throw new WorkflowScriptError(
-      'Workflow scripts cannot use eval. Use the injected engine surface only.',
-    )
-  }
+  const program = parseForForbiddenSyntax(source)
+  if (!program) return
+
+  walkAst(program, node => {
+    if (
+      node.type === 'ImportDeclaration' ||
+      node.type === 'ExportAllDeclaration' ||
+      node.type === 'ExportDefaultDeclaration' ||
+      node.type === 'ExportNamedDeclaration' ||
+      node.type === 'ImportExpression'
+    ) {
+      throw workflowImportError()
+    }
+    if (
+      node.type === 'MetaProperty' &&
+      isAstNode(node.meta) &&
+      node.meta.name === 'import'
+    ) {
+      throw workflowImportError()
+    }
+    if (
+      node.type === 'CallExpression' &&
+      isAstNode(node.callee) &&
+      node.callee.type === 'Identifier'
+    ) {
+      if (node.callee.name === 'require') throw workflowRequireError()
+      if (node.callee.name === 'eval') throw workflowEvalError()
+    }
+  })
 }
 
 const DETERMINISTIC_GUARDS = `
