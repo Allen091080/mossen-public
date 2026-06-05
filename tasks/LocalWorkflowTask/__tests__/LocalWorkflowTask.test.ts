@@ -604,6 +604,7 @@ describe('LocalWorkflowTask pause/resume controls', () => {
       agentCount: 2,
       totalToolCalls: 7,
       tokensSpent: 345,
+      result: 'final <answer> & done',
     })
 
     const task = state.tasks[runId] as LocalWorkflowTaskState
@@ -617,7 +618,13 @@ describe('LocalWorkflowTask pause/resume controls', () => {
     expect(task.agentCount).toBe(2)
     expect(task.totalToolCalls).toBe(7)
     expect(task.tokensSpent).toBe(345)
+    expect(task.result).toBe('final <answer> & done')
     expect(isWorkflowTaskPaused(runId)).toBe(false)
+
+    const notification = dequeueAll()[0]?.value
+    expect(notification).toContain(
+      '<result>final &lt;answer&gt; &amp; done</result>',
+    )
   })
 
   test('failWorkflowTask records error and recovery metadata', () => {

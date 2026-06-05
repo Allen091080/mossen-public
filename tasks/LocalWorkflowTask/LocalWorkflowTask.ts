@@ -27,6 +27,7 @@ import {
 } from '../../utils/task/diskOutput.js'
 import { registerTask, updateTaskState } from '../../utils/task/framework.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
+import { escapeXml } from '../../utils/xml.js'
 
 export type WorkflowAgentTaskProgress = {
   agentNumber: number
@@ -80,6 +81,7 @@ export type LocalWorkflowTaskState = TaskStateBase & {
   tokensSpent: number
   failures?: string[]
   durationMs?: number
+  result?: string
   currentPhase?: string
   phases: string[]
   workflowProgress: SdkWorkflowProgress[]
@@ -117,6 +119,7 @@ type WorkflowTaskFinishPatch = {
   tokensSpent?: number
   failures?: string[]
   durationMs?: number
+  result?: string
   error?: string
 }
 
@@ -472,6 +475,10 @@ function enqueueWorkflowNotification(
     : ''
   const usage = `\n<usage><total_tokens>${task.tokensSpent}</total_tokens><tool_uses>${task.totalToolCalls}</tool_uses></usage>`
   const reason = task.error ? `\n<reason>${task.error}</reason>` : ''
+  const result =
+    status === 'completed' && task.result !== undefined
+      ? `\n<result>${escapeXml(task.result)}</result>`
+      : ''
   const recoveryItems =
     status === 'failed' || status === 'killed'
       ? [
@@ -488,7 +495,7 @@ function enqueueWorkflowNotification(
 <${TASK_TYPE_TAG}>${task.type}</${TASK_TYPE_TAG}>
 <${OUTPUT_FILE_TAG}>${getTaskOutputPath(task.id)}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
-<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${reason}${usage}${recovery}
+<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${reason}${result}${usage}${recovery}
 </${TASK_NOTIFICATION_TAG}>`
   enqueuePendingNotification({ value: message, mode: 'task-notification' })
 }

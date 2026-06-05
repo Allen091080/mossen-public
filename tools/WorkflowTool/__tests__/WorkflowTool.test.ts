@@ -31,7 +31,11 @@ import {
 import { WORKFLOW_TOOL_NAME } from '../constants.js'
 import { loadRunLog, loadRunMeta } from '../engine/journalStore.js'
 import { getProjectWorkflowsDir } from '../savedWorkflows.js'
-import { killWorkflowTask } from '../../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import {
+  killWorkflowTask,
+  type LocalWorkflowTaskState,
+} from '../../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { dequeueAll } from '../../../utils/messageQueueManager.js'
 import { resetSettingsCache } from '../../../utils/settings/settingsCache.js'
 import {
   recordWorkflowUsageConsent,
@@ -105,6 +109,18 @@ async function waitForRunMetaStatus(
     await new Promise(resolve => setTimeout(resolve, 5))
   }
   return loadRunMeta(runId)?.status
+}
+
+async function waitForTaskStatus(
+  getTask: () => LocalWorkflowTaskState | undefined,
+  status: string,
+): Promise<LocalWorkflowTaskState | undefined> {
+  for (let i = 0; i < 25; i++) {
+    const task = getTask()
+    if (task?.status === status) return task
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  return getTask()
 }
 
 // Regression for the Ink crash seen in real use: renderToolResultMessage used
@@ -351,6 +367,62 @@ return 'ok'
       description: 'Headless workflow launch',
       isBackgrounded: true,
     })
+  })
+})
+
+describe('WorkflowTool final result delivery', () => {
+  it('returns the workflow top-level value to the current session notification', async () => {
+    dequeueAll()
+    let state = {
+      tasks: {},
+      toolPermissionContext: getEmptyToolPermissionContext(),
+    } as unknown as AppState
+    const setAppState = (updater: (prev: AppState) => AppState) => {
+      state = updater(state)
+    }
+
+    const result = await WorkflowTool.call!(
+      {
+        script: `
+export const meta = { name: 'result-flow', description: 'Result delivery flow' }
+return { answer: 42, text: 'done <ok>' }
+`,
+      },
+      {
+        abortController: new AbortController(),
+        toolUseId: 'toolu_result_wf',
+        getAppState: () => state,
+        setAppState,
+      } as unknown as ToolUseContext,
+      async () => ({ behavior: 'allow' }) as never,
+    )
+
+    expect(result.data.status).toBe('async_launched')
+    expect(await waitForRunMetaStatus(result.data.runId!, 'completed')).toBe(
+      'completed',
+    )
+    const task = await waitForTaskStatus(
+      () => state.tasks[result.data.taskId] as LocalWorkflowTaskState | undefined,
+      'completed',
+    )
+    const meta = loadRunMeta(result.data.runId!)
+    expect(meta?.result).toContain('"answer": 42')
+    expect(meta?.result).toContain('"text": "done <ok>"')
+    expect(task?.result).toBe(meta?.result)
+    const runLogText = loadRunLog(result.data.runId!).join('\n')
+    expect(runLogText).toContain('result: {')
+    expect(runLogText).toContain('"answer": 42')
+
+    const notification = dequeueAll()
+      .map(command => command.value)
+      .find(
+        value =>
+          typeof value === 'string' &&
+          value.includes(`<task-id>${result.data.taskId}</task-id>`),
+      )
+    expect(notification).toContain('<result>{')
+    expect(notification).toContain('"answer": 42')
+    expect(notification).toContain('"text": "done &lt;ok&gt;"')
   })
 })
 

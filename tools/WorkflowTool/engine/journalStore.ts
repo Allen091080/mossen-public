@@ -58,6 +58,7 @@ export type WorkflowRunMeta = {
   tokensSpent?: number
   failures?: string[]
   durationMs?: number
+  result?: string
 }
 
 /**

@@ -80,6 +80,7 @@ import {
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
 const MAX_NESTED_WORKFLOW_DEPTH = 1
 export const MAX_WORKFLOW_RESULT_LOG_LINES = 1000
+const MAX_WORKFLOW_NOTIFICATION_RESULT_CHARS = 20_000
 const RESUME_RUN_ID_PATTERN = /^wf_[a-z0-9-]{6,}$/
 
 const inputSchema = z
@@ -413,6 +414,22 @@ export function appendWorkflowResultLogLine(
   if (log.length < MAX_WORKFLOW_RESULT_LOG_LINES) {
     log.push(line)
   }
+}
+
+function formatWorkflowResultForNotification(result: unknown): string | undefined {
+  if (result === undefined) return undefined
+  let text: string
+  if (typeof result === 'string') {
+    text = result
+  } else {
+    try {
+      text = JSON.stringify(result, null, 2) ?? String(result)
+    } catch {
+      text = String(result)
+    }
+  }
+  if (text.length <= MAX_WORKFLOW_NOTIFICATION_RESULT_CHARS) return text
+  return `${text.slice(0, MAX_WORKFLOW_NOTIFICATION_RESULT_CHARS)}\n[truncated after ${MAX_WORKFLOW_NOTIFICATION_RESULT_CHARS} chars]`
 }
 
 function shouldSkipWorkflowLaunchPrompt(
@@ -922,7 +939,11 @@ export const WorkflowTool = buildTool({
     // Kick the run off detached, return a launch receipt immediately, and fire
     // a task-notification (+ persist final state) when it settles.
     void execute()
-      .then(() => {
+      .then(result => {
+        const finalResult = formatWorkflowResultForNotification(result)
+        if (finalResult !== undefined) {
+          appendWorkflowResultLogLine(log, `result: ${finalResult}`)
+        }
         saveRunLog(runId, log)
         emitCompletionMetric('completed')
         emitBundledPhaseCompletionMetrics()
@@ -933,6 +954,7 @@ export const WorkflowTool = buildTool({
           tokensSpent: budget.spent(),
           failures: failures(),
           durationMs: durationMs(),
+          result: finalResult,
         })
         completeWorkflowTask(taskId, setTaskState, {
           agentCount: agentCount(),
@@ -940,6 +962,7 @@ export const WorkflowTool = buildTool({
           tokensSpent: budget.spent(),
           failures: failures(),
           durationMs: durationMs(),
+          result: finalResult,
         })
       })
       .catch((err: unknown) => {
