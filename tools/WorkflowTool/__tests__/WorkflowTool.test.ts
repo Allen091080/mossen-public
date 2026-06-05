@@ -38,6 +38,7 @@ import { hashCall } from '../engine/journal.js'
 import {
   appendJournalEntry,
   initRunArtifacts,
+  loadJournal,
   loadRunLog,
   loadRunMeta,
 } from '../engine/journalStore.js'
@@ -135,6 +136,20 @@ async function waitForTaskStatus(
   for (let i = 0; i < 25; i++) {
     const task = getTask()
     if (task?.status === status) return task
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  return getTask()
+}
+
+async function waitForTaskAgentStatus(
+  getTask: () => LocalWorkflowTaskState | undefined,
+  agentNumber: number,
+  status: LocalWorkflowTaskState['agents'][number]['status'],
+): Promise<LocalWorkflowTaskState | undefined> {
+  for (let i = 0; i < 50; i++) {
+    const task = getTask()
+    const agent = task?.agents.find(current => current.agentNumber === agentNumber)
+    if (agent?.status === status) return task
     await new Promise(resolve => setTimeout(resolve, 5))
   }
   return getTask()
@@ -922,6 +937,170 @@ return { first, second }
         '"second": "live result for second live task"',
       )
       expect(meta?.args).toEqual({ ticket: 42 })
+    } finally {
+      setWorkflowAgentRunnerFactoryForTests(null)
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('resumes a stopped real run by replaying completed agents and running the rest live', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
+    const root = mkdtempSync(join(tmpdir(), 'wf-tool-real-stop-resume-'))
+    const sessionId =
+      '99999999-9999-4999-8999-999999999999' as ReturnType<typeof getSessionId>
+    const script = `
+export const meta = { name: 'real-stop-resume-flow', description: 'Real stop resume flow' }
+const first = await agent('first real task', { label: 'first real' })
+const second = await agent('second resumed task', { label: 'second resumed' })
+return { first, second }
+`
+    let state = {
+      tasks: {},
+      toolPermissionContext: getEmptyToolPermissionContext(),
+    } as unknown as AppState
+    const setAppState = (updater: (prev: AppState) => AppState) => {
+      state = updater(state)
+    }
+    const firstRunPrompts: string[] = []
+    const resumePrompts: string[] = []
+    let secondAgentAbortSeen = false
+
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'config')
+      setProjectRoot(root)
+      switchSession(sessionId)
+
+      setWorkflowAgentRunnerFactoryForTests(deps => async prompt => {
+        firstRunPrompts.push(prompt)
+        if (prompt === 'first real task') {
+          return {
+            value: 'first persisted result',
+            tokens: 5,
+            toolCalls: 1,
+            ok: true,
+          }
+        }
+        return new Promise((_, reject) => {
+          const signal = deps.abortController?.signal
+          const onAbort = () => {
+            secondAgentAbortSeen = true
+            reject(new Error('workflow killed during second agent'))
+          }
+          if (signal?.aborted) {
+            onAbort()
+            return
+          }
+          signal?.addEventListener('abort', onAbort, { once: true })
+        })
+      })
+
+      const firstLaunch = await WorkflowTool.call!(
+        {
+          script,
+          args: { ticket: 7 },
+        },
+        {
+          abortController: new AbortController(),
+          toolUseId: 'toolu_real_stop_resume_wf',
+          getAppState: () => state,
+          setAppState,
+        } as unknown as ToolUseContext,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(firstLaunch.data.status).toBe('async_launched')
+      const runId = firstLaunch.data.runId!
+      const taskId = firstLaunch.data.taskId
+      const runningTask = await waitForTaskAgentStatus(
+        () => state.tasks[taskId] as LocalWorkflowTaskState | undefined,
+        2,
+        'running',
+      )
+      expect(
+        runningTask?.agents.find(agent => agent.agentNumber === 1)?.status,
+      ).toBe('completed')
+      expect(
+        runningTask?.agents.find(agent => agent.agentNumber === 2)?.status,
+      ).toBe('running')
+      expect(loadJournal(runId)?.entries).toHaveLength(1)
+
+      killWorkflowTask(taskId, setAppState)
+
+      expect(await waitForRunMetaStatus(runId, 'killed')).toBe('killed')
+      expect(secondAgentAbortSeen).toBe(true)
+      expect(firstRunPrompts).toEqual(['first real task', 'second resumed task'])
+
+      setWorkflowAgentRunnerFactoryForTests(() => async prompt => {
+        resumePrompts.push(prompt)
+        return {
+          value: `live resume result for ${prompt}`,
+          tokens: 13,
+          toolCalls: 3,
+          ok: true,
+        }
+      })
+
+      const resumeLaunch = await WorkflowTool.call!(
+        {
+          scriptPath: firstLaunch.data.scriptPath,
+          resumeFromRunId: runId,
+          args: { ticket: 7 },
+        },
+        {
+          abortController: new AbortController(),
+          toolUseId: 'toolu_real_stop_resume_wf_2',
+          getAppState: () => state,
+          setAppState,
+        } as unknown as ToolUseContext,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(resumeLaunch.data.status).toBe('async_launched')
+      expect(resumeLaunch.data.runId).toBe(runId)
+      expect(resumeLaunch.data.taskId).not.toBe(taskId)
+      expect(await waitForRunMetaStatus(runId, 'completed')).toBe('completed')
+      const resumedTask = await waitForTaskStatus(
+        () =>
+          state.tasks[resumeLaunch.data.taskId] as
+            | LocalWorkflowTaskState
+            | undefined,
+        'completed',
+      )
+      expect(resumePrompts).toEqual(['second resumed task'])
+      expect(
+        resumedTask?.agents.map(agent => [agent.agentNumber, agent.status]),
+      ).toEqual([
+        [1, 'cached'],
+        [2, 'completed'],
+      ])
+      expect(resumedTask?.log).toContain('agent #1 cached: first real (5 tokens)')
+      expect(resumedTask?.log).toContain(
+        'agent #2 completed: second resumed (13 tokens)',
+      )
+      expect(loadJournal(runId)?.entries).toHaveLength(2)
+      const meta = loadRunMeta(runId)
+      expect(meta?.args).toEqual({ ticket: 7 })
+      expect(meta?.result).toContain('"first": "first persisted result"')
+      expect(meta?.result).toContain(
+        '"second": "live resume result for second resumed task"',
+      )
     } finally {
       setWorkflowAgentRunnerFactoryForTests(null)
       switchSession(priorSession, priorProjectDir)
