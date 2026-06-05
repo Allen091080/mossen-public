@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { createLimiter, defaultConcurrency } from '../concurrency.js'
+import {
+  createLimiter,
+  defaultConcurrency,
+  workflowConcurrencyForCpuCount,
+} from '../concurrency.js'
 import { parallel, pipeline } from '../orchestration.js'
 import { assertBudget, BudgetExceededError, createBudget } from '../budget.js'
 
@@ -60,6 +64,14 @@ describe('createLimiter', () => {
     const c = defaultConcurrency()
     expect(c).toBeGreaterThanOrEqual(1)
     expect(c).toBeLessThanOrEqual(16)
+  })
+
+  test('workflowConcurrencyForCpuCount mirrors the official CPU-adaptive cap', () => {
+    expect(workflowConcurrencyForCpuCount(1)).toBe(1)
+    expect(workflowConcurrencyForCpuCount(2)).toBe(1)
+    expect(workflowConcurrencyForCpuCount(4)).toBe(2)
+    expect(workflowConcurrencyForCpuCount(18)).toBe(16)
+    expect(workflowConcurrencyForCpuCount(64)).toBe(16)
   })
 })
 

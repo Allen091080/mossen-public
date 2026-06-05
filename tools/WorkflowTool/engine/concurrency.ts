@@ -11,16 +11,18 @@
 
 import { cpus } from 'os'
 
+export function workflowConcurrencyForCpuCount(cores: number): number {
+  return Math.max(1, Math.min(16, cores - 2))
+}
+
 /** Compute the default concurrency cap for this machine. */
 export function defaultConcurrency(): number {
-  let cores = 4
   try {
-    cores = cpus().length
+    return workflowConcurrencyForCpuCount(cpus().length)
   } catch {
     // os.cpus() can throw in unusual sandboxes; fall back to a safe default.
-    cores = 4
+    return workflowConcurrencyForCpuCount(4)
   }
-  return Math.max(1, Math.min(16, cores - 2))
 }
 
 export type Limiter = {
