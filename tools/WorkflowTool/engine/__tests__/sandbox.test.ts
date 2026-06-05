@@ -104,6 +104,30 @@ describe('runSandbox — blocked surface', () => {
     expect(out).toBe('undefined,undefined,undefined')
   })
 
+  test('direct filesystem and shell escape surfaces stay unavailable', async () => {
+    const out = await runSandbox({
+      ...base,
+      source: `
+        return [
+          typeof process,
+          typeof require,
+          typeof module,
+          typeof exports,
+          typeof __dirname,
+          typeof __filename,
+          typeof Bun,
+          typeof Deno,
+          typeof Buffer,
+          typeof crypto,
+          typeof performance,
+          typeof fs,
+          typeof child_process,
+        ].join(',')
+      `,
+    })
+    expect(out).toBe(Array.from({ length: 13 }, () => 'undefined').join(','))
+  })
+
   test('constructor member access is rejected before execution', async () => {
     await expect(
       runSandbox({
