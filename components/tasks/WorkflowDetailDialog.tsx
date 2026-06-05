@@ -16,6 +16,7 @@ import {
   getTaskStatusColor,
   getTaskStatusIcon,
 } from './taskStatusUtils.js'
+import { plural } from '../../utils/stringUtils.js'
 
 type Props = {
   key?: React.Key
@@ -33,6 +34,68 @@ type WorkflowDetailActionState = Pick<
   LocalWorkflowTaskState,
   'status' | 'paused'
 >
+
+type WorkflowPhaseSummaryAgent = Pick<
+  WorkflowAgentTaskProgress,
+  'phase' | 'status' | 'tokens' | 'toolCalls' | 'durationMs' | 'startedAt'
+>
+
+type WorkflowPhaseSummaryInput = {
+  phaseDefinitions?: readonly { readonly title?: unknown }[]
+  phases?: readonly unknown[]
+  agents: readonly WorkflowPhaseSummaryAgent[]
+}
+
+type WorkflowPhaseSummary = {
+  title: string
+  agentCount: number
+  statusSummary: string
+  tokens: number
+  toolCalls: number
+  elapsedMs: number
+}
+
+function agentElapsedMs(agent: WorkflowPhaseSummaryAgent): number {
+  if (typeof agent.durationMs === 'number') return Math.max(0, agent.durationMs)
+  if (!agent.startedAt) return 0
+  return Math.max(0, Date.now() - agent.startedAt)
+}
+
+function phaseStatusSummary(agents: readonly WorkflowPhaseSummaryAgent[]): string {
+  const counts = new Map<WorkflowAgentTaskProgress['status'], number>()
+  for (const agent of agents) {
+    counts.set(agent.status, (counts.get(agent.status) ?? 0) + 1)
+  }
+  return Array.from(counts.entries())
+    .map(([status, count]) => `${count} ${status}`)
+    .join(', ')
+}
+
+export function workflowPhaseSummaries(
+  workflow: WorkflowPhaseSummaryInput,
+): WorkflowPhaseSummary[] {
+  const titles: string[] = []
+  const addTitle = (title: unknown) => {
+    const value = typeof title === 'string' ? title.trim() : ''
+    if (value && !titles.includes(value)) titles.push(value)
+  }
+
+  for (const phase of workflow.phaseDefinitions ?? []) addTitle(phase.title)
+  for (const phase of workflow.phases ?? []) addTitle(phase)
+  for (const agent of workflow.agents) addTitle(agent.phase)
+
+  return titles.map(title => {
+    const agents = workflow.agents.filter(agent => agent.phase === title)
+    return {
+      title,
+      agentCount: agents.length,
+      statusSummary: phaseStatusSummary(agents),
+      tokens: agents.reduce((sum, agent) => sum + agent.tokens, 0),
+      toolCalls: agents.reduce((sum, agent) => sum + agent.toolCalls, 0),
+      elapsedMs: agents.reduce((sum, agent) => sum + agentElapsedMs(agent), 0),
+    }
+  })
+}
 
 export function canPauseWorkflowDetail(
   workflow: WorkflowDetailActionState,
@@ -138,6 +201,7 @@ export function WorkflowDetailDialog({
   const canStopWorkflow = canStopWorkflowDetail(workflow)
   const canPauseWorkflow = canPauseWorkflowDetail(workflow)
   const canResumeWorkflow = canResumeWorkflowDetail(workflow)
+  const phaseSummaries = workflowPhaseSummaries(workflow)
   const handleClose = () =>
     onDone('Workflow details dismissed', { display: 'system' })
   const handleKeyDown = (event: KeyboardEvent) => {
@@ -228,6 +292,27 @@ export function WorkflowDetailDialog({
             <Text>
               <Text bold>Current phase:</Text> {workflow.currentPhase}
             </Text>
+          ) : null}
+          {phaseSummaries.length > 0 ? (
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold dimColor>
+                Phases
+              </Text>
+              {phaseSummaries.map(phase => (
+                <Text key={phase.title} wrap="truncate-end">
+                  {phase.title}
+                  <Text dimColor>
+                    {' '}· {phase.agentCount} {plural(phase.agentCount, 'agent')}
+                    {phase.statusSummary ? ` · ${phase.statusSummary}` : ''}
+                    {' '}· {formatNumber(phase.tokens)} tokens
+                    {' '}· {formatNumber(phase.toolCalls)} tools
+                    {phase.elapsedMs > 0
+                      ? ` · ${formatDuration(phase.elapsedMs, { mostSignificantOnly: true })}`
+                      : ''}
+                  </Text>
+                </Text>
+              ))}
+            </Box>
           ) : null}
           {workflow.agents.length > 0 ? (
             <Box flexDirection="column" marginTop={1}>
