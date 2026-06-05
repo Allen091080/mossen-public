@@ -132,6 +132,12 @@ function workflowEvalError(): WorkflowScriptError {
   )
 }
 
+function workflowConstructorError(): WorkflowScriptError {
+  return new WorkflowScriptError(
+    'Workflow scripts cannot access constructor properties. Use the injected engine surface only.',
+  )
+}
+
 function isIdentifier(node: unknown, name: string): boolean {
   return isAstNode(node) && node.type === 'Identifier' && node.name === name
 }
@@ -159,6 +165,14 @@ function isNamedMember(
   return member.computed === true
     ? isLiteralString(member.property, propertyName)
     : isIdentifier(member.property, propertyName)
+}
+
+function isConstructorMemberAccess(node: unknown): boolean {
+  if (!isAstNode(node) || node.type !== 'MemberExpression') return false
+  const member = node as { property?: unknown; computed?: unknown }
+  return member.computed === true
+    ? isLiteralString(member.property, 'constructor')
+    : isIdentifier(member.property, 'constructor')
 }
 
 function isCallOfNamedMember(
@@ -260,6 +274,7 @@ function rejectModuleSyntax(source: string): void {
       if (node.callee.name === 'require') throw workflowRequireError()
       if (node.callee.name === 'eval') throw workflowEvalError()
     }
+    if (isConstructorMemberAccess(node)) throw workflowConstructorError()
   })
 }
 

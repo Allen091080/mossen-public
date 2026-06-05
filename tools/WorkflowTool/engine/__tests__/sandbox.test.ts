@@ -104,18 +104,28 @@ describe('runSandbox — blocked surface', () => {
     expect(out).toBe('undefined,undefined,undefined')
   })
 
-  test('constructor chains stay inside the VM context, not the host process', async () => {
-    const out = await runSandbox({
-      ...base,
-      source: `return [
-        Object.constructor('return typeof process')(),
-        Math.max.constructor('return typeof process')(),
-      ].join(',')`,
-    })
-    expect(out).toBe('undefined,undefined')
+  test('constructor member access is rejected before execution', async () => {
+    await expect(
+      runSandbox({
+        ...base,
+        source: `return Object.constructor('return 1')()`,
+      }),
+    ).rejects.toThrow(/constructor/)
+    await expect(
+      runSandbox({
+        ...base,
+        source: `return Math.max['constructor']('return 1')()`,
+      }),
+    ).rejects.toThrow(/constructor/)
+    await expect(
+      runSandbox({
+        ...base,
+        source: `const AsyncFunction = (async () => {}).constructor; return await AsyncFunction('return 1')()`,
+      }),
+    ).rejects.toThrow(/constructor/)
   })
 
-  test('injected host functions cannot escape through constructor chains', async () => {
+  test('injected host functions stay callable without host prototypes', async () => {
     const out = await runSandbox({
       ...base,
       scope: {
@@ -128,25 +138,18 @@ describe('runSandbox — blocked surface', () => {
       },
       source: `
         const result = await agent('task')
-        let escape = 'blocked'
-        try {
-          escape = agent.constructor.constructor('return typeof process')()
-        } catch {}
         return [
-          escape,
-          typeof agent.constructor,
+          typeof agent,
           Object.getPrototypeOf(agent) === null,
-          typeof result.constructor,
           Object.getPrototypeOf(result) === null,
           result.ok,
           budget.spent(),
-          typeof budget.spent.constructor,
           Object.getPrototypeOf(budget) === null,
         ].join(':')
       `,
     })
 
-    expect(out).toBe('blocked:undefined:true:undefined:true:true:0:undefined:true')
+    expect(out).toBe('function:true:true:true:0:true')
   })
 
   test('eval is rejected before execution', async () => {
@@ -155,7 +158,7 @@ describe('runSandbox — blocked surface', () => {
     ).rejects.toThrow(/eval/)
   })
 
-  test('eval aliases and constructor lookups stay unavailable at runtime', async () => {
+  test('eval aliases stay unavailable at runtime', async () => {
     const out = await runSandbox({
       ...base,
       source: `
@@ -166,15 +169,11 @@ describe('runSandbox — blocked surface', () => {
         } catch (err) {
           alias = err instanceof TypeError ? 'typeerror' : 'error'
         }
-        return JSON.stringify([
-          alias,
-          Object.constructor('return typeof eval')(),
-          Object.constructor('return eval')() === undefined,
-        ])
+        return alias
       `,
     })
 
-    expect(JSON.parse(out as string)).toEqual(['undefined', 'undefined', true])
+    expect(out).toBe('undefined')
   })
 
   test('import syntax is rejected before execution', async () => {
