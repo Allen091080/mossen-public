@@ -14,6 +14,7 @@ import { getTaskOutputPath } from '../../../utils/task/diskOutput.js'
 import { buildWorkflowResumeNextInput, call } from '../workflows.js'
 import { deriveWorkflowSaveName, saveRun } from '../saveWorkflow.js'
 import {
+  recentToolCallLines,
   shouldRouteWorkflowAgentControl,
   shouldShowRunLevelAgents,
   sumAgentElapsedMs,
@@ -82,6 +83,10 @@ function runningWorkflowTask(params: {
         promptPreview: 'Inspect workflow routing and report the important files.',
         lastToolName: 'Read',
         lastToolSummary: 'commands/workflows/workflows.tsx',
+        recentToolCalls: [
+          { name: 'Glob', summary: 'commands/workflows/*.tsx' },
+          { name: 'Read', summary: 'commands/workflows/workflows.tsx' },
+        ],
         resultPreview: 'Found the command detail renderer.',
       },
       {
@@ -264,6 +269,18 @@ return 'ok'
     expect(sumAgentElapsedMs(agents)).toBe(4600)
   })
 
+  test('interactive agent detail renders recent tool calls in order', () => {
+    const agent = runningWorkflowTask({
+      taskId: 'wtaskcmd_recent_tools',
+      runId: 'wf_cmd_recent_tools',
+    }).agents[0]!
+
+    expect(recentToolCallLines(agent)).toEqual([
+      'Tool 1: Glob commands/workflows/*.tsx',
+      'Tool 2: Read commands/workflows/workflows.tsx',
+    ])
+  })
+
   test('queues an official-shaped Workflow tool call with scriptPath, resumeFromRunId, and args', () => {
     const nextInput = buildWorkflowResumeNextInput(
       'wf_resume1',
@@ -353,6 +370,7 @@ return 'ok'
     expect(message).toContain(
       'Prompt: Inspect workflow routing and report the important files.',
     )
+    expect(message).toContain('Glob commands/workflows/*.tsx')
     expect(message).toContain('Read commands/workflows/workflows.tsx')
     expect(message).toContain('Found the command detail renderer.')
     expect(message).toContain(`/workflows restart-agent ${runId} 1`)

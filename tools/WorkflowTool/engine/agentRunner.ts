@@ -57,6 +57,7 @@ import type {
   AgentCallOptions,
   AgentRunResult,
   WorkflowAgentProgressUpdate,
+  WorkflowRecentToolCall,
 } from './types.js'
 import {
   WORKFLOW_AGENT_RETRY_ABORT_REASON,
@@ -68,6 +69,7 @@ import type { RunOneAgent } from './runtime.js'
 /** How many times to re-prompt an agent whose output fails schema validation. */
 export const MAX_SCHEMA_RETRIES = 2
 export const DEFAULT_REMOTE_AGENT_TIMEOUT_MS = 30 * 60 * 1000
+const MAX_RECENT_WORKFLOW_TOOL_CALLS = 5
 export const DEFAULT_REMOTE_AGENT_POLL_INTERVAL_MS = 5 * 1000
 export const DEFAULT_LOCAL_AGENT_STALL_TIMEOUT_MS = 60 * 1000
 
@@ -251,7 +253,11 @@ function messageUsage(message: Message): unknown {
 
 function workflowProgressFromMessage(
   message: Message,
-  prior: { tokens: number; toolCalls: number },
+  prior: {
+    tokens: number
+    toolCalls: number
+    recentToolCalls: WorkflowRecentToolCall[]
+  },
 ): WorkflowAgentProgressUpdate | null {
   if ((message as { type?: unknown }).type !== 'assistant') return null
   const content = messageContent(message)
@@ -260,20 +266,35 @@ function workflowProgressFromMessage(
 
   let lastToolName: string | undefined
   let lastToolSummary: string | undefined
+  const toolCallUpdates: WorkflowRecentToolCall[] = []
   let toolUses = 0
   if (Array.isArray(content)) {
     for (const block of content) {
       const record = asRecord(block)
       if (record?.type !== 'tool_use') continue
       toolUses++
+      let toolName: string | undefined
       if (typeof record.name === 'string' && record.name.trim()) {
-        lastToolName = record.name
+        toolName = record.name
+        lastToolName = toolName
       }
       const summary = summarizeToolInput(record.input)
       if (summary) lastToolSummary = summary
+      if (toolName) {
+        toolCallUpdates.push({
+          name: toolName,
+          ...(summary ? { summary } : {}),
+        })
+      }
     }
   }
   prior.toolCalls += toolUses
+  if (toolCallUpdates.length > 0) {
+    prior.recentToolCalls = [
+      ...prior.recentToolCalls,
+      ...toolCallUpdates,
+    ].slice(-MAX_RECENT_WORKFLOW_TOOL_CALLS)
+  }
 
   const resultPreview = stripLiteralThinking(
     extractTextContent(content, '\n'),
@@ -282,6 +303,7 @@ function workflowProgressFromMessage(
     prior.tokens === 0 &&
     prior.toolCalls === 0 &&
     !lastToolName &&
+    prior.recentToolCalls.length === 0 &&
     !resultPreview
   ) {
     return null
@@ -291,6 +313,9 @@ function workflowProgressFromMessage(
     ...(prior.toolCalls > 0 ? { toolCalls: prior.toolCalls } : {}),
     ...(lastToolName ? { lastToolName } : {}),
     ...(lastToolSummary ? { lastToolSummary } : {}),
+    ...(prior.recentToolCalls.length > 0
+      ? { recentToolCalls: prior.recentToolCalls }
+      : {}),
     ...(resultPreview ? { resultPreview: compactWorkflowText(resultPreview) } : {}),
   }
 }
@@ -970,7 +995,11 @@ export function createWorkflowAgentRunner(
     const agentId = createAgentId()
     const promptMessages: Message[] = [createUserMessage({ content: promptText })]
     const messages: Message[] = []
-    const liveProgressTotals = { tokens: 0, toolCalls: 0 }
+    const liveProgressTotals = {
+      tokens: 0,
+      toolCalls: 0,
+      recentToolCalls: [] as WorkflowRecentToolCall[],
+    }
     const stallWatch = createStallWatch(agentAbortController)
     const run = () =>
       runAgentImpl({

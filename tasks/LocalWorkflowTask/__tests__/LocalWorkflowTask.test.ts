@@ -252,6 +252,10 @@ describe('LocalWorkflowTask pause/resume controls', () => {
           isolation: 'worktree',
           lastToolName: 'Read',
           lastToolSummary: 'src/index.ts',
+          recentToolCalls: [
+            { name: 'Glob', summary: 'src/**/*.ts' },
+            { name: 'Read', summary: 'src/index.ts' },
+          ],
         },
         setAppState,
       )
@@ -352,6 +356,10 @@ describe('LocalWorkflowTask pause/resume controls', () => {
         isolation: 'worktree',
         lastToolName: 'Read',
         lastToolSummary: 'src/index.ts',
+        recentToolCalls: [
+          { name: 'Glob', summary: 'src/**/*.ts' },
+          { name: 'Read', summary: 'src/index.ts' },
+        ],
       }
       const doneUpdate = {
         type: 'workflow_agent',
@@ -379,6 +387,10 @@ describe('LocalWorkflowTask pause/resume controls', () => {
       expect(progressEvents[4]?.usage.total_tokens).toBe(25)
       expect(progressEvents[4]?.usage.tool_uses).toBe(2)
       const task = state.tasks[runId] as LocalWorkflowTaskState
+      expect(task.agents[0]?.recentToolCalls).toEqual([
+        { name: 'Glob', summary: 'src/**/*.ts' },
+        { name: 'Read', summary: 'src/index.ts' },
+      ])
       expect(task.workflowProgress).toEqual([
         {
           type: 'workflow_phase',

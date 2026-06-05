@@ -16,6 +16,7 @@ import {
   type WorkflowAgentControlAction,
   type WorkflowPhaseMeta,
   type WorkflowProgressEvent,
+  type WorkflowRecentToolCall,
 } from '../../tools/WorkflowTool/engine/types.js'
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
 import {
@@ -53,6 +54,7 @@ export type WorkflowAgentTaskProgress = {
   lastAttemptReason?: string
   lastToolName?: string
   lastToolSummary?: string
+  recentToolCalls?: WorkflowRecentToolCall[]
   resultPreview?: string
   error?: string
 }
@@ -211,6 +213,8 @@ function progressLine(event: WorkflowProgressEvent): string {
       return `agent #${event.agentNumber} started: ${event.label}`
     case 'agent_progress': {
       const detail = event.lastToolSummary ?? event.lastToolName
+        ?? event.recentToolCalls?.at(-1)?.summary
+        ?? event.recentToolCalls?.at(-1)?.name
       return detail
         ? `agent #${event.agentNumber} progress: ${event.label} (${detail})`
         : `agent #${event.agentNumber} progress: ${event.label}`
@@ -385,6 +389,9 @@ function workflowAgentProgressMetadata(
       : {}),
     ...(event.lastToolName ? { lastToolName: event.lastToolName } : {}),
     ...(event.lastToolSummary ? { lastToolSummary: event.lastToolSummary } : {}),
+    ...(event.recentToolCalls?.length
+      ? { recentToolCalls: event.recentToolCalls }
+      : {}),
     ...(event.resultPreview ? { resultPreview: event.resultPreview } : {}),
   }
   }
@@ -651,7 +658,12 @@ export function updateWorkflowTaskProgress(
             toolCalls,
             ...workflowAgentProgressMetadata(event),
           }),
-          summary: event.lastToolSummary ?? event.lastToolName ?? event.label,
+          summary:
+            event.lastToolSummary ??
+            event.lastToolName ??
+            event.recentToolCalls?.at(-1)?.summary ??
+            event.recentToolCalls?.at(-1)?.name ??
+            event.label,
           ...logState,
         }, event)
         workflowProgressForEvent = progressed.workflowProgress

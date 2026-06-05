@@ -121,6 +121,25 @@ function phaseTitlesForTask(task: WorkflowTaskSnapshot): string[] {
   return titles
 }
 
+function recentToolCalls(
+  agent: WorkflowAgentSnapshot,
+): Array<{ name: string; summary?: string }> {
+  return agent.recentToolCalls?.length
+    ? agent.recentToolCalls
+    : agent.lastToolName
+      ? [
+          {
+            name: agent.lastToolName,
+            ...(agent.lastToolSummary ? { summary: agent.lastToolSummary } : {}),
+          },
+        ]
+      : []
+}
+
+function formatToolCall(tool: { name: string; summary?: string }): string {
+  return `${tool.name}${tool.summary ? ` ${tool.summary}` : ''}`
+}
+
 function agentLine(agent: WorkflowAgentSnapshot, now = Date.now()): string {
   const parts = [
     `#${agent.agentNumber ?? '?'} ${agent.phase ? `[${agent.phase}] ` : ''}${agent.label ?? 'agent'}`,
@@ -131,8 +150,8 @@ function agentLine(agent: WorkflowAgentSnapshot, now = Date.now()): string {
   const elapsed = agentElapsedMs(agent, now)
   if (elapsed > 0) parts.push(formatDuration(elapsed, { mostSignificantOnly: true }))
   const tool = compact(
-    agent.lastToolName
-      ? `${agent.lastToolName}${agent.lastToolSummary ? ` ${agent.lastToolSummary}` : ''}`
+    recentToolCalls(agent).at(-1)
+      ? formatToolCall(recentToolCalls(agent).at(-1)!)
       : null,
     80,
   )
@@ -290,9 +309,9 @@ function renderAgentDetail(
     compact(agent.promptPreview)
       ? `${t('cmd.workflows.prompt')}: ${compact(agent.promptPreview)}`
       : null,
-    agent.lastToolName
-      ? `${t('cmd.workflows.lastTool')}: ${compact(`${agent.lastToolName}${agent.lastToolSummary ? ` ${agent.lastToolSummary}` : ''}`)}`
-      : null,
+    ...recentToolCalls(agent).map((tool, index, tools) =>
+      `${t('cmd.workflows.lastTool')}${tools.length > 1 ? ` ${index + 1}` : ''}: ${compact(formatToolCall(tool))}`,
+    ),
     compact(agent.resultPreview)
       ? `${t('cmd.workflows.result')}: ${compact(agent.resultPreview)}`
       : null,

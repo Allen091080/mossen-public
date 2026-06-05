@@ -71,6 +71,23 @@ function phaseStatusSummary(agents: readonly WorkflowPhaseSummaryAgent[]): strin
     .join(', ')
 }
 
+function latestToolCallLabel(
+  agent: DeepImmutable<WorkflowAgentTaskProgress>,
+): string | null {
+  const recent = agent.recentToolCalls?.length
+    ? agent.recentToolCalls
+    : agent.lastToolName
+      ? [
+          {
+            name: agent.lastToolName,
+            ...(agent.lastToolSummary ? { summary: agent.lastToolSummary } : {}),
+          },
+        ]
+      : []
+  const latest = recent.at(-1)
+  return latest ? `${latest.name}${latest.summary ? ` ${latest.summary}` : ''}` : null
+}
+
 export function workflowPhaseSummaries(
   workflow: WorkflowPhaseSummaryInput,
 ): WorkflowPhaseSummary[] {
@@ -141,6 +158,7 @@ function AgentRow({
   key?: React.Key
   agent: DeepImmutable<WorkflowAgentTaskProgress>
 }): React.ReactNode {
+  const latestTool = latestToolCallLabel(agent)
   return (
     <Text wrap="truncate-end">
       #{agent.agentNumber} {agent.phase ? `[${agent.phase}] ` : ''}
@@ -155,13 +173,7 @@ function AgentRow({
         {agent.toolCalls > 0 ? (
           <Text dimColor> · {formatNumber(agent.toolCalls)} tools</Text>
         ) : null}
-        {agent.lastToolName ? (
-          <Text dimColor>
-            {' '}
-            · {agent.lastToolName}
-            {agent.lastToolSummary ? ` ${agent.lastToolSummary}` : ''}
-          </Text>
-        ) : null}
+        {latestTool ? <Text dimColor> · {latestTool}</Text> : null}
         {agent.resultPreview ? (
           <Text dimColor> · {agent.resultPreview}</Text>
         ) : null}

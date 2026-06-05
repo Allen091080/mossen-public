@@ -87,7 +87,7 @@ describe('runtime.agent', () => {
     expect(rt.agentCount()).toBe(1)
   })
 
-	  test('emits agent_queued, agent_start, then agent_end', async () => {
+  test('emits agent_queued, agent_start, then agent_end', async () => {
     const { rt, events } = harness(okAgent())
     const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
     await agent('task\nwith spacing', {
@@ -115,47 +115,55 @@ describe('runtime.agent', () => {
     expect((events[2] as AgentEndEvent).ok).toBe(true)
     expect((events[2] as AgentEndEvent).tokens).toBe(10)
     expect((events[2] as AgentEndEvent).model).toBe('workflow-model')
-	    expect(typeof (events[2] as AgentEndEvent).lastProgressAt).toBe('number')
-	  })
+    expect(typeof (events[2] as AgentEndEvent).lastProgressAt).toBe('number')
+  })
 
-	  test('relays live agent progress with official tool metadata', async () => {
-	    const { rt, events } = harness(async (_prompt, _opts, meta) => {
-	      meta.onProgress?.({
-	        tokens: 7,
-	        toolCalls: 1,
-	        lastToolName: 'Read',
-	        lastToolSummary: 'src/index.ts',
-	      })
-	      return { value: 'agent finished', tokens: 11, toolCalls: 1, ok: true }
-	    })
-	    const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
+  test('relays live agent progress with official tool metadata', async () => {
+    const { rt, events } = harness(async (_prompt, _opts, meta) => {
+      meta.onProgress?.({
+        tokens: 7,
+        toolCalls: 1,
+        lastToolName: 'Read',
+        lastToolSummary: 'src/index.ts',
+        recentToolCalls: [
+          { name: 'Glob', summary: 'src/**/*.ts' },
+          { name: 'Read', summary: 'src/index.ts' },
+        ],
+      })
+      return { value: 'agent finished', tokens: 11, toolCalls: 1, ok: true }
+    })
+    const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
 
-	    expect(await agent('inspect repo', { label: 'Inspect' })).toBe(
-	      'agent finished',
-	    )
+    expect(await agent('inspect repo', { label: 'Inspect' })).toBe(
+      'agent finished',
+    )
 
-	    expect(events.map(e => e.kind)).toEqual([
-	      'agent_queued',
-	      'agent_start',
-	      'agent_progress',
-	      'agent_end',
-	    ])
-	    expect(events[2]).toMatchObject({
-	      kind: 'agent_progress',
-	      label: 'Inspect',
-	      tokens: 7,
-	      toolCalls: 1,
-	      lastToolName: 'Read',
-	      lastToolSummary: 'src/index.ts',
-	    })
-	    expect(typeof (events[2] as AgentProgressEvent).lastProgressAt).toBe(
-	      'number',
-	    )
-	    expect(events[3]).toMatchObject({
-	      kind: 'agent_end',
-	      resultPreview: 'agent finished',
-	    })
-	  })
+    expect(events.map(e => e.kind)).toEqual([
+      'agent_queued',
+      'agent_start',
+      'agent_progress',
+      'agent_end',
+    ])
+    expect(events[2]).toMatchObject({
+      kind: 'agent_progress',
+      label: 'Inspect',
+      tokens: 7,
+      toolCalls: 1,
+      lastToolName: 'Read',
+      lastToolSummary: 'src/index.ts',
+      recentToolCalls: [
+        { name: 'Glob', summary: 'src/**/*.ts' },
+        { name: 'Read', summary: 'src/index.ts' },
+      ],
+    })
+    expect(typeof (events[2] as AgentProgressEvent).lastProgressAt).toBe(
+      'number',
+    )
+    expect(events[3]).toMatchObject({
+      kind: 'agent_end',
+      resultPreview: 'agent finished',
+    })
+  })
 
   test('tracks live tool calls separately from agent count', async () => {
     const { rt, events } = harness(async () => ({

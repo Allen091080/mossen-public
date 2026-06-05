@@ -16,6 +16,11 @@ export type WorkflowPhaseMeta = {
 
 export type WorkflowPhaseInput = string | WorkflowPhaseMeta
 
+export type WorkflowRecentToolCall = {
+  name: string
+  summary?: string
+}
+
 /** The `export const meta = {...}` literal at the top of every workflow. */
 export type WorkflowMeta = {
   name: string
@@ -49,6 +54,7 @@ export type WorkflowAgentProgressMeta = {
   lastAttemptReason?: string
   lastToolName?: string
   lastToolSummary?: string
+  recentToolCalls?: WorkflowRecentToolCall[]
   resultPreview?: string
 }
 
@@ -57,6 +63,7 @@ export type WorkflowAgentProgressUpdate = {
   toolCalls?: number
   lastToolName?: string
   lastToolSummary?: string
+  recentToolCalls?: WorkflowRecentToolCall[]
   resultPreview?: string
 }
 

@@ -495,6 +495,9 @@ export function createWorkflowRuntime(
                   ...(update.lastToolSummary
                     ? { lastToolSummary: update.lastToolSummary }
                     : {}),
+                  ...(update.recentToolCalls?.length
+                    ? { recentToolCalls: update.recentToolCalls }
+                    : {}),
                   ...(update.resultPreview
                     ? { resultPreview: update.resultPreview }
                     : {}),

@@ -240,6 +240,7 @@ describe('workflow local agent resolution', () => {
       toolCalls?: number
       lastToolName?: string
       lastToolSummary?: string
+      recentToolCalls?: Array<{ name: string; summary?: string }>
       resultPreview?: string
     }> = []
     const runAgentImpl: NonNullable<
@@ -254,6 +255,12 @@ describe('workflow local agent resolution', () => {
               id: 'toolu_1',
               name: 'Read',
               input: { file_path: 'src/index.ts' },
+            },
+            {
+              type: 'tool_use',
+              id: 'toolu_2',
+              name: 'Bash',
+              input: { command: 'npm test' },
             },
           ],
           usage: {
@@ -295,19 +302,27 @@ describe('workflow local agent resolution', () => {
 
     expect(updates[0]).toMatchObject({
       tokens: 12,
-      toolCalls: 1,
-      lastToolName: 'Read',
-      lastToolSummary: 'src/index.ts',
+      toolCalls: 2,
+      lastToolName: 'Bash',
+      lastToolSummary: 'npm test',
+      recentToolCalls: [
+        { name: 'Read', summary: 'src/index.ts' },
+        { name: 'Bash', summary: 'npm test' },
+      ],
     })
     expect(updates.at(-1)).toMatchObject({
       tokens: 17,
-      toolCalls: 1,
+      toolCalls: 2,
+      recentToolCalls: [
+        { name: 'Read', summary: 'src/index.ts' },
+        { name: 'Bash', summary: 'npm test' },
+      ],
       resultPreview: 'finished inspection',
     })
     expect(result).toMatchObject({
       value: 'finished inspection',
       tokens: 17,
-      toolCalls: 1,
+      toolCalls: 2,
       ok: true,
     })
   })

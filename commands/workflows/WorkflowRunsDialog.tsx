@@ -163,6 +163,23 @@ function statusSummary(agents: readonly WorkflowAgentTaskProgress[]): string {
     .join(', ')
 }
 
+export function recentToolCallLines(agent: WorkflowAgentTaskProgress): string[] {
+  const recent = agent.recentToolCalls?.length
+    ? agent.recentToolCalls
+    : agent.lastToolName
+      ? [
+          {
+            name: agent.lastToolName,
+            ...(agent.lastToolSummary ? { summary: agent.lastToolSummary } : {}),
+          },
+        ]
+      : []
+  return recent.map((tool, index) => {
+    const label = recent.length > 1 ? `Tool ${index + 1}` : 'Tool'
+    return `${label}: ${tool.name}${tool.summary ? ` ${tool.summary}` : ''}`
+  })
+}
+
 function findRun(items: readonly WorkflowRunItem[], runId: string): WorkflowRunItem | null {
   return items.find(item => item.runId === runId || item.id === runId) ?? null
 }
@@ -623,9 +640,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
           </Text>
           {[
             currentAgent.promptPreview ? `Prompt: ${currentAgent.promptPreview}` : null,
-            currentAgent.lastToolName
-              ? `Tool: ${currentAgent.lastToolName}${currentAgent.lastToolSummary ? ` ${currentAgent.lastToolSummary}` : ''}`
-              : null,
+            ...recentToolCallLines(currentAgent),
             currentAgent.resultPreview ? `Result: ${currentAgent.resultPreview}` : null,
             currentAgent.error ? `Error: ${currentAgent.error}` : null,
           ]
