@@ -24,8 +24,8 @@ type Props = {
   onKill?: () => void
   onPause?: () => void
   onResume?: () => void
-  onSkipAgent?: (agentId: string) => void
   onRetryAgent?: (agentId: string) => void
+  onSave?: () => void
   onBack?: () => void
 }
 
@@ -124,8 +124,8 @@ export function WorkflowDetailDialog({
   onKill,
   onPause,
   onResume,
-  onSkipAgent,
   onRetryAgent,
+  onSave,
   onBack,
 }: Props): React.ReactNode {
   const elapsedTime = useElapsedTime(
@@ -166,9 +166,9 @@ export function WorkflowDetailDialog({
       onPause()
       return
     }
-    if (event.key === 's' && runningAgent && onSkipAgent) {
+    if (event.key === 's' && onSave) {
       event.preventDefault()
-      onSkipAgent(String(runningAgent.agentNumber))
+      onSave()
       return
     }
     if (event.key === 'r' && runningAgent && onRetryAgent) {
@@ -204,8 +204,8 @@ export function WorkflowDetailDialog({
       {canPauseWorkflow && onPause ? (
         <KeyboardShortcutHint shortcut="p" action="pause" />
       ) : null}
-      {runningAgent && onSkipAgent ? (
-        <KeyboardShortcutHint shortcut="s" action="skip current agent" />
+      {onSave ? (
+        <KeyboardShortcutHint shortcut="s" action="save" />
       ) : null}
       {runningAgent && onRetryAgent ? (
         <KeyboardShortcutHint shortcut="r" action="retry current agent" />

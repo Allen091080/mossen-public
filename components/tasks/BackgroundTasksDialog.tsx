@@ -223,8 +223,9 @@ const killWorkflowTask = workflowTaskModule?.killWorkflowTask ?? null;
 const pauseWorkflowTask = workflowTaskModule?.pauseWorkflowTask ?? null;
 const resumeWorkflowTask = workflowTaskModule?.resumeWorkflowTask ?? null;
 const buildWorkflowResumePrompt = workflowTaskModule?.buildWorkflowResumePrompt ?? null;
-const skipWorkflowAgent = workflowTaskModule?.skipWorkflowAgent ?? null;
 const retryWorkflowAgent = workflowTaskModule?.retryWorkflowAgent ?? null;
+const workflowSaveModule = feature('WORKFLOW_SCRIPTS') ? require('../../commands/workflows/saveWorkflow.js') as typeof import('../../commands/workflows/saveWorkflow.js') : null;
+const saveWorkflowRun = workflowSaveModule?.saveRun ?? null;
 // Relative path, not `src/...` path-mapping — Bun's DCE can statically
 // resolve + eliminate `./` requires, but path-mapped strings stay opaque
 // and survive as dead literals in the bundle. Matches tasks.ts pattern.
@@ -1396,7 +1397,12 @@ function BackgroundTasksDialogImpl({
             return;
           }
           resumeWorkflowTask?.(task_0.id, setAppState);
-        } : undefined} onSkipAgent={isInterruptibleBackgroundStatus(task_0.status) && skipWorkflowAgent ? agentId => skipWorkflowAgent(task_0.id, agentId, setAppState) : undefined} onRetryAgent={isInterruptibleBackgroundStatus(task_0.status) && retryWorkflowAgent ? agentId_0 => retryWorkflowAgent(task_0.id, agentId_0, setAppState) : undefined} onBack={goBackToList} key={`workflow-${task_0.id}`} />;
+        } : undefined} onRetryAgent={isInterruptibleBackgroundStatus(task_0.status) && retryWorkflowAgent ? agentId_0 => retryWorkflowAgent(task_0.id, agentId_0, setAppState) : undefined} onSave={saveWorkflowRun ? () => {
+          const workflowRunId = task_0.workflowRunId ?? task_0.runId ?? task_0.id;
+          onDone(saveWorkflowRun([workflowRunId]), {
+            display: 'system'
+          });
+        } : undefined} onBack={goBackToList} key={`workflow-${task_0.id}`} />;
       case 'monitor_mcp':
         if (!MonitorMcpDetailDialog) return null;
         return <MonitorMcpDetailDialog task={task_0} onKill={isInterruptibleBackgroundStatus(task_0.status) && killMonitorMcp ? () => killMonitorMcp(task_0.id, setAppState) : undefined} onBack={goBackToList} key={`monitor-mcp-${task_0.id}`} />;
