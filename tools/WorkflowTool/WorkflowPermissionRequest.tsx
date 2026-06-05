@@ -36,7 +36,7 @@ import {
 type WorkflowOptionValue =
   | 'yes'
   | 'yes-always'
-  | 'yes-record-consent'
+  | 'yes-source-always'
   | 'yes-skip-warning'
   | 'toggle-script'
   | 'no'
@@ -293,6 +293,8 @@ export function WorkflowPermissionRequest({
     originalReview.sourceKind === 'named' && !originalReview.metaError
       ? buildNamedWorkflowPermissionUpdates(originalReview.sourceLabel)
       : []
+  const canRememberWorkflowSource =
+    namedWorkflowPermissionUpdates.length === 0 && Boolean(review.usageConsentHash)
 
   const options: PermissionPromptOption<WorkflowOptionValue>[] = [
     {
@@ -311,13 +313,13 @@ export function WorkflowPermissionRequest({
       feedbackConfig: WORKFLOW_PROMPT_FEEDBACK_CONFIG,
     })
   }
-  if (review.showUsageWarning && review.usageConsentHash) {
+  if (canRememberWorkflowSource) {
     options.push({
       label: getLocalizedText({
-        en: 'Yes, remember this workflow',
-        zh: '是，并记住这个 workflow',
+        en: "Yes, and don't ask again for this workflow in this project",
+        zh: '是，并且在此项目中不再询问这个 workflow',
       }),
-      value: 'yes-record-consent',
+      value: 'yes-source-always',
       feedbackConfig: WORKFLOW_PROMPT_FEEDBACK_CONFIG,
     })
   }
@@ -379,7 +381,7 @@ export function WorkflowPermissionRequest({
         )
         onDone()
         break
-      case 'yes-record-consent':
+      case 'yes-source-always':
         logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept')
         recordAutoLaunchConsent()
         recordWorkflowUsageConsent(review.usageConsentHash)

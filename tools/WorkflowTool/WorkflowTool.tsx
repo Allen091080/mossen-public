@@ -697,16 +697,13 @@ export const WorkflowTool = buildTool({
       }
     }
 
-    if (
-      permissionContext.mode === 'auto' &&
-      hasRecordedWorkflowUsageConsent(getWorkflowLaunchConsentHash(input))
-    ) {
+    if (hasRecordedWorkflowUsageConsent(getWorkflowLaunchConsentHash(input))) {
       return {
         behavior: 'allow',
         updatedInput: input,
         decisionReason: {
           type: 'mode',
-          mode: 'auto',
+          mode: permissionContext.mode,
         },
       }
     }

@@ -482,6 +482,55 @@ return 'ok'
     expect(WorkflowTool.requiresUserInteraction?.()).toBe(true)
   })
 
+  it('allows repeated default-mode inline workflow launches after local source consent', async () => {
+    const priorCwd = getOriginalCwd()
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mossen-workflow-default-consent-'))
+    const configRoot = join(tempRoot, 'config')
+    try {
+      setOriginalCwd(tempRoot)
+      process.env.MOSSEN_CONFIG_DIR = configRoot
+      resetSettingsCache()
+
+      const firstDecision = await WorkflowTool.checkPermissions(
+        { script: AUTO_CONSENT_WORKFLOW },
+        toolUseContextWithWorkflowRules({ mode: 'default' }),
+      )
+
+      expect(firstDecision.behavior).toBe('ask')
+      expect(recordWorkflowUsageConsent(
+        workflowUsageConsentHash(AUTO_CONSENT_WORKFLOW),
+      )).toBe(true)
+
+      const secondDecision = await WorkflowTool.checkPermissions(
+        { script: AUTO_CONSENT_WORKFLOW },
+        toolUseContextWithWorkflowRules({ mode: 'default' }),
+      )
+
+      expect(secondDecision.behavior).toBe('allow')
+      expect(secondDecision.decisionReason).toEqual({
+        type: 'mode',
+        mode: 'default',
+      })
+      const localSettings = JSON.parse(
+        readFileSync(join(tempRoot, '.mossen', 'settings.local.json'), 'utf8'),
+      )
+      expect(localSettings.workflowUsageConsentHashes).toEqual([
+        workflowUsageConsentHash(AUTO_CONSENT_WORKFLOW),
+      ])
+      expect(JSON.stringify(localSettings)).not.toContain('auto-flow')
+    } finally {
+      setOriginalCwd(priorCwd)
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
+      resetSettingsCache()
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
   it('asks on first auto-mode launch, then allows after user-scoped workflow consent', async () => {
     const priorCwd = getOriginalCwd()
     const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
