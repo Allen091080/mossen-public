@@ -27,13 +27,20 @@ describe('workflowKeyword', () => {
   })
 
   describe('hasWorkflowKeyword', () => {
+    test('matches workflow keyword as a command-style prompt prefix', () => {
+      expect(hasWorkflowKeyword('workflow')).toBe(true)
+      expect(hasWorkflowKeyword('workflows fix this bug')).toBe(true)
+      expect(hasWorkflowKeyword('workflows 修复这个问题')).toBe(true)
+      expect(hasWorkflowKeyword('  WorkFlow: audit the provider')).toBe(true)
+    })
+
     test('matches explicit natural-language workflow requests', () => {
       expect(hasWorkflowKeyword('please use a workflow here')).toBe(true)
     })
 
-    test('does not match incidental standalone workflow mentions', () => {
+    test('does not match incidental mid-sentence workflow mentions', () => {
       expect(hasWorkflowKeyword('compare these workflows')).toBe(false)
-      expect(hasWorkflowKeyword('workflow design notes')).toBe(false)
+      expect(hasWorkflowKeyword('some workflow design notes')).toBe(false)
     })
 
     test('is case-insensitive', () => {
@@ -112,10 +119,23 @@ describe('workflowKeyword', () => {
       }
     })
 
-    test('does not produce positions for workflow mentions or non-boundary substrings', () => {
+    test('returns correct position for a workflow command prefix', () => {
+      const text = '  workflows fix this bug'
+      const positions = findWorkflowTriggerPositions(text)
+      expect(positions).toHaveLength(1)
+      expect(positions[0]).toEqual({ word: 'workflows', start: 2, end: 11 })
+      expect(text.slice(positions[0]!.start, positions[0]!.end)).toBe(
+        'workflows',
+      )
+    })
+
+    test('does not produce positions for mid-sentence workflow mentions or non-boundary substrings', () => {
+      expect(findWorkflowTriggerPositions('compare these workflows')).toHaveLength(0)
       expect(
-        findWorkflowTriggerPositions('workflow workflows workflowy ultracodebase'),
+        findWorkflowTriggerPositions('some workflow notes and ultracodebase'),
       ).toHaveLength(0)
+      expect(findWorkflowTriggerPositions('workflowy')).toHaveLength(0)
+      expect(findWorkflowTriggerPositions('/workflows')).toHaveLength(0)
     })
 
     test('preserves original casing in word field', () => {
@@ -192,6 +212,19 @@ describe('workflowKeyword', () => {
         }),
       ).toBe(false)
     })
+
+    test('backspace can dismiss a workflow command prefix trigger', () => {
+      const triggers = findWorkflowTriggerPositions('workflows fix this')
+
+      expect(
+        shouldDismissWorkflowKeywordOnBackspace({
+          cursorOffset: 9,
+          dismissed: false,
+          key: { backspace: true },
+          triggers,
+        }),
+      ).toBe(true)
+    })
   })
 
   describe('buildWorkflowReminder (returns an isMeta block, or null)', () => {
@@ -207,7 +240,12 @@ describe('workflowKeyword', () => {
 
     test('does not fire for incidental workflow mentions', () => {
       expect(buildWorkflowReminder('compare these workflows', true)).toBeNull()
-      expect(buildWorkflowReminder('workflow design notes', true)).toBeNull()
+      expect(buildWorkflowReminder('some workflow design notes', true)).toBeNull()
+    })
+
+    test('fires for workflow keyword as a command-style prompt prefix', () => {
+      expect(buildWorkflowReminder('workflow design notes', true)).not.toBeNull()
+      expect(buildWorkflowReminder('workflows fix this bug', true)).not.toBeNull()
     })
 
     test('fires for explicit natural-language workflow requests', () => {

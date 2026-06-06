@@ -1,12 +1,14 @@
 /**
  * Workflow keyword detection for the prompt input.
  *
- * Explicit natural-language requests and strong trigger words let the user opt
- * into multi-agent orchestration, mirroring the thinking keyword UX:
+ * Command-style keyword prefixes, explicit natural-language requests, and
+ * strong trigger words let the user opt into multi-agent orchestration,
+ * mirroring the thinking keyword UX:
+ *  - `workflow` / `workflows` at the start of the prompt — opt in for THIS message.
  *  - `ultracode` — single-turn orchestration for THIS message.
  *  - “use/run a workflow” — natural-language opt-in for THIS message.
- * Keyword triggers are highlighted (rainbow shimmer) and surface an opt-in
- * notification; natural-language requests inject only the model-visible
+ * Keyword prefixes/triggers are highlighted (rainbow shimmer) and surface an
+ * opt-in notification; natural-language requests inject only the model-visible
  * reminder so incidental mentions of workflows do not light up the prompt.
  * Gated behind the same flag that enables the Workflow tool itself, so users
  * without orchestration never see a meaningless highlight.
@@ -24,7 +26,9 @@ export function isWorkflowKeywordEnabled(): boolean {
 }
 
 // Word-boundary, case-insensitive. `workflowy`, `reflow`, `ultracodebase`,
-// etc. must NOT match.
+// etc. must NOT match. The workflow keyword itself only triggers as a
+// command-style prefix so ordinary mid-sentence mentions remain inert.
+const WORKFLOW_PREFIX_COMMAND_RE = /^\s*workflows?\b/i
 const ULTRACODE_RE = /\bultracode\b/i
 const WORKFLOW_DIRECT_REQUEST_RE =
   /\b(?:use|run|launch|start|write|create|build)\s+(?:a\s+)?workflows?\b/i
@@ -48,11 +52,15 @@ type WorkflowTriggerPosition = {
 }
 
 export function hasWorkflowKeyword(text: string): boolean {
-  return hasWorkflowDirectRequest(text)
+  return hasWorkflowPrefixCommand(text) || hasWorkflowDirectRequest(text)
 }
 
 export function hasUltracodeKeyword(text: string): boolean {
   return ULTRACODE_RE.test(text)
+}
+
+function hasWorkflowPrefixCommand(text: string): boolean {
+  return WORKFLOW_PREFIX_COMMAND_RE.test(text)
 }
 
 export function hasWorkflowDirectRequest(text: string): boolean {
@@ -66,7 +74,7 @@ export function hasWorkflowDirectRequest(text: string): boolean {
 
 /** True when the message contains any orchestration trigger. */
 export function hasAnyWorkflowTrigger(text: string): boolean {
-  return hasUltracodeKeyword(text) || hasWorkflowDirectRequest(text)
+  return hasUltracodeKeyword(text) || hasWorkflowKeyword(text)
 }
 
 /**
@@ -83,6 +91,17 @@ export function findWorkflowTriggerPositions(text: string): Array<{
   end: number
 }> {
   const positions: Array<{ word: string; start: number; end: number }> = []
+  const workflowPrefixMatch = /^(\s*)(workflows?)\b/i.exec(text)
+  if (workflowPrefixMatch) {
+    const leading = workflowPrefixMatch[1]?.length ?? 0
+    const word = workflowPrefixMatch[2] ?? ''
+    positions.push({
+      word,
+      start: leading,
+      end: leading + word.length,
+    })
+  }
+
   const matches = text.matchAll(/\bultracode\b/gi)
 
   for (const match of matches) {
@@ -95,7 +114,7 @@ export function findWorkflowTriggerPositions(text: string): Array<{
     }
   }
 
-  return positions
+  return positions.sort((a, b) => a.start - b.start)
 }
 
 export function isWorkflowKeywordDismissShortcut(
@@ -154,7 +173,7 @@ export function buildWorkflowReminder(
     | null = null
   if (hasUltracodeKeyword(value)) {
     key = 'ui.workflowKeyword.ultracodeReminder'
-  } else if (hasWorkflowDirectRequest(value)) {
+  } else if (hasWorkflowKeyword(value)) {
     key = 'ui.workflowKeyword.reminder'
   } else if (ultracodeStanding) {
     key = 'ui.workflowKeyword.ultracodeStandingReminder'
