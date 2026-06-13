@@ -13,6 +13,7 @@
  * be exercised end-to-end via the workflow smoke test.
  */
 
+import { join } from 'node:path'
 import type { CanUseToolFn } from '../../../hooks/useCanUseTool.js'
 import type { ToolUseContext, Tools } from '../../../Tool.js'
 import type { Message } from '../../../types/message.js'
@@ -143,6 +144,10 @@ export type WorkflowAgentRunnerDeps = {
   canUseTool: CanUseToolFn
   /** Groups subagent transcripts under subagents/workflows/<runId>/. */
   runId: string
+  /** Absolute directory where this workflow run's subagent transcripts live. */
+  transcriptDir?: string
+  /** Goal active when the workflow run was launched, when applicable. */
+  parentGoalId?: string
   /**
    * Optional abort controller for the run. When the workflow runs in the
    * background (S2), this is an UNLINKED controller so spawned subagents keep
@@ -976,6 +981,8 @@ export function createWorkflowAgentRunner(
     toolUseContext,
     canUseTool,
     runId,
+    transcriptDir,
+    parentGoalId,
     abortController,
     registerAgentController,
     remoteAgentRunner = runHostedRemoteWorkflowAgent,
@@ -1025,15 +1032,25 @@ export function createWorkflowAgentRunner(
     label: string,
     worktreePath: string | undefined,
     agentAbortController: AbortController | undefined,
+    onIdentity: WorkflowRunOneAgentMeta['onIdentity'],
     onProgress: WorkflowRunOneAgentMeta['onProgress'],
   ): Promise<{
     text: string
     tokens: number
     toolCalls: number
+    agentId: string
+    transcriptPath?: string
     structuredOutput?: unknown
   }> {
     const startTime = Date.now()
     const agentId = createAgentId()
+    const transcriptPath = transcriptDir
+      ? join(transcriptDir, `agent-${agentId}.jsonl`)
+      : undefined
+    onIdentity?.({
+      agentId,
+      ...(transcriptPath ? { transcriptPath } : {}),
+    })
     const promptMessages: Message[] = [createUserMessage({ content: promptText })]
     const messages: Message[] = []
     const liveProgressTotals = {
@@ -1057,6 +1074,8 @@ export function createWorkflowAgentRunner(
         model,
         description: label,
         worktreePath,
+        parentWorkflowId: runId,
+        parentGoalId,
         // Thread the (optionally unlinked) abort controller so background runs'
         // subagents survive the originating tool call returning.
         override: agentAbortController
@@ -1094,6 +1113,8 @@ export function createWorkflowAgentRunner(
       text: stripLiteralThinking(extractTextContent(result.content, '\n')),
       tokens: result.totalTokens,
       toolCalls: result.totalToolUseCount,
+      agentId,
+      ...(transcriptPath ? { transcriptPath } : {}),
       ...(structuredOutput !== undefined ? { structuredOutput } : {}),
     }
   }
@@ -1191,7 +1212,7 @@ export function createWorkflowAgentRunner(
     try {
       // No schema → return the agent's final text verbatim.
       if (!opts.schema) {
-        const { text, tokens, toolCalls } = await runOnce(
+        const { text, tokens, toolCalls, agentId, transcriptPath } = await runOnce(
           agentDefinition,
           baseAvailableTools,
           workerToolUseContext,
@@ -1200,9 +1221,17 @@ export function createWorkflowAgentRunner(
           meta.label,
           worktreeInfo?.worktreePath,
           agentAbortController,
+          meta.onIdentity,
           meta.onProgress,
         )
-        return { value: text, tokens, toolCalls, ok: true }
+        return {
+          value: text,
+          tokens,
+          toolCalls,
+          ok: true,
+          agentId,
+          ...(transcriptPath ? { transcriptPath } : {}),
+        }
       }
 
       // Schema → require the StructuredOutput tool, then validate+retry on failure.
@@ -1218,7 +1247,7 @@ export function createWorkflowAgentRunner(
       let totalToolCalls = 0
       let lastDetail = ''
       for (let attempt = 0; attempt <= MAX_SCHEMA_RETRIES; attempt++) {
-        const { tokens, toolCalls, structuredOutput } = await runOnce(
+        const { tokens, toolCalls, structuredOutput, agentId, transcriptPath } = await runOnce(
           schemaAgentDefinition,
           schemaTools,
           workerToolUseContext,
@@ -1227,6 +1256,7 @@ export function createWorkflowAgentRunner(
           meta.label,
           worktreeInfo?.worktreePath,
           agentAbortController,
+          meta.onIdentity,
           meta.onProgress,
         )
         totalTokens += tokens
@@ -1241,6 +1271,8 @@ export function createWorkflowAgentRunner(
               tokens: totalTokens,
               toolCalls: totalToolCalls,
               ok: true,
+              agentId,
+              ...(transcriptPath ? { transcriptPath } : {}),
             }
           }
           lastDetail = formatIssues(validation.errors)

@@ -121,6 +121,8 @@ export type LocalAgentTaskState = TaskStateBase & {
   selectedAgent?: AgentDefinition;
   agentType: string;
   model?: string;
+  parentWorkflowId?: string;
+  parentGoalId?: string;
   abortController?: AbortController;
   unregisterCleanup?: () => void;
   error?: string;
@@ -471,7 +473,9 @@ export function registerAsyncAgent({
   selectedAgent,
   setAppState,
   parentAbortController,
-  toolUseId
+  toolUseId,
+  parentWorkflowId,
+  parentGoalId
 }: {
   agentId: string;
   description: string;
@@ -480,6 +484,8 @@ export function registerAsyncAgent({
   setAppState: SetAppState;
   parentAbortController?: AbortController;
   toolUseId?: string;
+  parentWorkflowId?: string;
+  parentGoalId?: string;
 }): LocalAgentTaskState {
   void initTaskOutputAsSymlink(agentId, getAgentTranscriptPath(asAgentId(agentId)));
 
@@ -493,6 +499,8 @@ export function registerAsyncAgent({
     prompt,
     selectedAgent,
     agentType: selectedAgent.agentType ?? 'general-purpose',
+    ...(parentWorkflowId && { parentWorkflowId }),
+    ...(parentGoalId && { parentGoalId }),
     abortController,
     retrieved: false,
     lastReportedToolCount: 0,

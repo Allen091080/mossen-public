@@ -7,7 +7,9 @@ A workflow is a small JavaScript program that fans work out across many subagent
 
 ONLY call this tool when the user has explicitly opted into multi-agent orchestration. Workflows can spawn many agents and consume substantial tokens; the user must request that scale, not have it inferred. Explicit opt-in includes workflow/ultracode wording, or a direct request for broad multi-agent orchestration, comprehensive parallel review, multi-agent research, or similar scale.
 
-Provide the program inline via \`script\`. It must begin with an \`export const meta\` literal:
+Preferred entry for broad user tasks: pass \`task\` as the user's natural-language objective. Mossen will auto-plan it into a standard dynamic workflow with planner, parallel execution, verification, synthesis, progress reporting, report export, and memory-candidate capture.
+
+Use a custom inline \`script\` only when you need precise orchestration beyond the standard planner. It must begin with an \`export const meta\` literal:
 
   export const meta = {
     name: 'find-bugs',

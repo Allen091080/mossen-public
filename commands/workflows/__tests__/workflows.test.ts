@@ -14,6 +14,8 @@ import { getTaskOutputPath } from '../../../utils/task/diskOutput.js'
 import { buildWorkflowResumeNextInput, call } from '../workflows.js'
 import { deriveWorkflowSaveName, saveRun } from '../saveWorkflow.js'
 import {
+  canRestartWorkflowAgentStatus,
+  canStopWorkflowAgentStatus,
   recentToolCallLines,
   shouldRouteWorkflowAgentControl,
   shouldShowRunLevelAgents,
@@ -24,6 +26,7 @@ import {
   workflowRunOpenTarget,
   workflowSaveOpenTarget,
   workflowSaveRunArgs,
+  workflowSelectedActionHint,
 } from '../WorkflowRunsDialog.js'
 import {
   appendJournalEntry,
@@ -32,7 +35,24 @@ import {
   initRunArtifacts,
   loadRunMeta,
   STALE_RUNNING_WORKFLOW_MESSAGE,
+  workflowReportPath,
 } from '../../../tools/WorkflowTool/engine/journalStore.js'
+import {
+  clearAgentTranscriptSubdir,
+  flushSessionStorage,
+  getAgentTranscriptPath,
+  getProjectDir,
+  loadTranscriptFile,
+  recordSidechainTranscript,
+  resetProjectForTesting,
+  setAgentTranscriptSubdir,
+} from '../../../utils/sessionStorage.js'
+import { asAgentId } from '../../../types/ids.js'
+import {
+  createAssistantMessage,
+  createUserMessage,
+} from '../../../utils/messages.js'
+import { exportWorkflowRunReport } from '../exportWorkflowReport.js'
 import {
   getProjectWorkflowsDir,
   getUserWorkflowsDir,
@@ -282,6 +302,73 @@ return 'ok'
     }
   })
 
+  test('export writes a Markdown workflow report for a recorded run', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const root = mkdtempSync(join(tmpdir(), 'wf-export-report-'))
+    const sessionId =
+      '88888888-8888-4888-8888-888888888888' as ReturnType<typeof getSessionId>
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      getProjectDir.cache.clear()
+      resetProjectForTesting()
+      setProjectRoot(root)
+      switchSession(sessionId)
+      const runId = 'wf_export_report'
+      initRunArtifacts(
+        runId,
+        'return "report"',
+        {
+          runId,
+          workflowName: 'report-flow',
+          description: 'Report flow',
+          phases: [{ title: 'Verify', detail: 'Run checks' }],
+          parentGoalId: 'goal_export_report',
+          createdAt: new Date(0).toISOString(),
+          status: 'completed',
+          agentCount: 1,
+          tokensSpent: 10,
+          totalToolCalls: 2,
+          result: 'All checks passed.',
+        },
+      )
+
+      const direct = exportWorkflowRunReport(runId)
+      let commandMessage = ''
+      await call(
+        nextMessage => {
+          commandMessage = nextMessage
+        },
+        workflowCommandContext({ tasks: {} }) as never,
+        `export ${runId}`,
+      )
+
+      expect(direct.ok).toBe(true)
+      expect(direct.path).toContain('report.md')
+      expect(commandMessage).toContain('Workflow report exported:')
+      const report = readFileSync(direct.path!, 'utf8')
+      expect(report).toContain('# Workflow Report: report-flow')
+      expect(report).toContain('- Parent goal: goal_export_report')
+      expect(report).toContain('## Progress Tree')
+      expect(report).toContain('- [completed] phase: Verify')
+      expect(report).toContain('- [completed] verification: Verification evidence')
+      expect(report).toContain('## Verification Evidence')
+      expect(report).toContain('- State: completed')
+      expect(report).toContain('All checks passed.')
+    } finally {
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('opens the interactive workflow progress view with no args', async () => {
     const state = { tasks: {} }
     let message = ''
@@ -322,6 +409,36 @@ return 'ok'
     expect(shouldRouteWorkflowAgentControl('run', true)).toBe(true)
     expect(shouldRouteWorkflowAgentControl('list')).toBe(false)
     expect(shouldRouteWorkflowAgentControl('save')).toBe(false)
+  })
+
+  test('interactive action hints only advertise valid selected-agent controls', () => {
+    expect(canStopWorkflowAgentStatus('queued')).toBe(true)
+    expect(canStopWorkflowAgentStatus('running')).toBe(true)
+    expect(canStopWorkflowAgentStatus('completed')).toBe(false)
+    expect(canRestartWorkflowAgentStatus('running')).toBe(true)
+    expect(canRestartWorkflowAgentStatus('queued')).toBe(false)
+
+    const runningHint = workflowSelectedActionHint({
+      mode: 'phase',
+      hasSelectedRun: true,
+      selectedRunKind: 'live',
+      selectedRunStatus: 'running',
+      selectedAgent: { agentNumber: 1, status: 'running' },
+    })
+    expect(runningHint).toContain('Enter peek agent #1')
+    expect(runningHint).toContain('x stop agent')
+    expect(runningHint).toContain('r restart agent')
+
+    const completedHint = workflowSelectedActionHint({
+      mode: 'phase',
+      hasSelectedRun: true,
+      selectedRunKind: 'live',
+      selectedRunStatus: 'running',
+      selectedAgent: { agentNumber: 2, status: 'completed' },
+    })
+    expect(completedHint).toContain('Enter peek agent #2')
+    expect(completedHint).not.toContain('x stop agent')
+    expect(completedHint).not.toContain('r restart agent')
   })
 
   test('unphased run view treats the selected run-level row as an agent target', () => {
@@ -592,6 +709,8 @@ return 'ok'
     )
 
     expect(message).toContain(`demo (${runId})`)
+    expect(message).toContain('verification: queued')
+    expect(message).toContain(`report: ${workflowReportPath(runId)}`)
     expect(message).toContain('Scan · 1 agent(s) · 1 running · 25 tok · 1 tools')
     expect(message).toContain('Write · 1 agent(s) · 1 completed · 30 tok · 2 tools')
     expect(message).toContain('#1 [Scan] Scan routes · running · 25 tok · 1 tools')
@@ -637,6 +756,15 @@ return 'ok'
         phase: 'Scan',
         agentNumber: 1,
         opts: { model: 'fast', agentType: 'Explore' },
+        promptPreview: 'Inspect the historical workflow routes.',
+        queuedAt: 1_800_000_000_000,
+        startedAt: 1_800_000_001_000,
+        lastProgressAt: 1_800_000_002_000,
+        lastToolName: 'Read',
+        lastToolSummary: 'commands/workflows/workflows.tsx',
+        recentToolCalls: [
+          { name: 'Read', summary: 'commands/workflows/workflows.tsx' },
+        ],
       })
       appendJournalEntry(runId, {
         index: 0,
@@ -645,6 +773,11 @@ return 'ok'
         tokens: 25,
         toolCalls: 1,
         ok: true,
+        durationMs: 1200,
+        agentId: 'agent_history_scan',
+        transcriptPath:
+          '/tmp/workflows/wf_history_detail/transcripts/agent-agent_history_scan.jsonl',
+        remoteSessionId: 'session_history_scan',
       })
       appendJournalStartedEntry(runId, {
         kind: 'started',
@@ -674,12 +807,20 @@ return 'ok'
       )
 
       expect(message).toContain(`history-flow (${runId})`)
+      expect(message).toContain('verification: completed')
+      expect(message).toContain(`report: ${workflowReportPath(runId)}`)
       expect(message).toContain('Scan · 1 agent(s) · 1 completed · 25 tok · 1 tools')
       expect(message).toContain('Review · 1 agent(s) · 1 completed · 30 tok · 2 tools')
       expect(message).toMatch(/(?:Result|结果):/)
       expect(message).toContain('Final historical report')
       expect(message).toContain('- Found routes and reviews.')
       expect(message).toContain('#1 [Scan] Scan routes · completed · 25 tok · 1 tools')
+      expect(message).toContain('agentId: agent_history_scan')
+      expect(message).toContain(
+        'transcript: /tmp/workflows/wf_history_detail/transcripts/agent-agent_history_scan.jsonl',
+      )
+      expect(message).toContain('Prompt: Inspect the historical workflow routes.')
+      expect(message).toContain('Read commands/workflows/workflows.tsx')
       expect(message).toContain('Found historical routes.')
     } finally {
       switchSession(priorSession, priorProjectDir)
@@ -729,6 +870,8 @@ return 'ok'
       )
 
       expect(message).toContain(`result-only-flow (${runId})`)
+      expect(message).toContain('verification: completed')
+      expect(message).toContain(`report: ${workflowReportPath(runId)}`)
       expect(message).toMatch(/(?:Result|结果):/)
       expect(message).toContain('Top-level report')
       expect(message).toContain('- answer: 42')
@@ -780,11 +923,17 @@ return 'ok'
     const priorSession = getSessionId()
     const priorProjectDir = getSessionProjectDir()
     const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
+    const priorTestPersistence = process.env.TEST_ENABLE_SESSION_PERSISTENCE
     const root = mkdtempSync(join(tmpdir(), 'wf-history-agent-detail-'))
     const sessionId =
       '66666666-6666-4666-8666-666666666666' as ReturnType<typeof getSessionId>
     try {
       process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'home')
+      process.env.TEST_ENABLE_SESSION_PERSISTENCE = '1'
+      resetProjectForTesting()
+      getProjectDir.cache.clear()
       setProjectRoot(root)
       switchSession(sessionId)
       const runId = 'wf_history_agent_detail'
@@ -807,7 +956,14 @@ return 'ok'
         phase: 'Scan',
         agentNumber: 1,
         opts: { isolation: 'remote' },
+        promptPreview: 'Inspect routes from a completed historical agent.',
+        lastToolName: 'Read',
+        lastToolSummary: 'commands/workflows/workflows.tsx',
       })
+      setAgentTranscriptSubdir('agent_history_agent', `workflows/${runId}`)
+      const transcriptPath = getAgentTranscriptPath(
+        asAgentId('agent_history_agent'),
+      )
       appendJournalEntry(runId, {
         index: 0,
         hash: 'h0',
@@ -815,7 +971,28 @@ return 'ok'
         tokens: 25,
         toolCalls: 1,
         ok: true,
+        durationMs: 1500,
+        agentId: 'agent_history_agent',
+        transcriptPath,
+        remoteSessionId: 'session_history_agent',
       })
+      await recordSidechainTranscript(
+        [
+          createUserMessage({
+            content: 'Inspect routes from a completed historical agent.',
+          }),
+          createAssistantMessage({
+            content: 'Read commands/workflows/workflows.tsx and found the route.',
+          }),
+        ],
+        'agent_history_agent',
+      )
+      await flushSessionStorage()
+      const transcript = await loadTranscriptFile(transcriptPath, {
+        keepAllLeaves: true,
+      })
+      expect(transcript.messages.size).toBe(2)
+      clearAgentTranscriptSubdir('agent_history_agent')
 
       let message = ''
       await call(
@@ -830,14 +1007,39 @@ return 'ok'
       expect(message).toContain('completed')
       expect(message).toContain('Scan')
       expect(message).toContain('isolation: remote')
+      expect(message).toContain('agentId: agent_history_agent')
+      expect(message).toContain(`transcript: ${transcriptPath}`)
+      expect(message).toContain('remote: session_history_agent')
+      expect(message).toContain('Prompt: Inspect routes from a completed historical agent.')
+      expect(message).toContain('Read commands/workflows/workflows.tsx')
       expect(message).toContain('Historical agent result.')
+      expect(message).toContain('Transcript tail:')
+      expect(message).toContain(
+        'User: Inspect routes from a completed historical agent.',
+      )
+      expect(message).toContain(
+        'Assistant: Read commands/workflows/workflows.tsx and found the route.',
+      )
     } finally {
+      clearAgentTranscriptSubdir('agent_history_agent')
+      resetProjectForTesting()
+      getProjectDir.cache.clear()
       switchSession(priorSession, priorProjectDir)
       setProjectRoot(priorRoot)
       if (priorHome === undefined) {
         delete process.env.MOSSEN_HOME
       } else {
         process.env.MOSSEN_HOME = priorHome
+      }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
+      if (priorTestPersistence === undefined) {
+        delete process.env.TEST_ENABLE_SESSION_PERSISTENCE
+      } else {
+        process.env.TEST_ENABLE_SESSION_PERSISTENCE = priorTestPersistence
       }
       rmSync(root, { recursive: true, force: true })
     }
@@ -889,6 +1091,34 @@ return 'ok'
     expect(message).toContain('#1')
     expect(state.tasks[taskId]?.agents?.[0]?.status).toBe('skipped')
     expect(state.tasks[taskId]?.summary).toBe('skip requested for agent #1')
+  })
+
+  test('stop-agent marks a queued selected workflow agent as skipped immediately', async () => {
+    const taskId = 'wtaskcmd_stop_queued_agent'
+    const runId = 'wf_cmd_stop_queued_agent'
+    const task = runningWorkflowTask({ taskId, runId })
+    task.agents[0] = {
+      ...task.agents[0]!,
+      status: 'queued',
+    }
+    const state = {
+      tasks: {
+        [taskId]: task,
+      },
+    }
+    let message = ''
+
+    await call(
+      nextMessage => {
+        message = nextMessage
+      },
+      workflowCommandContext(state) as never,
+      `stop-agent ${runId} 1`,
+    )
+
+    expect(message).toContain(runId)
+    expect(message).toContain('#1')
+    expect(state.tasks[taskId]?.agents?.[0]?.status).toBe('skipped')
   })
 
   test('restart-agent requests a restart for the selected workflow agent', async () => {

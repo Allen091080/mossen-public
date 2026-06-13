@@ -15,6 +15,7 @@ import {
   loadJournal,
   loadRunLog,
   runScriptPath,
+  workflowReportPath,
   type WorkflowRunMeta,
 } from '../../tools/WorkflowTool/engine/journalStore.js'
 import { formatDuration, formatNumber } from '../../utils/format.js'
@@ -23,6 +24,7 @@ import { Byline } from '../../components/design-system/Byline.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js'
 import { deriveWorkflowSaveName, saveRun } from './saveWorkflow.js'
+import { exportWorkflowRunReport } from './exportWorkflowReport.js'
 import {
   buildWorkflowResumeResult,
   isResumableWorkflowRunStatus,
@@ -34,6 +36,12 @@ import {
   workflowAgentElapsedMs,
   workflowSumAgentElapsedMs,
 } from './progressSummary.js'
+import {
+  buildWorkflowProgressTree,
+  buildWorkflowTree,
+  workflowRuntimeStatusToMachineState,
+  type WorkflowJsonTreeNode,
+} from './workflowProgressTree.js'
 
 type Props = {
   onDone: LocalJSXCommandOnDone
@@ -163,14 +171,46 @@ export function historyAgentsForRun(runId: string): WorkflowAgentTaskProgress[] 
     const completed = completedByCall.get(`${start.index}\0${start.hash}`)
     return {
       agentNumber: start.agentNumber,
+      ...(completed?.agentId ?? start.agentId
+        ? { agentId: completed?.agentId ?? start.agentId }
+        : {}),
+      ...(completed?.transcriptPath ?? start.transcriptPath
+        ? { transcriptPath: completed?.transcriptPath ?? start.transcriptPath }
+        : {}),
       label: start.label,
       phase: start.phase,
       status: workflowAgentStatusFromJournal(completed),
       tokens: completed?.tokens ?? 0,
       toolCalls: completed?.toolCalls ?? 0,
+      ...(typeof completed?.durationMs === 'number'
+        ? { durationMs: completed.durationMs }
+        : {}),
       ...(start.opts.agentType ? { agentType: start.opts.agentType } : {}),
       ...(start.opts.model ? { model: start.opts.model } : {}),
       ...(start.opts.isolation ? { isolation: start.opts.isolation } : {}),
+      ...(start.promptPreview ? { promptPreview: start.promptPreview } : {}),
+      ...(typeof start.queuedAt === 'number' ? { queuedAt: start.queuedAt } : {}),
+      ...(typeof start.startedAt === 'number'
+        ? { startedAt: start.startedAt }
+        : {}),
+      ...(typeof (completed?.lastProgressAt ?? start.lastProgressAt) === 'number'
+        ? { lastProgressAt: completed?.lastProgressAt ?? start.lastProgressAt }
+        : {}),
+      ...(completed?.remoteSessionId
+        ? { remoteSessionId: completed.remoteSessionId }
+        : {}),
+      ...(start.lastAttemptReason
+        ? { lastAttemptReason: start.lastAttemptReason }
+        : {}),
+      ...(completed?.lastToolName ?? start.lastToolName
+        ? { lastToolName: completed?.lastToolName ?? start.lastToolName }
+        : {}),
+      ...(completed?.lastToolSummary ?? start.lastToolSummary
+        ? { lastToolSummary: completed?.lastToolSummary ?? start.lastToolSummary }
+        : {}),
+      ...((completed?.recentToolCalls ?? start.recentToolCalls)?.length
+        ? { recentToolCalls: completed?.recentToolCalls ?? start.recentToolCalls }
+        : {}),
       ...(completed?.value !== undefined
         ? { resultPreview: compactResultPreview(completed.value) }
         : {}),
@@ -234,11 +274,172 @@ function runPhases(item: WorkflowRunItem): string[] {
   )
 }
 
+function workflowTreeForItem(item: WorkflowRunItem): WorkflowJsonTreeNode {
+  if (item.kind === 'history') return buildWorkflowTree(item.meta)
+  return buildWorkflowProgressTree({
+    runId: item.runId,
+    label: item.task.title ?? item.task.workflowName,
+    state: workflowRuntimeStatusToMachineState(item.task.status, {
+      paused: item.task.paused,
+    }),
+    phases:
+      item.task.phaseDefinitions ??
+      item.task.phases.map(title => ({ title })),
+    agents: item.task.agents,
+    failures: item.task.failures,
+    result: item.task.result,
+    reportPath: workflowReportPath(item.runId),
+    tokensSpent: item.task.tokensSpent,
+    totalToolCalls: item.task.totalToolCalls,
+    durationMs: item.task.durationMs,
+  })
+}
+
+function workflowTreePhaseNodes(
+  tree: WorkflowJsonTreeNode | null,
+): WorkflowJsonTreeNode[] {
+  return tree?.children.filter(node => node.kind === 'phase') ?? []
+}
+
+function workflowTreeRunLevelAgentNodes(
+  tree: WorkflowJsonTreeNode | null,
+): WorkflowJsonTreeNode[] {
+  return tree?.children.filter(node => node.kind === 'agent') ?? []
+}
+
+function workflowTreeVerificationNode(
+  tree: WorkflowJsonTreeNode | null,
+): WorkflowJsonTreeNode | null {
+  return tree?.children.find(node => node.kind === 'verification') ?? null
+}
+
+function workflowVerificationLine(
+  node: WorkflowJsonTreeNode | null,
+  runId: string,
+): string {
+  const report = compact(workflowReportPath(runId), 80)
+  const summary = compact(node?.resultSummary, 120)
+  const state = node?.state ?? 'queued'
+  return [
+    `verification: ${state}`,
+    summary ? `summary: ${summary}` : null,
+    report ? `report: ${report}` : null,
+  ].filter((item): item is string => item !== null).join(' · ')
+}
+
+function workflowTreeNodeAgentMetricSummary(node: WorkflowJsonTreeNode): {
+  agentCount: number
+  statusSummary: string
+  tokens: number
+  toolCalls: number
+  elapsedMs: number
+} {
+  const agents = (node.kind === 'phase' ? node.children : [node])
+    .filter(item => item.kind === 'agent')
+  const statusCounts = new Map<string, number>()
+  let tokens = 0
+  let toolCalls = 0
+  let elapsedMs = 0
+  for (const agent of agents) {
+    statusCounts.set(agent.state, (statusCounts.get(agent.state) ?? 0) + 1)
+    tokens += agent.tokenUsage.totalTokens ?? 0
+    toolCalls += agent.toolCalls
+    elapsedMs += agent.durationMs ?? 0
+  }
+  return {
+    agentCount: agents.length,
+    statusSummary: Array.from(statusCounts.entries())
+      .map(([status, count]) => `${count} ${status}`)
+      .join(', '),
+    tokens,
+    toolCalls,
+    elapsedMs,
+  }
+}
+
 export function shouldRouteWorkflowAgentControl(
   mode: WorkflowDialogMode,
   runLevelAgentSelected = false,
 ): boolean {
   return mode === 'phase' || mode === 'agent' || (mode === 'run' && runLevelAgentSelected)
+}
+
+export function canStopWorkflowAgentStatus(
+  status: WorkflowAgentTaskProgress['status'],
+): boolean {
+  return status === 'queued' || status === 'running' || status === 'retry_requested'
+}
+
+export function canRestartWorkflowAgentStatus(
+  status: WorkflowAgentTaskProgress['status'],
+): boolean {
+  return status === 'running'
+}
+
+export function workflowSelectedActionHint(params: {
+  mode: WorkflowDialogMode
+  hasSelectedRun: boolean
+  selectedRunKind?: 'live' | 'history' | null
+  selectedRunStatus?: string | null
+  selectedAgent?: Pick<WorkflowAgentTaskProgress, 'agentNumber' | 'status'> | null
+  runLevelAgentSelected?: boolean
+  hasSelectedPhase?: boolean
+}): string {
+  if (params.mode === 'save') return 'Tab switch scope · Enter save · Esc back'
+  if (!params.hasSelectedRun) return 'No workflow selected'
+
+  const actions: string[] = []
+  const agentSelected =
+    params.selectedAgent &&
+    shouldRouteWorkflowAgentControl(
+      params.mode,
+      params.runLevelAgentSelected === true,
+    )
+
+  if (params.mode === 'list') {
+    actions.push('Enter open run')
+  } else if (agentSelected) {
+    actions.push(
+      params.mode === 'agent'
+        ? `Viewing agent #${params.selectedAgent!.agentNumber}`
+        : `Enter peek agent #${params.selectedAgent!.agentNumber}`,
+    )
+    if (
+      params.selectedRunKind === 'live' &&
+      canStopWorkflowAgentStatus(params.selectedAgent!.status)
+    ) {
+      actions.push('x stop agent')
+    }
+    if (
+      params.selectedRunKind === 'live' &&
+      canRestartWorkflowAgentStatus(params.selectedAgent!.status)
+    ) {
+      actions.push('r restart agent')
+    }
+  } else if (params.mode === 'run' && params.hasSelectedPhase) {
+    actions.push('Enter open phase')
+  } else if (params.mode === 'phase') {
+    actions.push('Enter peek agent')
+  }
+
+  if (params.selectedRunKind === 'live') {
+    if (params.selectedRunStatus === 'running') {
+      actions.push('p pause workflow', 'x stop workflow')
+    } else if (
+      params.selectedRunStatus === 'paused' ||
+      params.selectedRunStatus === 'killed'
+    ) {
+      actions.push('p resume workflow')
+    }
+  } else if (
+    params.selectedRunStatus === 'paused' ||
+    params.selectedRunStatus === 'killed'
+  ) {
+    actions.push('p resume workflow')
+  }
+
+  actions.push('e export report', 's save')
+  return actions.join(' · ')
 }
 
 export function shouldShowRunLevelAgents(
@@ -321,6 +522,7 @@ function inputGuide(mode: WorkflowDialogMode) {
           <KeyboardShortcutHint shortcut="x" action="stop" />
           <KeyboardShortcutHint shortcut="r" action="restart agent" />
           <KeyboardShortcutHint shortcut="s" action="save" />
+          <KeyboardShortcutHint shortcut="e" action="export report" />
         </>
       )}
     </Byline>
@@ -371,7 +573,15 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
     selectedRun?.kind === 'history'
       ? historyAgentsForRun(selectedRun.runId)
       : []
-  const phases = selectedRun ? runPhases(selectedRun) : []
+  const selectedRunTree = selectedRun ? workflowTreeForItem(selectedRun) : null
+  const phaseNodes = workflowTreePhaseNodes(selectedRunTree)
+  const runLevelAgentNodes = workflowTreeRunLevelAgentNodes(selectedRunTree)
+  const verificationNode = workflowTreeVerificationNode(selectedRunTree)
+  const phases = phaseNodes.length > 0
+    ? phaseNodes.map(node => node.label)
+    : selectedRun
+      ? runPhases(selectedRun)
+      : []
   const agents =
     selectedRun?.kind === 'live'
       ? view.mode === 'phase'
@@ -382,7 +592,10 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
           ? historyAgents.filter(agent => agent.phase === view.phase)
           : historyAgents
       : []
-  const showRunLevelAgents = shouldShowRunLevelAgents(phases.length, agents.length)
+  const showRunLevelAgents = shouldShowRunLevelAgents(
+    phases.length,
+    runLevelAgentNodes.length || agents.length,
+  )
   const currentAgent =
     view.mode === 'agent'
       ? agents.find(agent => agent.agentNumber === view.agentNumber) ?? null
@@ -404,6 +617,11 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
 
   const openSaveDialog = (run: WorkflowRunItem) => {
     setView(workflowSaveOpenTarget(run.runId, view))
+  }
+
+  const exportSelectedRun = (run: WorkflowRunItem) => {
+    const result = exportWorkflowRunReport(run.runId)
+    setMessage(result.message)
   }
 
   const resumeSelectedRun = (run: WorkflowRunItem) => {
@@ -465,6 +683,11 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
       return
     }
 
+    if (_input === 'e' && selectedRun) {
+      exportSelectedRun(selectedRun)
+      return
+    }
+
     const liveRun = selectedRun?.kind === 'live' ? selectedRun : null
     const routeToSelectedAgent =
       showRunLevelAgents && currentAgent
@@ -486,6 +709,15 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
     }
     if (_input === 'x' && liveRun) {
       if (routeToSelectedAgent && currentAgent) {
+        if (!canStopWorkflowAgentStatus(currentAgent.status)) {
+          setMessage(
+            t('cmd.workflows.agentNotRunning', {
+              runId: liveRun.runId,
+              agentNumber: String(currentAgent.agentNumber),
+            }),
+          )
+          return
+        }
         skipWorkflowAgent(liveRun.task.id, currentAgent.agentNumber, setAppState)
         setMessage(
           t('cmd.workflows.agentStopped', {
@@ -594,6 +826,15 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
       <Text dimColor> · {selectedRun.runId}</Text>
     </Text>
   ) : undefined
+  const selectedActionHint = workflowSelectedActionHint({
+    mode: view.mode,
+    hasSelectedRun: selectedRun !== null,
+    selectedRunKind: selectedRun?.kind ?? null,
+    selectedRunStatus: selectedRun?.status ?? null,
+    selectedAgent: currentAgent,
+    runLevelAgentSelected: showRunLevelAgents && Boolean(currentAgent),
+    hasSelectedPhase: phases.length > 0,
+  })
 
   return (
     <Dialog
@@ -611,6 +852,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
       ) : null}
       {items.length > 0 && view.mode === 'list' ? (
         <Box flexDirection="column">
+          <Text dimColor>{selectedActionHint}</Text>
           {items.map((item, index) => (
             <Text key={item.id} color={index === selectedRunIndex ? 'suggestion' : undefined}>
               {index === selectedRunIndex ? '> ' : '  '}
@@ -634,6 +876,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
       {selectedRun && view.mode === 'run' ? (
         <Box flexDirection="column">
           <Text bold>{selectedRun.name}</Text>
+          <Text dimColor>{selectedActionHint}</Text>
           {selectedRun.kind === 'live' ? (
             <>
               <Text dimColor>
@@ -641,6 +884,9 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
                 {formatNumber(selectedRunMetricSummary?.tokens ?? 0)} tok ·{' '}
                 {formatNumber(selectedRunMetricSummary?.toolCalls ?? 0)} tools ·{' '}
                 {formatDuration(selectedRunMetricSummary?.elapsedMs ?? 0, { mostSignificantOnly: true })}
+              </Text>
+              <Text color={statusColor(verificationNode?.state ?? 'queued')}>
+                {workflowVerificationLine(verificationNode, selectedRun.runId)}
               </Text>
               <Box flexDirection="column" marginTop={1}>
                 {showRunLevelAgents
@@ -655,11 +901,14 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
                       </Text>
                     ))
                   : phases.map((phase, index) => {
+                      const phaseNode = phaseNodes[index] ?? null
                       const phaseAgents = selectedRun.task.agents.filter(agent => agent.phase === phase)
-                      const phaseSummary = buildWorkflowPhaseMetricSummary(
-                        phase,
-                        phaseAgents,
-                      )
+                      const phaseSummary = phaseNode
+                        ? workflowTreeNodeAgentMetricSummary(phaseNode)
+                        : buildWorkflowPhaseMetricSummary(
+                            phase,
+                            phaseAgents,
+                          )
                       const selected = index === selectedPhaseIndex
                       return (
                         <Text key={phase} color={selected ? 'suggestion' : undefined}>
@@ -690,6 +939,9 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
                   ? ` · ${formatDuration(selectedRunMetricSummary?.elapsedMs ?? 0, { mostSignificantOnly: true })}`
                   : ''}
               </Text>
+              <Text color={statusColor(verificationNode?.state ?? selectedRun.status)}>
+                {workflowVerificationLine(verificationNode, selectedRun.runId)}
+              </Text>
               {agents.length > 0 ? (
                 <Box flexDirection="column" marginTop={1}>
                   {showRunLevelAgents
@@ -704,11 +956,14 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
                         </Text>
                       ))
                     : phases.map((phase, index) => {
+                        const phaseNode = phaseNodes[index] ?? null
                         const phaseAgents = agents.filter(agent => agent.phase === phase)
-                        const phaseSummary = buildWorkflowPhaseMetricSummary(
-                          phase,
-                          phaseAgents,
-                        )
+                        const phaseSummary = phaseNode
+                          ? workflowTreeNodeAgentMetricSummary(phaseNode)
+                          : buildWorkflowPhaseMetricSummary(
+                              phase,
+                              phaseAgents,
+                            )
                         const selected = index === selectedPhaseIndex
                         return (
                           <Text key={phase} color={selected ? 'suggestion' : undefined}>
@@ -739,6 +994,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
       {selectedRun && view.mode === 'phase' ? (
         <Box flexDirection="column">
           <Text bold>{view.phase}</Text>
+          <Text dimColor>{selectedActionHint}</Text>
           {agents.map((agent, index) => (
             <Text key={agent.agentNumber} color={index === selectedAgentIndex ? 'suggestion' : undefined}>
               {index === selectedAgentIndex ? '> ' : '  '}
@@ -754,6 +1010,7 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
       {selectedRun && view.mode === 'agent' && currentAgent ? (
         <Box flexDirection="column">
           <Text bold>#{currentAgent.agentNumber} {currentAgent.label}</Text>
+          <Text dimColor>{selectedActionHint}</Text>
           <Text color={statusColor(currentAgent.status)}>
             {currentAgent.status}
             <Text dimColor>
@@ -763,6 +1020,9 @@ export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {
             </Text>
           </Text>
           {[
+            currentAgent.agentId ? `Agent ID: ${currentAgent.agentId}` : null,
+            currentAgent.transcriptPath ? `Transcript: ${currentAgent.transcriptPath}` : null,
+            currentAgent.remoteSessionId ? `Remote: ${currentAgent.remoteSessionId}` : null,
             currentAgent.promptPreview ? `Prompt: ${currentAgent.promptPreview}` : null,
             ...recentToolCallLines(currentAgent),
             currentAgent.resultPreview ? `Result: ${currentAgent.resultPreview}` : null,

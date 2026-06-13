@@ -207,6 +207,10 @@ describe('workflow local agent resolution', () => {
       agentPermissionMode?: PermissionMode
       agentModel?: string
       runAgentModel?: string
+      parentWorkflowId?: string
+      parentGoalId?: string
+      agentId?: string
+      transcriptSubdir?: string
       allowRules: string[]
       askRules: string[]
       denyRules: string[]
@@ -220,6 +224,10 @@ describe('workflow local agent resolution', () => {
       toolUseContext,
       availableTools,
       model,
+      parentWorkflowId,
+      parentGoalId,
+      override,
+      transcriptSubdir,
     }) {
       const permissionContext =
         toolUseContext.getAppState().toolPermissionContext
@@ -228,6 +236,10 @@ describe('workflow local agent resolution', () => {
         agentPermissionMode: agentDefinition.permissionMode,
         agentModel: agentDefinition.model,
         runAgentModel: model,
+        parentWorkflowId,
+        parentGoalId,
+        agentId: override?.agentId,
+        transcriptSubdir,
         allowRules: [
           ...(permissionContext.alwaysAllowRules.localSettings ?? []),
         ],
@@ -272,6 +284,8 @@ describe('workflow local agent resolution', () => {
       }),
       canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
       runId: 'wf-test',
+      transcriptDir: '/tmp/workflows/wf-test',
+      parentGoalId: 'goal-test',
       runAgentImpl,
     })
 
@@ -281,7 +295,14 @@ describe('workflow local agent resolution', () => {
         phase: null,
         label: 'inspect',
       }),
-    ).resolves.toMatchObject({ value: 'ok', ok: true })
+    ).resolves.toMatchObject({
+      value: 'ok',
+      ok: true,
+      agentId: expect.stringMatching(/^a[0-9a-f]+$/),
+      transcriptPath: expect.stringMatching(
+        /^\/tmp\/workflows\/wf-test\/agent-a[0-9a-f]+\.jsonl$/,
+      ),
+    })
 
     expect(observed).toEqual([
       {
@@ -289,6 +310,10 @@ describe('workflow local agent resolution', () => {
         agentPermissionMode: 'acceptEdits',
         agentModel: 'inherit',
         runAgentModel: undefined,
+        parentWorkflowId: 'wf-test',
+        parentGoalId: 'goal-test',
+        agentId: expect.stringMatching(/^a[0-9a-f]+$/),
+        transcriptSubdir: 'workflows/wf-test',
         allowRules: ['Bash(npm test)'],
         askRules: ['WebFetch(example.com)'],
         denyRules: ['Bash(rm -rf *)'],

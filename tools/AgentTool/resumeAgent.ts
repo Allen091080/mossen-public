@@ -190,6 +190,8 @@ export async function resumeAgentBackground({
     ...(isResumedFork && { useExactTools: true }),
     // Re-persist so metadata survives runAgent's writeAgentMetadata overwrite
     worktreePath: resumedWorktreePath,
+    parentWorkflowId: meta?.parentWorkflowId,
+    parentGoalId: meta?.parentGoalId,
     description: meta?.description,
     contentReplacementState: resumedReplacementState,
   }
@@ -202,6 +204,8 @@ export async function resumeAgentBackground({
     selectedAgent,
     setAppState: rootSetAppState,
     toolUseId: toolUseContext.toolUseId,
+    parentWorkflowId: meta?.parentWorkflowId,
+    parentGoalId: meta?.parentGoalId,
   })
 
   const metadata = {

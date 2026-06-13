@@ -3,8 +3,10 @@ import type { UUID } from 'crypto'
 import { dirname } from 'path'
 import {
   blockSessionGoalState,
+  budgetLimitSessionGoalState,
   clearSessionGoalState,
   completeSessionGoalState,
+  failSessionGoalState,
   getMainLoopModelOverride,
   getSessionId,
   getSessionGoalState,
@@ -56,6 +58,10 @@ import { parseUserSpecifiedModel } from './model/model.js'
 import { getPlansDirectory } from './plans.js'
 import { parseSessionGoalAction } from './sessionGoalCommand.js'
 import { getSessionGoalEventFromMessage } from './sessionGoalEvents.js'
+import {
+  persistCurrentSessionGoalSnapshot,
+  restoreSessionGoalSnapshotFromStore,
+} from './sessionGoalStore.js'
 import { setCwd } from './Shell.js'
 import {
   adoptResumedSessionFile,
@@ -111,6 +117,7 @@ function extractTodosFromTranscript(messages: Message[]): TodoList {
  * starts unattended auto-continuation. Users can explicitly run /goal resume.
  */
 function restoreSessionGoalFromTranscript(messages?: Message[]): void {
+  if (restoreSessionGoalSnapshotFromStore()) return
   if (!messages?.length) return
 
   let activeGoal: string | null = null
@@ -124,13 +131,14 @@ function restoreSessionGoalFromTranscript(messages?: Message[]): void {
       sawStructuredGoalEvent = true
       switch (goalEvent.type) {
         case 'goal_created':
-          setSessionGoalState(goalEvent.condition, undefined, {
+          setSessionGoalState(goalEvent.condition, goalEvent.successCriteria, {
             id: goalEvent.goalId,
             createdAt: goalEvent.createdAt,
             evaluatorModel: goalEvent.evaluatorModel,
             turnBudget: goalEvent.turnBudget,
             tokenBudget: goalEvent.tokenBudget,
             maxDurationSec: goalEvent.maxDurationSec,
+            constraints: goalEvent.constraints,
           })
           break
         case 'goal_eval':
@@ -141,7 +149,9 @@ function restoreSessionGoalFromTranscript(messages?: Message[]): void {
                 ? 'max_turns'
                 : goalEvent.verdict === 'error'
                   ? 'error'
-                  : 'not_met',
+                  : goalEvent.verdict === 'deferred'
+                    ? 'deferred'
+                    : 'not_met',
             goalEvent.reason,
             {
               turnCount: goalEvent.turnsUsed,
@@ -151,7 +161,7 @@ function restoreSessionGoalFromTranscript(messages?: Message[]): void {
           if (goalEvent.verdict === 'yes') {
             completeSessionGoalState(goalEvent.reason)
           } else if (goalEvent.verdict === 'max_turns') {
-            clearSessionGoalState('turn_budget_exhausted')
+            budgetLimitSessionGoalState(goalEvent.reason)
           } else if (goalEvent.verdict === 'error') {
             pauseSessionGoalState(goalEvent.reason)
           }
@@ -168,6 +178,20 @@ function restoreSessionGoalFromTranscript(messages?: Message[]): void {
           break
         case 'goal_blocked':
           blockSessionGoalState(goalEvent.reason)
+          break
+        case 'goal_failed':
+          recordSessionGoalEvaluation('error', goalEvent.reason, {
+            turnCount: goalEvent.turnsUsed,
+            tokenEstimate: goalEvent.tokensUsed,
+          })
+          failSessionGoalState(goalEvent.reason)
+          break
+        case 'goal_budget_limited':
+          recordSessionGoalEvaluation('max_turns', goalEvent.reason, {
+            turnCount: goalEvent.turnsUsed,
+            tokenEstimate: goalEvent.tokensUsed,
+          })
+          budgetLimitSessionGoalState(goalEvent.reason)
           break
         case 'goal_resumed':
           resumeSessionGoalState()
@@ -222,6 +246,9 @@ function restoreSessionGoalFromTranscript(messages?: Message[]): void {
   if (!sawStructuredGoalEvent && activeGoal) {
     setSessionGoalState(activeGoal)
     pauseSessionGoalState('resume_requires_explicit_goal_resume')
+  }
+  if (getSessionGoalState()) {
+    persistCurrentSessionGoalSnapshot()
   }
 }
 

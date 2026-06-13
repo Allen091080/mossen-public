@@ -4415,16 +4415,19 @@ async function run(): Promise<CommanderCommand> {
       throw new InvalidArgumentError(`It must be one of: ${allowed.join(', ')}`);
     }
     return value;
-})).option('--settings <file-or-json>', 'Default settings file or JSON for jobs dispatched from Agent View.').option('--add-dir <directories...>', 'Additional directories to allow for jobs dispatched from Agent View.').option('--mcp-config <configs...>', 'MCP config files or JSON for jobs dispatched from Agent View.').option('--plugin-dir <path>', 'Plugin directory or .zip for jobs dispatched from Agent View (repeatable).', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--strict-mcp-config', 'Only use MCP servers from --mcp-config for jobs dispatched from Agent View.', () => true).option('--fallback-model <model>', 'Fallback model for jobs dispatched from Agent View.').option('--allow-dangerously-skip-permissions', 'Allow bypass permission mode for jobs dispatched from Agent View without enabling it by default.', () => true).option('--dangerously-skip-permissions', 'Bypass permission checks for jobs dispatched from Agent View. Use only in a sandbox.', () => true).option('--doctor', 'Show Agent View supervisor health and storage status.').option('--gc', 'Garbage-collect terminal Agent View supervisor jobs older than --before').option('--before <date>', 'Cutoff date for --gc (ISO date or timestamp)').option('--dry-run', 'Preview Agent View GC without deleting data').option('--confirm <8hex>', 'Confirm Agent View GC using the dry-run token').addHelpText('after', '\nAgent View keys: type a task + Enter to start; / opens task skills/templates; Space peeks/replies; Enter/→ attaches; ← returns to the dashboard; /exit closes the dashboard.').action(async (options: {
-    doctor?: boolean;
-    gc?: boolean;
-    before?: string;
+})).option('--agent <agent>', 'Default agent for jobs dispatched from Agent View.').option('--settings <file-or-json>', 'Default settings file or JSON for jobs dispatched from Agent View.').option('--add-dir <directories...>', 'Additional directories to allow for jobs dispatched from Agent View.').option('--mcp-config <configs...>', 'MCP config files or JSON for jobs dispatched from Agent View.').option('--plugin-dir <path>', 'Plugin directory or .zip for jobs dispatched from Agent View (repeatable).', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--strict-mcp-config', 'Only use MCP servers from --mcp-config for jobs dispatched from Agent View.', () => true).option('--fallback-model <model>', 'Fallback model for jobs dispatched from Agent View.').option('--allow-dangerously-skip-permissions', 'Allow bypass permission mode for jobs dispatched from Agent View without enabling it by default.', () => true).option('--dangerously-skip-permissions', 'Bypass permission checks for jobs dispatched from Agent View. Use only in a sandbox.', () => true).option('--json', 'Print live sessions as a JSON array and exit without requiring a TTY.').option('--all', 'With --json, include Agent View jobs from every cwd instead of only the selected cwd.', () => true).option('--doctor', 'Show Agent View supervisor health and storage status.').option('--gc', 'Garbage-collect terminal Agent View supervisor jobs older than --before').option('--before <date>', 'Cutoff date for --gc (ISO date or timestamp)').option('--dry-run', 'Preview Agent View GC without deleting data').option('--confirm <8hex>', 'Confirm Agent View GC using the dry-run token').addHelpText('after', '\nAgent View keys: type a task + Enter to start; / opens task skills/templates; Space opens the preview card; r replies when input is needed; Enter/→ attaches to the live terminal; ← returns to the dashboard; /exit closes the dashboard.').action(async (options: {
+	  doctor?: boolean;
+	  gc?: boolean;
+	  json?: boolean;
+	  all?: boolean;
+	  before?: string;
     dryRun?: boolean;
     confirm?: string;
     cwd?: string;
     model?: string;
     permissionMode?: string;
     effort?: string;
+    agent?: string;
     settings?: string;
     addDir?: string[];
     mcpConfig?: string[];
@@ -4438,6 +4441,25 @@ async function run(): Promise<CommanderCommand> {
       agentsTuiOrPrinterHandler
     } = await import('./cli/handlers/agentsTui.js');
     await agentsTuiOrPrinterHandler(options);
+    process.exit(process.exitCode ?? 0);
+  });
+  program.command('workflows').description('List workflow runs recorded for this session').option('--json', 'Print workflow runs as a JSON array.').action(async (options: {
+    json?: boolean;
+  }) => {
+    const {
+      workflowsHandler
+    } = await import('./cli/handlers/workflows.js');
+    await workflowsHandler(options);
+    process.exit(process.exitCode ?? 0);
+  });
+  program.command('workflow <id>').description('Show one workflow run').option('--json', 'Print workflow run details as JSON.').option('--report', 'Export a Markdown report for this workflow run.').action(async (id: string, options: {
+    json?: boolean;
+    report?: boolean;
+  }) => {
+    const {
+      workflowHandler
+    } = await import('./cli/handlers/workflows.js');
+    await workflowHandler(id, options);
     process.exit(process.exitCode ?? 0);
   });
   program.command('logs <id>').description('Show Agent View supervisor job output').option('--limit <n>', 'Maximum output records to print', '80').action(async (id: string, options: {

@@ -119,6 +119,7 @@ describe('runtime.agent', () => {
   })
 
   test('relays live agent progress with official tool metadata', async () => {
+    const journal = createJournal('progress-journal')
     const { rt, events } = harness(async (_prompt, _opts, meta) => {
       meta.onProgress?.({
         tokens: 7,
@@ -131,7 +132,7 @@ describe('runtime.agent', () => {
         ],
       })
       return { value: 'agent finished', tokens: 11, toolCalls: 1, ok: true }
-    })
+    }, { journal })
     const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
 
     expect(await agent('inspect repo', { label: 'Inspect' })).toBe(
@@ -162,6 +163,60 @@ describe('runtime.agent', () => {
     expect(events[3]).toMatchObject({
       kind: 'agent_end',
       resultPreview: 'agent finished',
+    })
+    expect(journal.toData().started?.[0]).toMatchObject({
+      promptPreview: 'inspect repo',
+    })
+    expect(journal.toData().entries[0]).toMatchObject({
+      lastToolName: 'Read',
+      lastToolSummary: 'src/index.ts',
+      recentToolCalls: [
+        { name: 'Glob', summary: 'src/**/*.ts' },
+        { name: 'Read', summary: 'src/index.ts' },
+      ],
+      resultPreview: 'agent finished',
+    })
+  })
+
+  test('persists local workflow subagent identity and transcript anchors', async () => {
+    const journal = createJournal('identity-journal')
+    const { rt, events } = harness(async (_prompt, _opts, meta) => {
+      meta.onIdentity?.({
+        agentId: 'agent_workflow_identity',
+        transcriptPath: '/tmp/workflows/wf/subagents/agent_workflow_identity.jsonl',
+      })
+      return {
+        value: 'identity ok',
+        tokens: 5,
+        ok: true,
+        agentId: 'agent_workflow_identity',
+        transcriptPath: '/tmp/workflows/wf/subagents/agent_workflow_identity.jsonl',
+      }
+    }, { journal })
+    const agent = rt.scope.agent as (p: string, o?: object) => Promise<unknown>
+
+    expect(await agent('inspect identity', { label: 'Identity' })).toBe(
+      'identity ok',
+    )
+    expect(events.map(e => e.kind)).toEqual([
+      'agent_queued',
+      'agent_start',
+      'agent_progress',
+      'agent_end',
+    ])
+    expect(events[2]).toMatchObject({
+      kind: 'agent_progress',
+      agentId: 'agent_workflow_identity',
+      transcriptPath: '/tmp/workflows/wf/subagents/agent_workflow_identity.jsonl',
+    })
+    expect(events[3]).toMatchObject({
+      kind: 'agent_end',
+      agentId: 'agent_workflow_identity',
+      transcriptPath: '/tmp/workflows/wf/subagents/agent_workflow_identity.jsonl',
+    })
+    expect(journal.toData().entries[0]).toMatchObject({
+      agentId: 'agent_workflow_identity',
+      transcriptPath: '/tmp/workflows/wf/subagents/agent_workflow_identity.jsonl',
     })
   })
 

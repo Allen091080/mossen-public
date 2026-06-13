@@ -72,6 +72,7 @@ import { getImageFromClipboard, PASTE_THRESHOLD } from '../../utils/imagePaste.j
 import type { ImageDimensions } from '../../utils/imageResizer.js';
 import { cacheImagePath, storeImage } from '../../utils/imageStore.js';
 import { getLocalizedText } from '../../utils/uiLanguage.js';
+import { getSessionGoalState } from '../../bootstrap/state.js';
 import { isMacosOptionChar, MACOS_OPTION_SPECIAL_CHARS } from '../../utils/keyboardShortcuts.js';
 import { logError } from '../../utils/log.js';
 import { isOpus1mMergeEnabled, modelDisplayString } from '../../utils/model/model.js';
@@ -109,6 +110,7 @@ import { getVisibleAgentTasks, useCoordinatorTaskCount } from '../CoordinatorAge
 import { getEffortNotificationText } from '../EffortIndicator.js';
 import { getFastIconString } from '../FastIcon.js';
 import { GlobalSearchDialog } from '../GlobalSearchDialog.js';
+import { GoalMenu } from '../GoalMenu.js';
 import { HistorySearchDialog } from '../HistorySearchDialog.js';
 import { ModelPicker } from '../ModelPicker.js';
 import { QuickOpenDialog } from '../QuickOpenDialog.js';
@@ -159,10 +161,11 @@ type Props = {
   } | undefined) => void;
   submitCount: number;
   onShowMessageSelector: () => void;
-  /** Once a session goal exists, Ctrl-G is reserved for its floating overlay.
-   *  Active/paused goals toggle visibility; completed goals consume safely.
+  /** Once a session goal exists, Ctrl-G opens the goal menu.
+   *  The menu owns overlay visibility and slash-command shortcuts.
    *  The external editor shortcut remains available via ctrl+x ctrl+e. */
   onGoalOverlayToggle?: () => void;
+  goalOverlayVisible?: boolean;
   /** Fullscreen message actions: shift+↑ enters cursor. */
   onMessageActionsEnter?: () => void;
   mcpClients: MCPServerConnection[];
@@ -236,6 +239,7 @@ function PromptInput({
   submitCount,
   onShowMessageSelector,
   onGoalOverlayToggle,
+  goalOverlayVisible = false,
   onMessageActionsEnter,
   mcpClients,
   pastedContents,
@@ -429,6 +433,7 @@ function PromptInput({
   const [showQuickOpen, setShowQuickOpen] = useState(false);
   const [showGlobalSearch, setShowGlobalSearch] = useState(false);
   const [showHistoryPicker, setShowHistoryPicker] = useState(false);
+  const [showGoalMenu, setShowGoalMenu] = useState(false);
   const [showFastModePicker, setShowFastModePicker] = useState(false);
   const [showThinkingToggle, setShowThinkingToggle] = useState(false);
   const [showAutoModeOptIn, setShowAutoModeOptIn] = useState(false);
@@ -902,6 +907,11 @@ function PromptInput({
     const newInput = input.slice(0, cursorOffset) + text + input.slice(cursorOffset);
     trackAndSetInput(newInput);
     setCursorOffset(cursorOffset + text.length);
+  }, [input, cursorOffset, pastedContents, pushToBuffer, trackAndSetInput, setCursorOffset]);
+  const replaceInputWithGoalCommand = useCallback((command: string) => {
+    pushToBuffer(input, cursorOffset, pastedContents);
+    trackAndSetInput(command);
+    setCursorOffset(command.length);
   }, [input, cursorOffset, pastedContents, pushToBuffer, trackAndSetInput, setCursorOffset]);
   const {
     placeholder: defaultPlaceholder,
@@ -1751,7 +1761,7 @@ function PromptInput({
   useInput((char, key, event) => {
     if (!onGoalOverlayToggle || isModalOverlayActive) return;
     if (key.ctrl && !key.meta && char === 'g') {
-      onGoalOverlayToggle();
+      setShowGoalMenu(true);
       event.stopImmediatePropagation();
     }
   });
@@ -1966,7 +1976,7 @@ function PromptInput({
     // Skip all input handling when a full-screen dialog is open. These dialogs
     // render via early return, but hooks run unconditionally — so without this
     // guard, Escape inside a dialog leaks to the double-press message-selector.
-    if (showTeamsDialog || showQuickOpen || showGlobalSearch || showHistoryPicker) {
+    if (showTeamsDialog || showQuickOpen || showGlobalSearch || showHistoryPicker || showGoalMenu) {
       return;
     }
 
@@ -2003,7 +2013,7 @@ function PromptInput({
     // Footer navigation is handled via useKeybindings above (Footer context)
 
     // NOTE: ctrl+_ and ctrl+s are handled via Chat context keybindings above.
-    // ctrl+g is reserved by the goal overlay handler when a session goal exists.
+    // ctrl+g is reserved by the goal menu handler when a session goal exists.
     if (isWorkflowKeywordDismissShortcut(char, key) && inputWorkflowTriggers.length > 0) {
       setWorkflowTriggerDismissed(true);
       removeNotification('workflow-keyword-active');
@@ -2260,6 +2270,15 @@ function PromptInput({
     return <TeamsDialog initialTeams={cachedTeams} onDone={() => {
       setShowTeamsDialog(false);
     }} />;
+  }
+  if (showGoalMenu && onGoalOverlayToggle) {
+    return <GoalMenu
+      goal={getSessionGoalState()}
+      overlayVisible={goalOverlayVisible}
+      onToggleOverlay={onGoalOverlayToggle}
+      onInsertCommand={replaceInputWithGoalCommand}
+      onDone={() => setShowGoalMenu(false)}
+    />;
   }
   if (feature('QUICK_SEARCH')) {
     const insertWithSpacing = (text: string) => {

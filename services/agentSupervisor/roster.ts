@@ -62,11 +62,13 @@ export async function writeAgentSupervisorRoster(
 export function rosterJobFromState(
   state: AgentSupervisorJobState,
 ): AgentSupervisorRosterJob {
+  const lastError = state.errors.at(-1) ?? null
   return {
     id: state.id,
     title: state.ui.renamedTitle ?? state.title,
     cwd: state.cwd,
     status: state.status,
+    createdAt: state.createdAt,
     lastUpdatedAt: state.updatedAt,
     lastSummaryLine:
       state.lastQuestion?.text ?? state.summary ?? state.promptPreview ?? null,
@@ -74,10 +76,20 @@ export function rosterJobFromState(
     model: state.model,
     permissionMode: state.permissionMode,
     effort: state.effort ?? null,
+    sessionId: state.sessionId,
+    parentWorkflowId: state.parentWorkflowId ?? null,
+    parentGoalId: state.parentGoalId ?? null,
+    lastStartedAt: state.process.lastStartedAt,
+    lastExitedAt: state.process.lastExitedAt,
+    exitCode: state.process.exitCode,
+    signal: state.process.signal,
+    errorCount: state.errors.length,
+    lastErrorMessage: lastError?.message ?? null,
     lastQuestionText: state.lastQuestion?.text ?? null,
     lastQuestionOptionCount: state.lastQuestion?.options.length ?? 0,
     lastQuestionSuggestedReply: state.lastQuestion?.suggestedReply ?? null,
     resultSummary: state.resultPayload?.summary ?? null,
+    resultArtifacts: state.resultPayload?.artifacts ?? [],
     resultArtifactCount: state.resultPayload?.artifacts.length ?? 0,
     resultRiskCount: state.resultPayload?.risks.length ?? 0,
     resultNextActionCount: state.resultPayload?.nextActions.length ?? 0,

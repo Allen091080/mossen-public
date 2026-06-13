@@ -15,6 +15,9 @@ import {
   groupSupervisorAgentViewItems,
   type SupervisorAgentGroupStage,
 } from '../agentSupervisorViewModel.js'
+import {
+  groupSupervisorAgentViewItemsForDashboard,
+} from '../../agents/agentViewHelpers.js'
 
 function job(
   index: number,
@@ -128,13 +131,14 @@ describe('deriveSupervisorAgentViewItems', () => {
         title: 'running refactor',
         status: 'working',
         model: 'mossen-fast',
+        cwd: '/tmp/mossen/config/worktrees/j000000000003',
       }),
     ]))
 
     const needsInput = items.find(item => item.label === 'answer review question')!
     expect(needsInput.primaryAction).toMatchObject({
       kind: 'reply',
-      shortcut: 'Space',
+      shortcut: 'r',
     })
     expect(needsInput.secondaryAction).toMatchObject({
       kind: 'attach',
@@ -161,6 +165,8 @@ describe('deriveSupervisorAgentViewItems', () => {
       kind: 'peek',
       shortcut: 'Space',
     })
+    expect(working.worktreeLabel).toBe('worktree')
+    expect(filterSupervisorAgentViewItems(items, 'worktree')).toHaveLength(1)
   })
 })
 
@@ -225,5 +231,33 @@ describe('filter and grouping helpers', () => {
     expect(groups[0]?.stage).toBe('working')
     expect(groups[0]?.dateBucket).toBe('today')
     expect(getSupervisorAgentPrStatus(items[0]!)).toBe('PR #123')
+  })
+
+  test('dashboard groups result-bearing completed rows as ready for review', () => {
+    const items = deriveSupervisorAgentViewItems(roster([
+      job(1, {
+        title: 'needs approval',
+        status: 'needs_input',
+        lastQuestionText: 'Approve?',
+      }),
+      job(2, {
+        title: 'completed result',
+        status: 'completed',
+        resultSummary: 'release PR is ready',
+      }),
+      job(3, {
+        title: 'plain completed',
+        status: 'completed',
+      }),
+    ]))
+
+    const groups = groupSupervisorAgentViewItemsForDashboard(items)
+    expect(groups.map(group => group.stage)).toEqual([
+      'needs_input',
+      'ready_for_review',
+      'completed',
+    ])
+    expect(groups.find(group => group.stage === 'ready_for_review')?.items[0]?.label)
+      .toBe('completed result')
   })
 })

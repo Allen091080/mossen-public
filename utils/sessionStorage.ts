@@ -259,6 +259,10 @@ export type AgentMetadata = {
   agentType: string
   /** Worktree path if the agent was spawned with isolation: "worktree" */
   worktreePath?: string
+  /** Workflow run that spawned this subagent, when applicable. */
+  parentWorkflowId?: string
+  /** Goal active when this subagent was spawned, when applicable. */
+  parentGoalId?: string
   /** Original task description from the AgentTool input. Persisted so a
    * resumed agent's notification can show the original description instead
    * of a placeholder. Optional — older metadata files lack this field. */

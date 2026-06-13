@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  extractGoalContract,
   extractTurnBudget,
   parseSessionGoalAction,
 } from '../sessionGoalCommand.js'
@@ -41,6 +42,13 @@ describe('extractTurnBudget', () => {
     expect(extractTurnBudget('x --turns abc')).toEqual({ text: 'x --turns abc' })
   })
 
+  test('ignores --turns inside code spans', () => {
+    expect(extractTurnBudget('document `--turns 99` behavior --turns 3')).toEqual({
+      text: 'document `--turns 99` behavior',
+      turnBudget: 3,
+    })
+  })
+
   test('a body that is only the flag yields empty text', () => {
     expect(extractTurnBudget('--turns 10')).toEqual({ text: '', turnBudget: 10 })
   })
@@ -74,11 +82,61 @@ describe('parseSessionGoalAction', () => {
     expect(parseSessionGoalAction('explain').action).toBe('explain')
     expect(parseSessionGoalAction('pause').action).toBe('pause')
     expect(parseSessionGoalAction('resume').action).toBe('resume')
+    expect(parseSessionGoalAction('edit').action).toBe('edit')
+    expect(parseSessionGoalAction('budget').action).toBe('budget')
+    expect(parseSessionGoalAction('history').action).toBe('history')
     expect(parseSessionGoalAction('done').action).toBe('done')
     expect(parseSessionGoalAction('complete').action).toBe('done')
     expect(parseSessionGoalAction('stop').action).toBe('clear')
     expect(parseSessionGoalAction('off').action).toBe('clear')
     expect(parseSessionGoalAction('clear').action).toBe('clear')
+  })
+})
+
+describe('extractGoalContract', () => {
+  test('extracts success criteria and constraints', () => {
+    expect(
+      extractGoalContract('Fix goal --criteria tests pass --constraints no secrets'),
+    ).toEqual({
+      text: 'Fix goal',
+      successCriteria: 'tests pass',
+      constraints: 'no secrets',
+    })
+  })
+
+  test('leaves plain text unchanged', () => {
+    expect(extractGoalContract('Fix goal')).toEqual({ text: 'Fix goal' })
+  })
+
+  test('extracts multiline criteria and constraints', () => {
+    expect(
+      extractGoalContract('Fix goal\n--criteria tests pass\n- smoke passes\n--constraints no secrets'),
+    ).toEqual({
+      text: 'Fix goal',
+      successCriteria: 'tests pass\n- smoke passes',
+      constraints: 'no secrets',
+    })
+  })
+
+  test('allows quoted values to contain flag-like text', () => {
+    expect(
+      extractGoalContract(
+        'Document flags --criteria "mention --constraints literally" --constraints no secrets',
+      ),
+    ).toEqual({
+      text: 'Document flags',
+      successCriteria: 'mention --constraints literally',
+      constraints: 'no secrets',
+    })
+  })
+
+  test('ignores flag-like text inside code spans', () => {
+    expect(
+      extractGoalContract('Document `--criteria value` examples --constraints no secrets'),
+    ).toEqual({
+      text: 'Document `--criteria value` examples',
+      constraints: 'no secrets',
+    })
   })
 })
 

@@ -39,7 +39,7 @@ export type AgentViewCommandPaletteItem = {
   kindLabel: string
 }
 
-export type SupervisorAgentDisplayStage = 'pinned' | SupervisorAgentGroupStage
+export type SupervisorAgentDisplayStage = SupervisorAgentGroupStage
 
 export type SupervisorAgentDisplayGroup = {
   key: SupervisorAgentDisplayStage
@@ -69,9 +69,9 @@ export const AGENT_VIEW_SKILL_LIKE_SOURCES = new Set([
   'commands_DEPRECATED',
 ])
 export const AGENT_VIEW_STAGE_ORDER: SupervisorAgentGroupStage[] = [
-  'ready_for_review',
   'needs_input',
   'working',
+  'ready_for_review',
   'completed',
   'stopped_failed',
 ]
@@ -155,8 +155,6 @@ export function agentViewGroupStageLabel(
   stage: SupervisorAgentDisplayStage,
 ): string {
   switch (stage) {
-    case 'pinned':
-      return t('ui.agentView.groupStagePinned')
     case 'needs_input':
       return t('ui.agentView.groupStageNeedsInput')
     case 'ready_for_review':
@@ -204,15 +202,11 @@ export function groupSupervisorAgentViewItemsForDashboard(
   expandedGroups: Set<string> = new Set(),
 ): SupervisorAgentDisplayGroup[] {
   const groups = new Map<SupervisorAgentGroupStage, SupervisorAgentViewItem[]>()
-  const pinned: SupervisorAgentViewItem[] = []
   for (const item of items) {
-    if (item.pinned) {
-      pinned.push(item)
-      continue
-    }
     const hasPrReference = getSupervisorAgentPrStatus(item) !== null
     const stage =
-      hasPrReference && (item.status === 'completed' || item.status === 'idle')
+      item.statusContext === 'ready_result' ||
+      (hasPrReference && (item.status === 'completed' || item.status === 'idle'))
         ? 'ready_for_review'
         : getAgentViewStage(item.status)
     const group = groups.get(stage)
@@ -241,12 +235,7 @@ export function groupSupervisorAgentViewItemsForDashboard(
       },
     ]
   })
-  return pinned.length > 0
-    ? [
-        { key: 'pinned', stage: 'pinned', items: pinned, totalCount: pinned.length },
-        ...orderedGroups,
-      ]
-    : orderedGroups
+  return orderedGroups
 }
 
 export function shortenPathForAgentView(path: string): string {

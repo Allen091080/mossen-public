@@ -123,6 +123,8 @@ export const AgentSupervisorJobStateSchema = z.object({
   allowDangerouslySkipPermissions: z.boolean().optional().default(false),
   dangerouslySkipPermissions: z.boolean().optional().default(false),
   sessionId: z.string().nullable(),
+  parentWorkflowId: z.string().nullable().optional().default(null),
+  parentGoalId: z.string().nullable().optional().default(null),
   promptPreview: z.string(),
   summary: z.string().nullable(),
   resultPayload: AgentSupervisorResultPayloadSchema.nullable().optional(),
@@ -140,16 +142,27 @@ export const AgentSupervisorRosterJobSchema = z.object({
   title: z.string(),
   cwd: z.string(),
   status: AgentSupervisorStatusSchema,
+  createdAt: z.string().optional(),
   lastUpdatedAt: z.string(),
   lastSummaryLine: z.string().nullable(),
   promptPreview: z.string().nullable().optional(),
   model: z.string().nullable().optional(),
   permissionMode: z.string().nullable().optional(),
   effort: z.string().nullable().optional(),
+  sessionId: z.string().nullable().optional(),
+  parentWorkflowId: z.string().nullable().optional(),
+  parentGoalId: z.string().nullable().optional(),
+  lastStartedAt: z.string().nullable().optional(),
+  lastExitedAt: z.string().nullable().optional(),
+  exitCode: z.number().int().nullable().optional(),
+  signal: z.string().nullable().optional(),
+  errorCount: z.number().int().nonnegative().optional(),
+  lastErrorMessage: z.string().nullable().optional(),
   lastQuestionText: z.string().nullable().optional(),
   lastQuestionOptionCount: z.number().int().nonnegative().optional(),
   lastQuestionSuggestedReply: z.string().nullable().optional(),
   resultSummary: z.string().nullable().optional(),
+  resultArtifacts: z.array(AgentSupervisorResultArtifactSchema).optional(),
   resultArtifactCount: z.number().int().nonnegative().optional(),
   resultRiskCount: z.number().int().nonnegative().optional(),
   resultNextActionCount: z.number().int().nonnegative().optional(),
@@ -366,6 +379,8 @@ export function createInitialAgentSupervisorJobState(
     allowDangerouslySkipPermissions?: boolean
     dangerouslySkipPermissions?: boolean
     sessionId?: string | null
+    parentWorkflowId?: string | null
+    parentGoalId?: string | null
     now?: string
   },
 ): AgentSupervisorJobState {
@@ -401,6 +416,8 @@ export function createInitialAgentSupervisorJobState(
       options.allowDangerouslySkipPermissions ?? false,
     dangerouslySkipPermissions: options.dangerouslySkipPermissions ?? false,
     sessionId: options.sessionId ?? null,
+    parentWorkflowId: options.parentWorkflowId ?? null,
+    parentGoalId: options.parentGoalId ?? null,
     promptPreview: options.promptPreview,
     summary: null,
     resultPayload: null,

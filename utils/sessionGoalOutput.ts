@@ -62,6 +62,7 @@ export function getSessionGoalStateReasonKind(
     return goal.lastEvaluatorStatus === 'error' ? 'error' : 'paused'
   }
   if (goal.status === 'blocked') return 'blocked'
+  if (goal.status === 'budget_limited') return 'max_turns'
   if (goal.status === 'completed' || goal.lastEvaluatorStatus === 'met') {
     return 'completed'
   }
@@ -89,12 +90,17 @@ export function getSessionGoalEventReasonKind(
     case 'goal_eval':
       if (event.verdict === 'yes') return 'completed'
       if (event.verdict === 'no') return 'continue'
+      if (event.verdict === 'deferred') return 'deferred'
       if (event.verdict === 'max_turns') return 'max_turns'
       return 'error'
     case 'goal_paused':
       return 'paused'
     case 'goal_blocked':
       return 'blocked'
+    case 'goal_failed':
+      return 'error'
+    case 'goal_budget_limited':
+      return 'max_turns'
     case 'goal_cleared':
       if (event.reason === 'condition_met') return 'completed'
       if (event.reason === 'turn_budget_exhausted') return 'max_turns'
@@ -118,6 +124,10 @@ export function formatSessionGoalEventReason(
       return formatSessionGoalReason('paused', event.cause)
     case 'goal_blocked':
       return formatSessionGoalReason('blocked', event.reason)
+    case 'goal_failed':
+      return formatSessionGoalReason('error', event.reason)
+    case 'goal_budget_limited':
+      return formatSessionGoalReason('max_turns', event.reason)
     case 'goal_cleared':
       return formatSessionGoalReason(
         getSessionGoalEventReasonKind(event),
@@ -137,6 +147,8 @@ export function formatSessionGoalActionReason(
       return formatSessionGoalReason('continue', action.reason)
     case 'completed':
       return formatSessionGoalReason('completed', action.reason)
+    case 'deferred':
+      return formatSessionGoalReason('deferred', action.reason)
     case 'paused':
       return formatSessionGoalReason('paused', action.reason)
     case 'max_turns':
@@ -158,6 +170,10 @@ export function summarizeSessionGoalEvent(event: SessionGoalEvent): string {
       return `goal paused: ${formatSessionGoalEventReason(event)}`
     case 'goal_blocked':
       return `goal blocked: ${formatSessionGoalEventReason(event)}`
+    case 'goal_failed':
+      return `goal failed: ${formatSessionGoalEventReason(event)}; turns ${event.turnsUsed}, estimated tokens ${event.tokensUsed}`
+    case 'goal_budget_limited':
+      return `goal budget limited: ${formatSessionGoalEventReason(event)}; turns ${event.turnsUsed}, estimated tokens ${event.tokensUsed}`
     case 'goal_resumed':
       return 'goal resumed'
   }

@@ -1,4 +1,7 @@
-import type { MossenGoalState } from '../bootstrap/state.js';
+import {
+  getSessionGoalActualTokenUsage,
+  type MossenGoalState,
+} from '../bootstrap/state.js';
 import type React from 'react';
 import { Box, Text } from '../ink.js';
 import { formatTokens } from '../utils/format.js';
@@ -7,7 +10,6 @@ import { formatSessionGoalStateReason } from '../utils/sessionGoalOutput.js';
 import { truncateToGraphemeCount } from '../utils/truncate.js';
 import { truncateVisual } from '../utils/visualWidth.js';
 
-export const GOAL_OVERLAY_REFRESH_MS = 250;
 export const GOAL_OVERLAY_MIN_COLUMNS = 90;
 export const GOAL_OVERLAY_WIDTH = 42;
 // Below the full overlay's column threshold but still wide enough for a
@@ -19,7 +21,7 @@ const GOAL_INLINE_TEXT_GRAPHEMES = 32;
 
 export type GoalOverlayDisplayState = Extract<
   MossenGoalState['status'],
-  'active' | 'paused' | 'blocked' | 'completed' | 'failed'
+  'active' | 'paused' | 'blocked' | 'budget_limited' | 'completed' | 'failed'
 >;
 
 export function isGoalOverlayEligible(
@@ -29,6 +31,7 @@ export function isGoalOverlayEligible(
     goal?.status === 'active' ||
     goal?.status === 'paused' ||
     goal?.status === 'blocked' ||
+    goal?.status === 'budget_limited' ||
     goal?.status === 'completed' ||
     goal?.status === 'failed'
   );
@@ -55,9 +58,16 @@ export function formatGoalOverlayElapsed(createdAt: string, now = Date.now()): s
 }
 
 export function formatGoalOverlayTokens(goal: MossenGoalState): string {
-  const total = goal.tokenEstimate ?? 0;
-  if (total <= 0) return t('ui.goalOverlay.tokenPending');
-  const parts = [`~${formatTokens(total)}`];
+  const actualTokens = getSessionGoalActualTokenUsage(goal);
+  const total = actualTokens ?? goal.tokenEstimate ?? 0;
+  if (total <= 0) {
+    return actualTokens === null
+      ? t('ui.goalOverlay.tokenPending')
+      : formatTokens(total);
+  }
+  const parts = [
+    actualTokens === null ? `~${formatTokens(total)}` : formatTokens(total),
+  ];
   if (goal.lastTurnTokenEstimate !== undefined) {
     parts.push(`+${formatTokens(goal.lastTurnTokenEstimate)}`);
   }
@@ -69,6 +79,7 @@ export function formatGoalOverlayStatus(
 ): string {
   if (goal.status === 'paused') return t('ui.goalOverlay.statusPaused');
   if (goal.status === 'blocked') return t('ui.goalOverlay.statusBlocked');
+  if (goal.status === 'budget_limited') return t('ui.goalOverlay.statusBudgetLimited');
   if (goal.status === 'completed') return t('ui.goalOverlay.statusCompleted');
   if (goal.status === 'failed') return t('ui.goalOverlay.statusFailed');
   return t('ui.goalOverlay.statusActive');
@@ -79,6 +90,7 @@ export function formatGoalOverlayNextAction(
 ): string {
   if (goal.status === 'paused') return t('ui.goalOverlay.nextPaused');
   if (goal.status === 'blocked') return t('ui.goalOverlay.nextBlocked');
+  if (goal.status === 'budget_limited') return t('ui.goalOverlay.nextBudgetLimited');
   if (goal.status === 'completed') return t('ui.goalOverlay.nextCompleted');
   if (goal.status === 'failed') return t('ui.goalOverlay.nextFailed');
   return t('ui.goalOverlay.nextActive');
@@ -153,12 +165,18 @@ export function shouldShowGoalInline(
 export function formatGoalOverlayInline(
   goal: MossenGoalState & { status: GoalOverlayDisplayState },
 ): string {
+  const actualTokens = getSessionGoalActualTokenUsage(goal);
+  const totalTokens = actualTokens ?? goal.tokenEstimate ?? 0;
   const parts = [
     `${t('ui.goalOverlay.title')} ${formatGoalOverlayStatus(goal)}`,
     `${goal.turnCount}/${goal.turnBudget}`,
   ];
-  if ((goal.tokenEstimate ?? 0) > 0) {
-    parts.push(`~${formatTokens(goal.tokenEstimate ?? 0)}`);
+  if (totalTokens > 0) {
+    parts.push(
+      actualTokens === null
+        ? `~${formatTokens(totalTokens)}`
+        : formatTokens(totalTokens),
+    );
   }
   parts.push(truncateToGraphemeCount(goal.text, GOAL_INLINE_TEXT_GRAPHEMES));
   return parts.join(' · ');

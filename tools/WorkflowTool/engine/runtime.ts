@@ -92,6 +92,9 @@ export type RunOneAgent = (
     agentNumber: number
     phase: string | null
     label: string
+    onIdentity?: (
+      identity: Pick<WorkflowAgentProgressMeta, 'agentId' | 'transcriptPath'>,
+    ) => void
     onProgress?: (update: WorkflowAgentProgressUpdate) => void
   },
 ) => Promise<AgentRunResult>
@@ -410,14 +413,20 @@ export function createWorkflowRuntime(
     }
     const retryableAttempts: RetryableAgentStatus[] = []
     for (;;) {
+      attemptQueuedAt = Date.now()
+      const lastAttempt = retryableAttempts.at(-1)
       journal?.start(index, hash, {
         label,
         phase,
         agentNumber,
         opts: effectiveOpts,
+        ...(preview ? { promptPreview: preview } : {}),
+        queuedAt: attemptQueuedAt,
+        lastProgressAt: attemptQueuedAt,
+        ...(lastAttempt
+          ? { lastAttemptReason: retryableStatusReason(lastAttempt) }
+          : {}),
       })
-      attemptQueuedAt = Date.now()
-      const lastAttempt = retryableAttempts.at(-1)
       progress({
         kind: 'agent_queued',
         label,
@@ -434,6 +443,7 @@ export function createWorkflowRuntime(
 
       let result: AgentRunResult
       let skipped = false
+      let latestProgressMeta: WorkflowAgentProgressMeta = {}
       try {
         await waitForResume?.(agentNumber, { phase, label })
         result = await limiter.run(async () => {
@@ -469,8 +479,54 @@ export function createWorkflowRuntime(
             agentNumber,
             phase,
             label,
+            onIdentity: identity => {
+              latestProgressMeta = {
+                ...latestProgressMeta,
+                ...(identity.agentId ? { agentId: identity.agentId } : {}),
+                ...(identity.transcriptPath
+                  ? { transcriptPath: identity.transcriptPath }
+                  : {}),
+              }
+              progress({
+                kind: 'agent_progress',
+                label,
+                phase,
+                agentNumber,
+                ...baseProgressMeta({
+                  queuedAt: attemptQueuedAt,
+                  startedAt: attemptStartedAt,
+                  lastProgressAt: Date.now(),
+                  ...latestProgressMeta,
+                }),
+              })
+            },
             onProgress: update => {
               const now = Date.now()
+              latestProgressMeta = {
+                ...latestProgressMeta,
+                queuedAt: attemptQueuedAt,
+                startedAt: attemptStartedAt,
+                lastProgressAt: now,
+                ...(update.agentId ? { agentId: update.agentId } : {}),
+                ...(update.transcriptPath
+                  ? { transcriptPath: update.transcriptPath }
+                  : {}),
+                ...(lastAttempt
+                  ? { lastAttemptReason: retryableStatusReason(lastAttempt) }
+                  : {}),
+                ...(update.lastToolName
+                  ? { lastToolName: update.lastToolName }
+                  : {}),
+                ...(update.lastToolSummary
+                  ? { lastToolSummary: update.lastToolSummary }
+                  : {}),
+                ...(update.recentToolCalls?.length
+                  ? { recentToolCalls: update.recentToolCalls }
+                  : {}),
+                ...(update.resultPreview
+                  ? { resultPreview: update.resultPreview }
+                  : {}),
+              }
               progress({
                 kind: 'agent_progress',
                 label,
@@ -482,26 +538,7 @@ export function createWorkflowRuntime(
                 ...(typeof update.toolCalls === 'number'
                   ? { toolCalls: update.toolCalls }
                   : {}),
-                ...baseProgressMeta({
-                  queuedAt: attemptQueuedAt,
-                  startedAt: attemptStartedAt,
-                  lastProgressAt: now,
-                  ...(lastAttempt
-                    ? { lastAttemptReason: retryableStatusReason(lastAttempt) }
-                    : {}),
-                  ...(update.lastToolName
-                    ? { lastToolName: update.lastToolName }
-                    : {}),
-                  ...(update.lastToolSummary
-                    ? { lastToolSummary: update.lastToolSummary }
-                    : {}),
-                  ...(update.recentToolCalls?.length
-                    ? { recentToolCalls: update.recentToolCalls }
-                    : {}),
-                  ...(update.resultPreview
-                    ? { resultPreview: update.resultPreview }
-                    : {}),
-                }),
+                ...baseProgressMeta(latestProgressMeta),
               })
             },
           })
@@ -578,30 +615,68 @@ export function createWorkflowRuntime(
 
       budget.add(result.tokens)
       toolCallCounter += result.toolCalls ?? 0
-      journal?.record(index, hash, result)
       const status =
         result.status ?? (skipped ? 'skipped' : result.ok ? 'completed' : 'failed')
       const now = Date.now()
+      const resultWithTiming: AgentRunResult =
+        typeof result.durationMs === 'number'
+          ? result
+          : { ...result, durationMs: now - agentStartedAt }
+      const finalProgressMeta: WorkflowAgentProgressMeta = {
+        ...latestProgressMeta,
+        lastProgressAt: now,
+        ...(resultWithTiming.remoteSessionId
+          ? { remoteSessionId: resultWithTiming.remoteSessionId }
+          : {}),
+        ...(resultWithTiming.agentId
+          ? { agentId: resultWithTiming.agentId }
+          : {}),
+        ...(resultWithTiming.transcriptPath
+          ? { transcriptPath: resultWithTiming.transcriptPath }
+          : {}),
+        ...(resultWithTiming.ok
+          ? { resultPreview: resultPreview(resultWithTiming.value) }
+          : {}),
+      }
+      journal?.record(index, hash, resultWithTiming, {
+        ...(typeof finalProgressMeta.lastProgressAt === 'number'
+          ? { lastProgressAt: finalProgressMeta.lastProgressAt }
+          : {}),
+        ...(finalProgressMeta.lastToolName
+          ? { lastToolName: finalProgressMeta.lastToolName }
+          : {}),
+        ...(finalProgressMeta.lastToolSummary
+          ? { lastToolSummary: finalProgressMeta.lastToolSummary }
+          : {}),
+        ...(finalProgressMeta.recentToolCalls?.length
+          ? { recentToolCalls: finalProgressMeta.recentToolCalls }
+          : {}),
+        ...(finalProgressMeta.resultPreview
+          ? { resultPreview: finalProgressMeta.resultPreview }
+          : {}),
+        ...(finalProgressMeta.agentId ? { agentId: finalProgressMeta.agentId } : {}),
+        ...(finalProgressMeta.transcriptPath
+          ? { transcriptPath: finalProgressMeta.transcriptPath }
+          : {}),
+      })
       progress({
         kind: 'agent_end',
         label,
         phase,
         agentNumber,
-        ok: result.ok,
+        ok: resultWithTiming.ok,
         status,
         ...(status === 'skipped' ? { error: 'skipped by user' } : {}),
-        tokens: result.tokens,
-        toolCalls: result.toolCalls ?? 0,
-        durationMs: result.durationMs ?? now - agentStartedAt,
+        tokens: resultWithTiming.tokens,
+        toolCalls: resultWithTiming.toolCalls ?? 0,
+        durationMs: resultWithTiming.durationMs ?? now - agentStartedAt,
         ...baseProgressMeta({
           queuedAt: attemptQueuedAt,
           startedAt: attemptStartedAt,
-          lastProgressAt: now,
-          remoteSessionId: result.remoteSessionId,
-          ...(result.ok ? { resultPreview: resultPreview(result.value) } : {}),
+          ...finalProgressMeta,
         }),
       })
-      return result.ok ? result.value : null
+      return resultWithTiming.ok ? resultWithTiming.value : null
     }
   }
 

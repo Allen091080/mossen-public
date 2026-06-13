@@ -39,6 +39,7 @@ const JOURNAL_FILE = 'journal.jsonl'
 const SCRIPT_FILE = 'script.js'
 const META_FILE = 'run.json'
 const LOG_FILE = 'progress.log'
+const REPORT_FILE = 'report.md'
 export const STALE_RUNNING_WORKFLOW_MESSAGE =
   'Workflow run was interrupted because the previous process exited; relaunch the workflow to start fresh.'
 const activeWorkflowRunIds = new Set<string>()
@@ -54,6 +55,7 @@ export type WorkflowRunMeta = {
   args?: unknown
   scriptPath?: string
   transcriptDir?: string
+  parentGoalId?: string | null
   createdAt: string
   status: Extract<TaskStatus, 'running' | 'paused' | 'completed' | 'failed' | 'killed'>
   agentCount?: number
@@ -235,6 +237,11 @@ export function saveRunLog(runId: string, lines: string[]): void {
 /** Absolute path to a run's progress log (used as the task-notification file). */
 export function runLogPath(runId: string): string {
   return join(runDir(runId), LOG_FILE)
+}
+
+/** Absolute path to a run's Markdown report. */
+export function workflowReportPath(runId: string): string {
+  return join(runDir(runId), REPORT_FILE)
 }
 
 /** Read back a run's progress log lines. */

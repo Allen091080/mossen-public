@@ -79,8 +79,8 @@ export function getLocalDocTopics(): LocalDocTopic[] {
           zh: '运行 mossen agents 打开面板；/agents 打开智能体配置，/agents view 是兼容的面板入口。',
         }),
         getLocalizedText({
-          en: 'Type a task to dispatch, / to choose task skills/templates, Space peeks/replies, Enter/→ attaches, and ? shows shortcuts.',
-          zh: '输入任务即可派发，/ 选择任务技能/模板，Space 查看/回复，Enter/→ 进入任务，? 查看快捷键。',
+          en: 'Type a task to dispatch, / to choose task skills/templates, Space opens the preview card, r replies when input is needed, Enter/→ attaches to the live terminal, and ? shows shortcuts.',
+          zh: '输入任务即可派发，/ 选择任务技能/模板，Space 打开预览卡片，等待输入时按 r 回复，Enter/→ 接管 live 终端，? 查看快捷键。',
         }),
         getLocalizedText({
           en: 'Use mossen wait <id> for automation and mossen rm <id> --dry-run before cleanup.',

@@ -1,12 +1,21 @@
-import { describe, expect, test } from 'bun:test'
+import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   formatGoalOverlayInline,
+  formatGoalOverlayTokens,
   shouldShowGoalInline,
   GOAL_INLINE_MIN_COLUMNS,
   GOAL_OVERLAY_MIN_COLUMNS,
   type GoalOverlayDisplayState,
 } from '../GoalOverlay.js'
-import type { MossenGoalState } from '../../bootstrap/state.js'
+import {
+  addToTotalCostState,
+  resetStateForTests,
+  type MossenGoalState,
+} from '../../bootstrap/state.js'
+
+beforeEach(() => {
+  resetStateForTests()
+})
 
 function goal(
   overrides: Partial<MossenGoalState> = {},
@@ -19,6 +28,9 @@ function goal(
     evaluatorModel: 'haiku',
     turnBudget: 20,
     turnCount: 3,
+    recentEvidence: [],
+    negativeEvidence: [],
+    blockerHistory: [],
     evaluationFailureCount: 0,
     status: 'active',
     ...overrides,
@@ -63,6 +75,30 @@ describe('formatGoalOverlayInline (G3)', () => {
   test('includes a token estimate when present', () => {
     const line = formatGoalOverlayInline(goal({ tokenEstimate: 1234 }))
     expect(line).toMatch(/~1\.2k/)
+  })
+
+  test('uses actual token delta when baseline is present', () => {
+    addToTotalCostState(
+      0,
+      {
+        inputTokens: 125,
+        outputTokens: 60,
+        cacheReadInputTokens: 25,
+        cacheCreationInputTokens: 12,
+      },
+      'test-model',
+    )
+    const trackedGoal = goal({
+      tokenEstimate: 1234,
+      tokenBaselineInputTokens: 100,
+      tokenBaselineOutputTokens: 50,
+      tokenBaselineCacheReadInputTokens: 20,
+      tokenBaselineCacheCreationInputTokens: 10,
+    })
+
+    expect(formatGoalOverlayTokens(trackedGoal)).toBe('42')
+    expect(formatGoalOverlayInline(trackedGoal)).toContain('42')
+    expect(formatGoalOverlayInline(trackedGoal)).not.toContain('~')
   })
 
   test('omits token estimate when zero/absent', () => {

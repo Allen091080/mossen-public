@@ -27,6 +27,8 @@ export type SupervisorAgentViewItem = {
   pinned: boolean
   order: number
   agent: string | null
+  parentWorkflowId: string | null
+  parentGoalId: string | null
   processAlive: boolean
   directoryName: string
   cwdAvailable: boolean
@@ -34,6 +36,7 @@ export type SupervisorAgentViewItem = {
   secondaryAction: SupervisorAgentViewAction | null
   statusContext: SupervisorAgentStatusContext
   resultBadge: string | null
+  worktreeLabel: string | null
 }
 
 export type SupervisorAgentViewActionKind =
@@ -103,10 +106,10 @@ const PR_REFERENCE_PATTERN =
   /(?:https?:\/\/[^\s)]+\/(?:pull|merge_requests|(?:-|repos\/[^/]+\/[^/]+\/pulls))\/(\d+)\b|\b(?:PR|pull request|merge request)\s*#?(\d+)\b)/i
 
 const ACTIONS: Record<SupervisorAgentViewActionKind, SupervisorAgentViewAction> = {
-  attach: { kind: 'attach', label: 'attach', shortcut: 'Enter/→' },
+  attach: { kind: 'attach', label: 'attach terminal', shortcut: 'Enter/→' },
   inspect: { kind: 'inspect', label: 'inspect', shortcut: 'Space' },
-  peek: { kind: 'peek', label: 'peek', shortcut: 'Space' },
-  reply: { kind: 'reply', label: 'reply', shortcut: 'Space' },
+  peek: { kind: 'peek', label: 'preview card', shortcut: 'Space' },
+  reply: { kind: 'reply', label: 'reply', shortcut: 'r' },
   review: { kind: 'review', label: 'review', shortcut: 'Space' },
 }
 
@@ -141,6 +144,7 @@ function rosterJobToItem(job: AgentSupervisorRosterJob): SupervisorAgentViewItem
   const directoryName = parts.at(-1) ?? job.cwd
   const actionModel = getSupervisorAgentActionModel(job)
   const resultBadge = getSupervisorAgentResultBadge(job)
+  const worktreeLabel = getSupervisorAgentWorktreeLabel(job)
   return {
     id: job.id,
     type: 'supervisor_agent',
@@ -163,6 +167,8 @@ function rosterJobToItem(job: AgentSupervisorRosterJob): SupervisorAgentViewItem
     pinned: job.pinned,
     order: job.order,
     agent: job.agent,
+    parentWorkflowId: job.parentWorkflowId ?? null,
+    parentGoalId: job.parentGoalId ?? null,
     processAlive: job.processAlive ?? false,
     directoryName: cwdAvailable ? directoryName : `${directoryName} (missing)`,
     cwdAvailable,
@@ -170,7 +176,17 @@ function rosterJobToItem(job: AgentSupervisorRosterJob): SupervisorAgentViewItem
     secondaryAction: actionModel.secondaryAction,
     statusContext: actionModel.statusContext,
     resultBadge,
+    worktreeLabel,
   }
+}
+
+export function getSupervisorAgentWorktreeLabel(
+  job: Pick<AgentSupervisorRosterJob, 'cwd'>,
+): string | null {
+  const normalized = job.cwd.replace(/\\/g, '/')
+  return /\/worktrees\/[a-z0-9][a-z0-9_-]{2,63}$/.test(normalized)
+    ? 'worktree'
+    : null
 }
 
 export function getSupervisorAgentActionModel(
@@ -357,6 +373,8 @@ export function filterSupervisorAgentViewItems(
       item.cwd,
       item.directoryName,
       item.agent ?? '',
+      item.parentWorkflowId ?? '',
+      item.parentGoalId ?? '',
       item.lastSummaryLine ?? '',
       item.promptPreview ?? '',
       item.model ?? '',
@@ -366,6 +384,7 @@ export function filterSupervisorAgentViewItems(
       item.lastQuestionSuggestedReply ?? '',
       item.resultSummary ?? '',
       item.resultBadge ?? '',
+      item.worktreeLabel ?? '',
       item.primaryAction.label,
       item.primaryAction.shortcut,
       item.secondaryAction?.label ?? '',

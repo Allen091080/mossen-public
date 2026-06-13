@@ -21,6 +21,7 @@ import { createAbortController } from './abortController.js'
 import type { FileStateCache } from './fileStateCache.js'
 import type { CacheSafeParams } from './forkedAgent.js'
 import { getMainLoopModel } from './model/model.js'
+import { getActiveSessionGoalPromptSection } from './sessionGoalPrompt.js'
 import { asSystemPrompt } from './systemPromptType.js'
 import {
   shouldEnableThinkingByDefault,
@@ -123,11 +124,13 @@ export async function buildSideQuestionFallbackParams({
       mcpClients,
       customSystemPrompt,
     })
+  const sessionGoalPrompt = getActiveSessionGoalPromptSection()
 
   const systemPrompt = asSystemPrompt([
     ...(customSystemPrompt !== undefined
       ? [customSystemPrompt]
       : defaultSystemPrompt),
+    ...(sessionGoalPrompt ? [sessionGoalPrompt] : []),
     ...(appendSystemPrompt ? [appendSystemPrompt] : []),
   ])
 

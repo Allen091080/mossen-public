@@ -31,7 +31,7 @@ import { startPreventSleep, stopPreventSleep } from '../services/preventSleep.js
 import { useTerminalNotification } from '../ink/useTerminalNotification.js';
 import { hasCursorUpViewportYankBug } from '../ink/terminal.js';
 import { createFileStateCacheWithSizeLimit, mergeFileStateCaches, READ_FILE_STATE_CACHE_SIZE } from '../utils/fileStateCache.js';
-import { updateLastInteractionTime, getLastInteractionTime, getOriginalCwd, getProjectRoot, getSessionId, switchSession, setCostStateForRestore, getTurnHookDurationMs, getTurnHookCount, resetTurnHookDuration, getTurnToolDurationMs, getTurnToolCount, resetTurnToolDuration, getTurnClassifierDurationMs, getTurnClassifierCount, resetTurnClassifierDuration, incrementSessionGoalTurnCount, getSessionGoalState, pauseSessionGoalState, deferSessionGoalEvaluation } from '../bootstrap/state.js';
+import { updateLastInteractionTime, getLastInteractionTime, getOriginalCwd, getProjectRoot, getSessionId, switchSession, setCostStateForRestore, getTurnHookDurationMs, getTurnHookCount, resetTurnHookDuration, getTurnToolDurationMs, getTurnToolCount, resetTurnToolDuration, getTurnClassifierDurationMs, getTurnClassifierCount, resetTurnClassifierDuration, incrementSessionGoalTurnCount, getSessionGoalState, pauseSessionGoalState } from '../bootstrap/state.js';
 import { t } from '../utils/i18n/index.js';
 import { asSessionId, asAgentId } from '../types/ids.js';
 import { logForDebugging } from '../utils/debug.js';
@@ -49,7 +49,6 @@ import { injectUserMessageToTeammate, getAllInProcessTeammateTasks } from '../ta
 import { pendingWorkflowCount as getPendingWorkflowCount } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js';
 import { restoreRemoteAgentTasks } from '../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import { isLocalAgentTask, queuePendingMessage, appendMessageToLocalAgent, type LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js';
-import { isLocalShellTask } from '../tasks/LocalShellTask/guards.js';
 import { registerLeaderToolUseConfirmQueue, unregisterLeaderToolUseConfirmQueue, registerLeaderSetToolPermissionContext, unregisterLeaderSetToolPermissionContext } from '../utils/swarm/leaderPermissionBridge.js';
 import { useLogMessages } from '../hooks/useLogMessages.js';
 import { type Command, type CommandResultDisplay, type ResumeEntrypoint, getCommandName, isCommandEnabled } from '../commands.js';
@@ -75,9 +74,10 @@ import { SpinnerWithVerb, BriefIdleStatus, type SpinnerMode } from '../component
 import { getSystemPrompt } from '../constants/prompts.js';
 import { getProductDisplayName } from '../constants/product.js';
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js';
-import { evaluateActiveSessionGoalAfterTurn, getSessionGoalPostTurnEvents } from '../utils/sessionGoalEvaluator.js';
 import { createSessionGoalEventMessage } from '../utils/sessionGoalEvents.js';
 import { formatSessionGoalActionReason } from '../utils/sessionGoalOutput.js';
+import { enqueueSessionGoalContinuation, evaluateSessionGoalRuntimeAfterTurn, getSessionGoalTaskBudgetForRequest } from '../utils/sessionGoalRuntime.js';
+import { getWorkload } from '../utils/workloadContext.js';
 import { getSystemContext, getUserContext } from '../context.js';
 import { getMemoryFiles } from '../utils/mossenmd.js';
 import { startBackgroundHousekeeping } from '../utils/backgroundHousekeeping.js';
@@ -284,7 +284,7 @@ const WebBrowserPanelModule = feature('WEB_BROWSER_TOOL') ? require('../tools/We
 import { IssueFlagBanner } from '../components/PromptInput/IssueFlagBanner.js';
 import { useIssueFlagBanner } from '../hooks/useIssueFlagBanner.js';
 import { CompanionSprite, CompanionFloatingBubble, MIN_COLS_FOR_FULL_SPRITE } from '../buddy/CompanionSprite.js';
-import { GoalOverlay, GoalOverlayInline, GOAL_OVERLAY_MIN_COLUMNS, GOAL_OVERLAY_REFRESH_MS, isGoalOverlayEligible, shouldShowGoalInline, shouldShowGoalOverlay } from '../components/GoalOverlay.js';
+import { GoalOverlay, GoalOverlayInline, GOAL_INLINE_MIN_COLUMNS, GOAL_OVERLAY_MIN_COLUMNS, isGoalOverlayEligible, shouldShowGoalInline, shouldShowGoalOverlay } from '../components/GoalOverlay.js';
 import { DevBar } from '../components/DevBar.js';
 // Session manager removed - using AppState now
 import type { RemoteSessionConfig } from '../remote/RemoteSessionManager.js';
@@ -394,31 +394,24 @@ function TranscriptHelpPanel(): React.ReactNode {
 
 function getGoalFooterStatus(): string | undefined {
   const goal = getSessionGoalState();
-  if (!goal || (goal.status !== 'active' && goal.status !== 'paused' && goal.status !== 'blocked')) {
+  if (
+    !goal ||
+    (goal.status !== 'active' &&
+      goal.status !== 'paused' &&
+      goal.status !== 'blocked' &&
+      goal.status !== 'budget_limited')
+  ) {
     return undefined;
   }
   const status = goal.status === 'blocked'
     ? 'blocked'
     : goal.status === 'paused'
       ? 'paused'
+      : goal.status === 'budget_limited'
+        ? 'budget'
       : 'active';
   const tokens = formatTokens(goal.tokenEstimate ?? 0);
   return `Goal ${status} · ${goal.turnCount}/${goal.turnBudget} · ~${tokens}`;
-}
-
-function getSessionGoalPendingWorkReason(tasks: Record<string, unknown>): string | null {
-  for (const task of Object.values(tasks)) {
-    if (isLocalShellTask(task) && task.status === 'running') {
-      return t('cmd.goal.defer.backgroundShell');
-    }
-    if (isLocalAgentTask(task) && task.status === 'running') {
-      return t('cmd.goal.defer.backgroundAgent');
-    }
-    if (isInProcessTeammateTask(task) && task.status === 'running') {
-      return t('cmd.goal.defer.teammate');
-    }
-  }
-  return null;
 }
 
 /** less-style / bar. 1-row, same border-top styling as TranscriptModeFooter
@@ -2849,7 +2842,8 @@ export function REPL({
       systemContext,
       canUseTool,
       toolUseContext,
-      querySource: getQuerySourceForREPL()
+      querySource: getQuerySourceForREPL(),
+      taskBudget: getSessionGoalTaskBudgetForRequest(getWorkload())
     })) {
       onQueryEvent(event);
     }
@@ -2903,33 +2897,25 @@ export function REPL({
 
     // Signal that a query turn has completed successfully
     await onTurnComplete?.(messagesRef.current);
-    const pendingGoalWorkReason = getSessionGoalPendingWorkReason(store.getState().tasks);
-    if (pendingGoalWorkReason) {
-      deferSessionGoalEvaluation(pendingGoalWorkReason);
-      return;
-    }
-    const sessionGoalAction = await evaluateActiveSessionGoalAfterTurn(messagesRef.current, abortController.signal);
-    const sessionGoalEventMessages = getSessionGoalPostTurnEvents(sessionGoalAction).map(createSessionGoalEventMessage);
+    const sessionGoalRuntime = await evaluateSessionGoalRuntimeAfterTurn({
+      messages: messagesRef.current,
+      signal: abortController.signal,
+      tasks: store.getState().tasks
+    });
+    const sessionGoalAction = sessionGoalRuntime.action;
+    const sessionGoalEventMessages = sessionGoalRuntime.eventMessages;
     if (sessionGoalAction.type === 'completed') {
       setMessages(prev => [...prev, ...sessionGoalEventMessages, createSystemMessage(formatSessionGoalActionReason(sessionGoalAction), 'info')]);
     } else if (sessionGoalAction.type === 'continue') {
       setMessages(prev => [...prev, ...sessionGoalEventMessages, createSystemMessage(formatSessionGoalActionReason(sessionGoalAction), 'info')]);
-      removeByFilter(
-        cmd =>
-          cmd.workload === 'goal' &&
-          cmd.isMeta === true &&
-          typeof cmd.value === 'string' &&
-          cmd.value.includes('<session-goal-continuation>'),
-      );
-      enqueue({
-        mode: 'prompt',
-        value: sessionGoalAction.prompt,
-        isMeta: true,
-        skipSlashCommands: true,
-        priority: 'later',
+      enqueueSessionGoalContinuation(sessionGoalAction, {
+        enqueue,
+        removeByFilter,
         workload: 'goal'
       });
     } else if (sessionGoalAction.type === 'max_turns') {
+      setMessages(prev => [...prev, ...sessionGoalEventMessages, createSystemMessage(formatSessionGoalActionReason(sessionGoalAction), 'warning')]);
+    } else if (sessionGoalAction.type === 'deferred') {
       setMessages(prev => [...prev, ...sessionGoalEventMessages, createSystemMessage(formatSessionGoalActionReason(sessionGoalAction), 'warning')]);
     } else if (sessionGoalAction.type === 'paused') {
       setMessages(prev => [...prev, ...sessionGoalEventMessages, createSystemMessage(formatSessionGoalActionReason(sessionGoalAction), 'warning')]);
@@ -4340,12 +4326,13 @@ export function REPL({
   // which clears positionsCache + setPositions(null). Bar closes.
   // User hits / again → fresh everything.
   const transcriptCols = useTerminalSize().columns;
-  const [goalOverlayVisible, setGoalOverlayVisible] = useState(true);
+  const [goalOverlayVisible, setGoalOverlayVisible] = useState(false);
   const [goalOverlayNow, setGoalOverlayNow] = useState(() => Date.now());
   const handleGoalOverlayShortcut = useCallback(() => {
     const currentGoal = getSessionGoalState();
-    if (isGoalOverlayEligible(currentGoal) && transcriptCols >= GOAL_OVERLAY_MIN_COLUMNS) {
+    if (isGoalOverlayEligible(currentGoal) && transcriptCols >= GOAL_INLINE_MIN_COLUMNS) {
       const nextVisible = !goalOverlayVisible;
+      if (nextVisible) setGoalOverlayNow(Date.now());
       setGoalOverlayVisible(nextVisible);
       addNotification({
         key: 'goal-overlay-visibility',
@@ -4369,10 +4356,16 @@ export function REPL({
   const mainFullscreenActive = fullscreenEnvEnabled
     || (goalOverlayNode != null && canAutoFullscreenForFloatingOverlay());
   useEffect(() => {
-    if (!goalOverlayVisible || !isGoalOverlayEligible(goalOverlayGoal)) return;
-    const timer = setInterval(() => setGoalOverlayNow(Date.now()), GOAL_OVERLAY_REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [goalOverlayGoal?.id, goalOverlayGoal?.status, goalOverlayVisible]);
+    if (goalOverlayVisible && isGoalOverlayEligible(goalOverlayGoal)) {
+      setGoalOverlayNow(Date.now());
+    }
+  }, [
+    goalOverlayGoal?.id,
+    goalOverlayGoal?.status,
+    goalOverlayGoal?.turnCount,
+    goalOverlayGoal?.lastEvaluatorAt,
+    goalOverlayVisible,
+  ]);
   useInput((input, key, event) => {
     if (searchOpen || !goalOverlayGoal) return;
     if (key.ctrl && !key.meta && input === 'g') {
@@ -5008,7 +5001,7 @@ export function REPL({
                       {("external" as string) === 'internal' && skillImprovementSurvey.suggestion && <SkillImprovementSurvey isOpen={skillImprovementSurvey.isOpen} skillName={skillImprovementSurvey.suggestion.skillName} updates={skillImprovementSurvey.suggestion.updates} handleSelect={skillImprovementSurvey.handleSelect} inputValue={inputValue} setInputValue={setInputValue} />}
                       {showIssueFlagBanner && <IssueFlagBanner />}
                       {}
-                      <PromptInput debug={debug} ideSelection={ideSelection} hasSuppressedDialogs={hasSuppressedInputDialog} isLocalJSXCommandActive={isShowingLocalJSXCommand} getToolUseContext={getToolUseContext} toolPermissionContext={toolPermissionContext} setToolPermissionContext={setToolPermissionContext} apiKeyStatus={apiKeyStatus} commands={commands} agents={agentDefinitions.activeAgents} isLoading={isLoading} onExit={handleExit} verbose={verbose} messages={messages} onAutoUpdaterResult={setAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} input={inputValue} onInputChange={setInputValue} mode={inputMode} onModeChange={setInputMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onGoalOverlayToggle={goalOverlayGoal ? handleGoalOverlayShortcut : undefined} onMessageActionsEnter={
+                      <PromptInput debug={debug} ideSelection={ideSelection} hasSuppressedDialogs={hasSuppressedInputDialog} isLocalJSXCommandActive={isShowingLocalJSXCommand} getToolUseContext={getToolUseContext} toolPermissionContext={toolPermissionContext} setToolPermissionContext={setToolPermissionContext} apiKeyStatus={apiKeyStatus} commands={commands} agents={agentDefinitions.activeAgents} isLoading={isLoading} onExit={handleExit} verbose={verbose} messages={messages} onAutoUpdaterResult={setAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} input={inputValue} onInputChange={setInputValue} mode={inputMode} onModeChange={setInputMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onGoalOverlayToggle={goalOverlayGoal ? handleGoalOverlayShortcut : undefined} goalOverlayVisible={goalOverlayVisible} onMessageActionsEnter={
             // Works during isLoading — edit cancels first; uuid selection survives appends.
             feature('MESSAGE_ACTIONS') && isFullscreenEnvEnabled() && !disableMessageActions ? enterMessageActions : undefined} mcpClients={mcpClients} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onSubmit={onSubmit} onAgentSubmit={onAgentSubmit} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={isHelpOpen} setHelpOpen={setIsHelpOpen} insertTextRef={feature('VOICE_MODE') ? insertTextRef : undefined} voiceInterimRange={voice.interimRange} />
                       <SessionBackgroundHint onBackgroundSession={handleBackgroundSession} isLoading={isLoading} />

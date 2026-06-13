@@ -12,7 +12,11 @@
  * alongside the session and reload it to resume.
  */
 
-import type { AgentCallOptions, AgentRunResult } from './types.js'
+import type {
+  AgentCallOptions,
+  AgentRunResult,
+  WorkflowRecentToolCall,
+} from './types.js'
 
 export type JournalStartedEntry = {
   kind: 'started'
@@ -22,6 +26,16 @@ export type JournalStartedEntry = {
   phase: string | null
   agentNumber: number
   opts: AgentCallOptions
+  agentId?: string
+  transcriptPath?: string
+  promptPreview?: string
+  queuedAt?: number
+  startedAt?: number
+  lastProgressAt?: number
+  lastAttemptReason?: string
+  lastToolName?: string
+  lastToolSummary?: string
+  recentToolCalls?: WorkflowRecentToolCall[]
 }
 
 export type JournalEntry = {
@@ -32,7 +46,27 @@ export type JournalEntry = {
   toolCalls?: number
   ok: boolean
   status?: AgentRunResult['status']
+  durationMs?: number
+  remoteSessionId?: string
+  lastProgressAt?: number
+  lastToolName?: string
+  lastToolSummary?: string
+  recentToolCalls?: WorkflowRecentToolCall[]
+  resultPreview?: string
+  agentId?: string
+  transcriptPath?: string
 }
+
+export type JournalEntryMetadata = Pick<
+  JournalEntry,
+  | 'lastProgressAt'
+  | 'lastToolName'
+  | 'lastToolSummary'
+  | 'recentToolCalls'
+  | 'resultPreview'
+  | 'agentId'
+  | 'transcriptPath'
+>
 
 export type JournalData = {
   runId: string
@@ -86,7 +120,12 @@ export type Journal = {
   /** Find a prior started-but-not-completed call that should be respawned. */
   startedHit(index: number, hash: string): JournalStartedEntry | null
   /** Record a completed call's result at its index. */
-  record(index: number, hash: string, result: AgentRunResult): void
+  record(
+    index: number,
+    hash: string,
+    result: AgentRunResult,
+    metadata?: Partial<JournalEntryMetadata>,
+  ): void
   /** Serialize for persistence. */
   toData(): JournalData
   /** Number of cached entries replayed so far this run. */
@@ -140,6 +179,14 @@ export function createJournal(
           : {}),
         ok: entry.ok,
         ...(entry.status ? { status: entry.status } : {}),
+        ...(typeof entry.durationMs === 'number'
+          ? { durationMs: entry.durationMs }
+          : {}),
+        ...(entry.remoteSessionId
+          ? { remoteSessionId: entry.remoteSessionId }
+          : {}),
+        ...(entry.agentId ? { agentId: entry.agentId } : {}),
+        ...(entry.transcriptPath ? { transcriptPath: entry.transcriptPath } : {}),
       }
     },
     start(index, hash, entry) {
@@ -161,7 +208,7 @@ export function createJournal(
       startedHits++
       return entry
     },
-    record(index, hash, result) {
+    record(index, hash, result, metadata = {}) {
       const entry: JournalEntry = {
         index,
         hash,
@@ -172,6 +219,23 @@ export function createJournal(
           : {}),
         ok: result.ok,
         ...(result.status ? { status: result.status } : {}),
+        ...(typeof result.durationMs === 'number'
+          ? { durationMs: result.durationMs }
+          : {}),
+        ...(result.remoteSessionId ? { remoteSessionId: result.remoteSessionId } : {}),
+        ...(typeof metadata.lastProgressAt === 'number'
+          ? { lastProgressAt: metadata.lastProgressAt }
+          : {}),
+        ...(metadata.lastToolName ? { lastToolName: metadata.lastToolName } : {}),
+        ...(metadata.lastToolSummary
+          ? { lastToolSummary: metadata.lastToolSummary }
+          : {}),
+        ...(metadata.recentToolCalls?.length
+          ? { recentToolCalls: metadata.recentToolCalls }
+          : {}),
+        ...(metadata.resultPreview ? { resultPreview: metadata.resultPreview } : {}),
+        ...(metadata.agentId ? { agentId: metadata.agentId } : {}),
+        ...(metadata.transcriptPath ? { transcriptPath: metadata.transcriptPath } : {}),
       }
       recorded.push(entry)
       // Optional sink (e.g. append to disk) so resume survives across separate

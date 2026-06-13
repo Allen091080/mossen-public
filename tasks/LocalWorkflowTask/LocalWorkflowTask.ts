@@ -31,6 +31,8 @@ import { escapeXml } from '../../utils/xml.js'
 
 export type WorkflowAgentTaskProgress = {
   agentNumber: number
+  agentId?: string
+  transcriptPath?: string
   label: string
   phase: string | null
   status:
@@ -72,6 +74,7 @@ export type LocalWorkflowTaskState = TaskStateBase & {
   title?: string
   phaseDefinitions?: WorkflowPhaseMeta[]
   transcriptDir?: string
+  parentGoalId?: string | null
   summary?: string
   defaultModel?: string
   isBackgrounded: true
@@ -204,7 +207,7 @@ function releasePauseWaiters(taskId: string, err?: Error): void {
   }
 }
 
-function progressLine(event: WorkflowProgressEvent): string {
+function progressLine(event: WorkflowProgressEvent): string | null {
   switch (event.kind) {
     case 'phase':
       return `phase: ${event.title}`
@@ -218,6 +221,7 @@ function progressLine(event: WorkflowProgressEvent): string {
       const detail = event.lastToolSummary ?? event.lastToolName
         ?? event.recentToolCalls?.at(-1)?.summary
         ?? event.recentToolCalls?.at(-1)?.name
+      if (!detail && (event.agentId || event.transcriptPath)) return null
       return detail
         ? `agent #${event.agentNumber} progress: ${event.label} (${detail})`
         : `agent #${event.agentNumber} progress: ${event.label}`
@@ -377,6 +381,8 @@ function workflowAgentProgressMetadata(
   >,
   ): Record<string, unknown> {
   return {
+    ...(event.agentId ? { agentId: event.agentId } : {}),
+    ...(event.transcriptPath ? { transcriptPath: event.transcriptPath } : {}),
     ...(event.agentType ? { agentType: event.agentType } : {}),
     ...(event.model ? { model: event.model } : {}),
     ...(event.isolation ? { isolation: event.isolation } : {}),
@@ -512,6 +518,7 @@ export function registerWorkflowTask(params: {
   title?: string
   phaseDefinitions?: WorkflowPhaseMeta[]
   transcriptDir?: string
+  parentGoalId?: string | null
   defaultModel?: string
   toolUseId?: string
   abortController: AbortController
@@ -541,6 +548,7 @@ export function registerWorkflowTask(params: {
     title: params.title,
     phaseDefinitions: params.phaseDefinitions,
     transcriptDir: params.transcriptDir,
+    parentGoalId: params.parentGoalId ?? null,
     summary: params.workflowName,
     defaultModel: params.defaultModel,
     isBackgrounded: true,
@@ -581,12 +589,12 @@ export function updateWorkflowTaskProgress(
   setAppState: SetAppState,
 ): void {
   const line = progressLine(event)
-  appendLogLine(runId, line)
+  if (line) appendLogLine(runId, line)
   let taskForSdkProgress: LocalWorkflowTaskState | null = null
   let workflowProgressForEvent: SdkWorkflowProgress[] | undefined
   updateTaskState<LocalWorkflowTaskState>(runId, setAppState, task => {
     if (task.status !== 'running') return task
-    const logState = nextLogState(task, line)
+    const logState = line ? nextLogState(task, line) : {}
     switch (event.kind) {
       case 'phase': {
         const progressed = applyWorkflowProgress({
@@ -976,7 +984,10 @@ export function skipWorkflowAgent(
   updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => ({
     ...task,
     agents: task.agents.map(agent =>
-      agent.agentNumber === agentNumber && agent.status === 'running'
+      agent.agentNumber === agentNumber &&
+      (agent.status === 'queued' ||
+        agent.status === 'running' ||
+        agent.status === 'retry_requested')
         ? { ...agent, status: 'skipped' }
         : agent,
     ),

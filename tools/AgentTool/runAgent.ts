@@ -260,6 +260,8 @@ export async function* runAgent({
   contentReplacementState,
   useExactTools,
   worktreePath,
+  parentWorkflowId,
+  parentGoalId,
   description,
   transcriptSubdir,
   onQueryProgress,
@@ -311,6 +313,10 @@ export async function* runAgent({
   /** Worktree path if the agent was spawned with isolation: "worktree".
    * Persisted to metadata so resume can restore the correct cwd. */
   worktreePath?: string
+  /** Workflow run that spawned this subagent, when applicable. */
+  parentWorkflowId?: string
+  /** Goal active when this subagent was spawned, when applicable. */
+  parentGoalId?: string
   /** Original task description from AgentTool input. Persisted to metadata
    * so a resumed agent's notification can show the original description. */
   description?: string
@@ -724,6 +730,8 @@ export async function* runAgent({
   void writeAgentMetadata(agentId, {
     agentType: agentDefinition.agentType,
     ...(worktreePath && { worktreePath }),
+    ...(parentWorkflowId && { parentWorkflowId }),
+    ...(parentGoalId && { parentGoalId }),
     ...(description && { description }),
   }).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
 

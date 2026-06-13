@@ -43,6 +43,8 @@ export type AgentCallOptions = {
 }
 
 export type WorkflowAgentProgressMeta = {
+  agentId?: string
+  transcriptPath?: string
   agentType?: string
   model?: string
   isolation?: 'worktree' | 'remote'
@@ -59,6 +61,8 @@ export type WorkflowAgentProgressMeta = {
 }
 
 export type WorkflowAgentProgressUpdate = {
+  agentId?: string
+  transcriptPath?: string
   tokens?: number
   toolCalls?: number
   lastToolName?: string
@@ -124,6 +128,10 @@ export type AgentRunResult = {
   durationMs?: number
   /** Hosted remote session id for remote workflow agents. */
   remoteSessionId?: string
+  /** Local sidechain subagent id for workflow agents backed by runAgent(). */
+  agentId?: string
+  /** Local sidechain transcript path for workflow agents backed by runAgent(). */
+  transcriptPath?: string
 }
 
 export type WorkflowAgentControlAction = 'skip' | 'retry'

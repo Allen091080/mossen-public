@@ -12,6 +12,7 @@ import {
 } from './savedWorkflows.js'
 import { readWorkflowScriptFile } from './scriptFile.js'
 import { workflowUsageConsentHash } from './usageConsent.js'
+import { buildDynamicWorkflowScript } from './dynamicWorkflow.js'
 
 const MAX_PREVIEW_CHARS = 1200
 const MAX_SCRIPT_LINES = 18
@@ -19,6 +20,7 @@ const MAX_SCRIPT_LINES = 18
 export type WorkflowPermissionInput = {
   script?: unknown
   name?: unknown
+  task?: unknown
   description?: unknown
   title?: unknown
   scriptPath?: unknown
@@ -28,7 +30,7 @@ export type WorkflowPermissionInput = {
 }
 
 export type WorkflowPermissionReview = {
-  sourceKind: 'inline' | 'file' | 'named' | 'missing'
+  sourceKind: 'inline' | 'file' | 'named' | 'task' | 'missing'
   sourceLabel: string
   meta: WorkflowMeta | null
   metaError: string | null
@@ -137,11 +139,29 @@ function resolveWorkflowSource(input: WorkflowPermissionInput): {
     }
   }
 
+  if (typeof input.task === 'string' && input.task.trim()) {
+    try {
+      return {
+        sourceKind: 'task',
+        sourceLabel: input.task.trim(),
+        source: buildDynamicWorkflowScript(input.task),
+        readError: null,
+      }
+    } catch (err) {
+      return {
+        sourceKind: 'task',
+        sourceLabel: input.task.trim(),
+        source: null,
+        readError: err instanceof Error ? err.message : String(err),
+      }
+    }
+  }
+
   return {
     sourceKind: 'missing',
     sourceLabel: 'missing script',
     source: null,
-    readError: 'Must provide script, name, or scriptPath',
+    readError: 'Must provide script, name, scriptPath, or task',
   }
 }
 

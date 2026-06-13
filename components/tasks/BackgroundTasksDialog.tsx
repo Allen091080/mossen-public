@@ -5,19 +5,13 @@ import figures from 'figures';
 import React, { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { isCoordinatorMode } from 'src/coordinator/coordinatorMode.js';
 import { useTerminalSize } from 'src/hooks/useTerminalSize.js';
-import { getTerminalFocusState } from 'src/ink/terminal-focus-state.js';
-import { useTerminalNotification } from 'src/ink/useTerminalNotification.js';
 import { launchAgentSupervisorBackgroundJob } from 'src/services/agentSupervisor/launch.js';
 import { removeAgentSupervisorJob, stopAgentSupervisorJob } from 'src/services/agentSupervisor/management.js';
 import { moveAgentSupervisorJobOrder, renameAgentSupervisorJob, toggleAgentSupervisorPin } from 'src/services/agentSupervisor/organization.js';
-import { resolveAgentSupervisorPrStatuses, type AgentSupervisorPrStatus } from 'src/services/agentSupervisor/prStatus.js';
-import { readAgentSupervisorRoster } from 'src/services/agentSupervisor/roster.js';
-import { reconcileAgentSupervisorStaleProcesses } from 'src/services/agentSupervisor/daemon.js';
-import type { AgentSupervisorStatus } from 'src/services/agentSupervisor/schema.js';
+import type { AgentSupervisorPrStatus } from 'src/services/agentSupervisor/prStatus.js';
 import { useAppState, useSetAppState } from 'src/state/AppState.js';
 import { enterTeammateView, exitTeammateView, stopOrDismissAgent } from 'src/state/teammateViewHelpers.js';
 import type { ToolUseContext } from 'src/Tool.js';
-import { sendNotification } from 'src/services/notifier.js';
 import { DreamTask, type DreamTaskState } from 'src/tasks/DreamTask/DreamTask.js';
 import { InProcessTeammateTask } from 'src/tasks/InProcessTeammateTask/InProcessTeammateTask.js';
 import type { InProcessTeammateTaskState } from 'src/tasks/InProcessTeammateTask/types.js';
@@ -44,41 +38,35 @@ import { getLocalizedCommandDescription } from '../../utils/commandDescription.j
 import { isEnvTruthy } from '../../utils/envUtils.js';
 import { t } from '../../utils/i18n/index.js';
 import { editPromptInEditor } from '../../utils/promptEditor.js';
-import { truncateVisual, visualWidth } from '../../utils/visualWidth.js';
 import { Byline } from '../design-system/Byline.js';
 import { Dialog } from '../design-system/Dialog.js';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
-import { AgentSupervisorDetailDialog } from './AgentSupervisorDetailDialog.js';
+import { AgentViewDashboard } from '../agents-view/AgentViewDashboard.js';
+import { AgentViewFooter } from '../agents-view/AgentViewFooter.js';
+import { AgentViewHeader } from '../agents-view/AgentViewHeader.js';
+import { buildAgentViewShortcutActions, getAgentViewSelectionHint } from '../agents-view/agentViewInteractionModel.js';
+import { AgentViewList } from '../agents-view/AgentViewList.js';
+import { AgentViewPeek } from '../agents-view/AgentViewPeek.js';
+import { AgentViewRow } from '../agents-view/AgentViewRow.js';
+import { useAgentSupervisorRows } from '../agents-view/useAgentSupervisorRows.js';
 import { AsyncAgentDetailDialog } from './AsyncAgentDetailDialog.js';
 import { deriveAgentViewItems, isAgentViewTaskState, type AgentViewItem, type AgentViewTaskState } from './agentViewModel.js';
-import { deriveSupervisorAgentViewItems, filterSupervisorAgentViewItems, getSupervisorAgentPrStatus, type SupervisorAgentViewItem } from './agentSupervisorViewModel.js';
+import { filterSupervisorAgentViewItems, type SupervisorAgentViewItem } from './agentSupervisorViewModel.js';
 import {
   AGENT_VIEW_COMMAND_PALETTE_LIMIT,
   RESERVED_AGENT_VIEW_ACTION_KEYS,
-  agentViewGroupStageLabel,
-  agentViewNotificationDedupeKey,
-  agentViewNotificationMessage,
-  agentViewStatusLabel,
-  formatAgentViewJobAge,
-  formatAgentViewRefreshAge,
   getAgentViewCommandPaletteQuery,
   getAgentViewDispatchPrompt,
   getAgentViewFilterQuery,
   getAgentViewInputMode,
-  getAgentViewNotificationMode,
   getAgentViewPaletteKindLabel,
   getAgentViewSlashCommandName,
-  getSupervisorStatusFlashColor,
   groupSupervisorAgentViewItemsForDashboard,
   hasExplicitExternalEditor,
   isAgentViewExitCommand,
   isAgentViewPaletteCommand,
   isPlainAgentViewTextKey,
   matchesAgentViewPaletteCommandName,
-  padVisualEnd,
-  renderAgentViewHelpSections,
-  shortenPathForAgentView,
-  shouldNotifyAgentViewStatusTransition,
   shouldUseAgentViewHighDensity,
   type AgentViewCommandPaletteItem,
   type SupervisorAgentDisplayGroup,
@@ -236,11 +224,6 @@ const MonitorMcpDetailDialog = feature('MONITOR_TOOL') ? (require('./MonitorMcpD
 
 const AGENT_VIEW_DISMISS_CONFIRM_WINDOW_MS = 2000;
 
-async function readAgentSupervisorRosterForDashboard(): Promise<Awaited<ReturnType<typeof readAgentSupervisorRoster>>> {
-  await reconcileAgentSupervisorStaleProcesses().catch(() => undefined);
-  return await readAgentSupervisorRoster();
-}
-
 // Helper to get filtered background tasks (excludes foregrounded local_agent)
 function getSelectableBackgroundTasks(tasks: Record<string, TaskState> | undefined, foregroundedTaskId: string | undefined, agentView = false): TaskState[] {
   const backgroundTasks = Object.values(tasks ?? {}).filter(task => agentView ? isAgentViewTaskState(task) : isBackgroundTask(task));
@@ -306,7 +289,6 @@ function BackgroundTasksDialogImpl({
   const showSpinnerTree = useAppState(s_1 => s_1.expandedView) === 'teammates';
   const setAppState = useSetAppState();
   const { columns: terminalColumns, rows: terminalRows } = useTerminalSize();
-  const terminal = useTerminalNotification();
   const killAgentsShortcut = useShortcutDisplay('chat:killAgents', 'Chat', 'ctrl+x ctrl+k');
   const typedTasks = tasks as Record<string, TaskState> | undefined;
 
@@ -346,11 +328,6 @@ function BackgroundTasksDialogImpl({
   const agentViewQueryRef = useRef('');
   const agentViewQueryCursorOffsetRef = useRef(0);
   const [agentViewCommandPaletteIndex, setAgentViewCommandPaletteIndex] = useState(0);
-  const [agentSupervisorRows, setAgentSupervisorRows] = useState<SupervisorListItem[]>([]);
-  const [agentSupervisorPrStatuses, setAgentSupervisorPrStatuses] = useState<Record<string, AgentSupervisorPrStatus>>({});
-  const [agentSupervisorLastRefreshAt, setAgentSupervisorLastRefreshAt] = useState<number | null>(null);
-  const [agentSupervisorStatusFlashColors, setAgentSupervisorStatusFlashColors] = useState<Map<string, string>>(() => new Map());
-  const [agentSupervisorLoadError, setAgentSupervisorLoadError] = useState<string | null>(null);
   const [agentSupervisorDispatchError, setAgentSupervisorDispatchError] = useState<string | null>(null);
   const [agentSupervisorDispatching, setAgentSupervisorDispatching] = useState(false);
   const agentSupervisorDispatchingRef = useRef(false);
@@ -361,8 +338,17 @@ function BackgroundTasksDialogImpl({
   const [agentViewHelpVisible, setAgentViewHelpVisible] = useState(false);
   const [collapsedSupervisorGroups, setCollapsedSupervisorGroups] = useState<Set<string>>(() => new Set());
   const [expandedSupervisorGroups, setExpandedSupervisorGroups] = useState<Set<string>>(() => new Set());
-  const previousSupervisorStatusesRef = useRef<Map<string, string>>(new Map());
-  const notifiedSupervisorTransitionsRef = useRef<Set<string>>(new Set());
+  const {
+    rows: agentSupervisorRows,
+    prStatuses: agentSupervisorPrStatuses,
+    lastRefreshAt: agentSupervisorLastRefreshAt,
+    statusFlashColors: agentSupervisorStatusFlashColors,
+    loadError: agentSupervisorLoadError,
+    refreshRowsOnce: refreshSupervisorRowsOnce,
+  } = useAgentSupervisorRows({
+    agentView,
+    listVisible: viewState.mode === 'list',
+  });
   const trimmedAgentViewQuery = agentViewQuery.trim();
   const agentViewInputMode = getAgentViewInputMode(agentViewQuery);
   const agentViewDispatchQuery = agentViewInputMode === 'dispatch';
@@ -416,112 +402,6 @@ function BackgroundTasksDialogImpl({
     setAgentViewQuery(value);
     setAgentViewQueryCursorOffset(safeOffset);
   };
-
-  useEffect(() => {
-    if (!agentView) {
-      setAgentSupervisorRows([]);
-      setAgentSupervisorLoadError(null);
-      setAgentSupervisorLastRefreshAt(null);
-      setAgentSupervisorStatusFlashColors(new Map());
-      previousSupervisorStatusesRef.current = new Map();
-      return;
-    }
-    // While another task dialog owns the screen, do not keep the dashboard
-    // roster poll firing. Concurrent dashboard setState round-trips can race
-    // the active surface and stamp partial frames on screen (the "文字叠加重叠"
-    // symptom — characters from the previous frame leak through gaps in the
-    // new frame). The resume below picks up the latest roster when the user
-    // returns to the list.
-    if (viewState.mode !== 'list') {
-      return;
-    }
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    async function refresh(): Promise<void> {
-      try {
-        const roster = await readAgentSupervisorRosterForDashboard();
-        if (cancelled) return;
-        const nextRows = deriveSupervisorAgentViewItems(roster);
-        const notificationMode = getAgentViewNotificationMode();
-        const focusState = getTerminalFocusState();
-        const notifications = nextRows.filter(row => {
-          const previous = previousSupervisorStatusesRef.current.get(row.id) as AgentSupervisorStatus | undefined;
-          if (!shouldNotifyAgentViewStatusTransition({
-            previous,
-            current: row.status,
-            focusState,
-            mode: notificationMode
-          })) return false;
-          const key = agentViewNotificationDedupeKey(row.id, row.status);
-          if (notifiedSupervisorTransitionsRef.current.has(key)) return false;
-          notifiedSupervisorTransitionsRef.current.add(key);
-          return true;
-        });
-        const changedRows = nextRows.flatMap(row => {
-          const previous = previousSupervisorStatusesRef.current.get(row.id);
-          const color = previous && previous !== row.status ? getSupervisorStatusFlashColor(row.status) : null;
-          return color ? [{ id: row.id, color }] : [];
-        });
-        previousSupervisorStatusesRef.current = new Map(nextRows.map(row => [row.id, row.status]));
-        if (changedRows.length > 0) {
-          setAgentSupervisorStatusFlashColors(previous => {
-            const next = new Map(previous);
-            for (const row of changedRows) next.set(row.id, row.color);
-            return next;
-          });
-          setTimeout(() => {
-            if (cancelled) return;
-            setAgentSupervisorStatusFlashColors(previous => {
-              const next = new Map(previous);
-              for (const row of changedRows) next.delete(row.id);
-              return next;
-            });
-          }, 1200);
-        }
-        setAgentSupervisorRows(nextRows);
-        setAgentSupervisorLastRefreshAt(Date.now());
-        setAgentSupervisorLoadError(null);
-        for (const item of notifications) {
-          void sendNotification({
-            title: t('ui.agentView.notification.title'),
-            message: agentViewNotificationMessage(item),
-            notificationType: 'agent_view_needs_input'
-          }, terminal);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setAgentSupervisorLoadError(error instanceof Error ? error.message : String(error));
-        }
-      } finally {
-        if (!cancelled) {
-          timer = setTimeout(() => {
-            void refresh();
-          }, 2000);
-        }
-      }
-    }
-    void refresh();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [agentView, terminal, viewState.mode]);
-
-  useEffect(() => {
-    if (!agentView || agentSupervisorRows.length === 0) {
-      setAgentSupervisorPrStatuses({});
-      return;
-    }
-    let cancelled = false;
-    void resolveAgentSupervisorPrStatuses(agentSupervisorRows).then(statuses => {
-      if (!cancelled) setAgentSupervisorPrStatuses(statuses);
-    }).catch(() => {
-      if (!cancelled) setAgentSupervisorPrStatuses({});
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [agentView, agentSupervisorRows]);
 
   // Memoize the sorted and categorized items together to ensure stable references
   const {
@@ -631,51 +511,6 @@ function BackgroundTasksDialogImpl({
     openSupervisorJobChannelFromAgentView(target.id);
     return true;
   };
-  const supervisorActionLabel = (
-    action: SupervisorListItem['primaryAction'],
-  ): string => {
-    switch (action.kind) {
-      case 'attach':
-        return t('ui.agentView.actionAttach');
-      case 'inspect':
-        return t('ui.agentView.actionInspect');
-      case 'peek':
-        return t('ui.agentView.actionPeek');
-      case 'reply':
-        return t('ui.agentView.actionReply');
-      case 'review':
-        return t('ui.agentView.actionReview');
-    }
-  };
-  const agentViewNextHint = (): string | null => {
-    if (!agentView) return null;
-    if (agentViewInputMode === 'filter') return t('ui.agentView.nextFilter');
-    if (agentViewInputMode === 'command') return t('ui.agentView.nextCommand');
-    if (agentViewInputMode === 'dispatch') return t('ui.agentView.nextDispatch');
-    if (!currentSelection) return t('ui.agentView.nextEmpty');
-    if (currentSelection.type === 'supervisor_agent') {
-      if (currentSelection.statusContext === 'blocked_question') {
-        return t('ui.agentView.nextNeedsInput');
-      }
-      if (currentSelection.statusContext === 'ready_result') {
-        return t('ui.agentView.nextReadyResult');
-      }
-      if (currentSelection.statusContext === 'running') {
-        return t('ui.agentView.nextRunning');
-      }
-      if (currentSelection.status === 'failed' || currentSelection.status === 'stopped') {
-        return t('ui.agentView.nextFailed');
-      }
-      return t('ui.agentView.nextTerminal');
-    }
-    if (currentSelection.type === 'leader') return t('ui.agentView.nextLeader');
-    if (currentSelection.type === 'local_bash') return t('ui.agentView.nextShell');
-    if (currentSelection.type === 'local_agent' || currentSelection.type === 'in_process_teammate') {
-      return t('ui.agentView.nextLocalAgent');
-    }
-    return t('ui.agentView.nextGenericTask');
-  };
-
   // Use configurable keybindings for standard navigation and confirm/cancel.
   // confirm:no is handled by Dialog's onCancel prop.
   useKeybindings({
@@ -756,10 +591,7 @@ function BackgroundTasksDialogImpl({
         dangerouslySkipPermissions: agentViewDispatchDefaults?.dangerouslySkipPermissions ?? false,
         testMode: isEnvTruthy(process.env.MOSSEN_CODE_AGENT_SUPERVISOR_TEST_JOBS)
       });
-      const roster = await readAgentSupervisorRosterForDashboard();
-      const nextRows = deriveSupervisorAgentViewItems(roster);
-      setAgentSupervisorRows(nextRows);
-      setAgentSupervisorLastRefreshAt(Date.now());
+      const nextRows = await refreshSupervisorRowsOnce();
       setAgentViewQueryValue('', 0);
       const resultIndex = nextRows.findIndex(row => row.id === result.id);
       if (resultIndex >= 0) setSelectedIndex(resultIndex);
@@ -773,11 +605,6 @@ function BackgroundTasksDialogImpl({
       setAgentSupervisorDispatching(false);
     }
   };
-  const refreshSupervisorRowsOnce = async (): Promise<void> => {
-    const roster = await readAgentSupervisorRosterForDashboard();
-    setAgentSupervisorRows(deriveSupervisorAgentViewItems(roster));
-    setAgentSupervisorLastRefreshAt(Date.now());
-  };
   const openSupervisorJobChannelFromAgentView = (id: string): void => {
     setAgentSupervisorDispatchError(null);
     // Live PTY-backed jobs hand off to the shell-side session loop: the
@@ -786,18 +613,23 @@ function BackgroundTasksDialogImpl({
     // worker's PTY, and only re-renders the dashboard after the user
     // detaches. That avoids the raw-mode / readable-listener races that
     // plagued earlier in-process attach attempts. Dead jobs (worker exited
-    // or socket missing) fall back to the read-only AgentSupervisorDetailDialog.
+    // or socket missing) fall back to the read-only preview card.
     const supervisorItem = agentSupervisorRows.find(item => item.id === id);
-    // Any job that isn't in a terminal state is routed to the attach
-    // surface. We deliberately do NOT gate on `processAlive` here — a
-    // freshly-dispatched job lives in `queued` for a beat before the worker
-    // boots and writes alive=true, but the user shouldn't see a summary
-    // panel during that gap. attachClient retries the socket for a few
-    // seconds so the early-attach race resolves cleanly.
+    // Any live job is routed to the attach surface. `queued` is allowed even
+    // before processAlive flips true because a freshly-dispatched worker may
+    // still be booting and attachClient retries the socket. Historical rows
+    // stuck in working/idle with processAlive=false are stale and must fall
+    // back to the peek/detail surface instead of connecting to a dead socket.
     const isLive = supervisorItem !== undefined
-      && supervisorItem.status !== 'completed'
-      && supervisorItem.status !== 'failed'
-      && supervisorItem.status !== 'stopped';
+      && (
+        supervisorItem.status === 'queued' ||
+        (
+          supervisorItem.processAlive &&
+          supervisorItem.status !== 'completed' &&
+          supervisorItem.status !== 'failed' &&
+          supervisorItem.status !== 'stopped'
+        )
+      );
     if (isLive) {
       // Resolve the attach socket path locally so the React tree doesn't
       // need to import worker-side path helpers. The shell loop has the
@@ -996,6 +828,16 @@ function BackgroundTasksDialogImpl({
       return;
     }
 
+    const currentSelectionForAction = allSelectableItems[selectedIndex];
+    if (agentView && e.key === 'r' && !e.ctrl && !e.meta && !e.shift && currentSelectionForAction?.type === 'supervisor_agent' && currentSelectionForAction.statusContext === 'blocked_question') {
+      e.preventDefault();
+      setViewState({
+        mode: 'detail',
+        itemId: currentSelectionForAction.id
+      });
+      return;
+    }
+
     if (agentView && isPlainAgentViewTextKey(e)) {
       // In official Agent View parity, the dashboard is an input-first screen:
       // printable keys start a background task. Keep list actions on arrows,
@@ -1005,7 +847,7 @@ function BackgroundTasksDialogImpl({
     }
 
     // Compute current selection at the time of the key press
-    const currentSelection_0 = allSelectableItems[selectedIndex];
+    const currentSelection_0 = currentSelectionForAction;
     if (!currentSelection_0) return; // everything below requires a selection
 
     if (agentView && e.meta && /^[1-9]$/.test(e.key)) {
@@ -1355,7 +1197,7 @@ function BackgroundTasksDialogImpl({
       // shell-side session loop (Ink unmounts, raw bridge takes over).
       // The read-only DetailDialog is the fallback for completed / failed /
       // stopped jobs.
-      return <AgentSupervisorDetailDialog jobId={supervisorItem.id} onBack={goBackToList} />;
+      return <AgentViewPeek jobId={supervisorItem.id} onBack={goBackToList} onAttach={openSupervisorJobChannelFromAgentView} />;
     }
     if (!typedTasks) {
       return null;
@@ -1413,11 +1255,14 @@ function BackgroundTasksDialogImpl({
     }
   }
   const activeBashCount = count<BashListItem>(bashTasks, item => isActiveBackgroundStatus(item.status));
-  const activeSupervisorCount = agentView ? count<SupervisorListItem>(agentSupervisorRows, item_0 => item_0.status === 'working' || item_0.status === 'needs_input' || item_0.status === 'queued') : 0;
   const agentViewTotalCount = agentSupervisorRows.length + agentViewItems.length;
-  const activeAgentCount = agentView ? activeSupervisorCount + count<AgentViewItem>(agentViewItems, item_0 => item_0.status === 'working' || item_0.status === 'needs_input') : count<RemoteListItem>(remoteSessions, item_1 => isActiveBackgroundStatus(item_1.status)) + count<AgentListItem>(agentTasks, item_2 => isActiveBackgroundStatus(item_2.status));
+  const activeAgentCount = count<RemoteListItem>(remoteSessions, item_1 => isActiveBackgroundStatus(item_1.status)) + count<AgentListItem>(agentTasks, item_2 => isActiveBackgroundStatus(item_2.status));
   const activeTeammateCount = count<TeammateListItem>(teammateTasks, item_2 => item_2.type !== 'leader' && isActiveBackgroundStatus(item_2.status));
-  const subtitle = agentView ? intersperse([...(activeAgentCount > 0 ? [<Text key="activeAgents">{activeAgentCount} {activeAgentCount !== 1 ? t('ui.agentView.activeSessions') : t('ui.agentView.activeSession')}</Text>] : []), ...(agentViewTotalCount > 0 ? [<Text key="totalAgents">{agentViewTotalCount} {agentViewTotalCount !== 1 ? t('ui.agentView.totalSessions') : t('ui.agentView.totalSession')}</Text>] : [])], index => <Text key={`separator-${index}`}> · </Text>) : intersperse([...(activeTeammateCount > 0 ? [<Text key="teammates">
+  const agentViewAwaitingInputCount = agentView ? count<SupervisorListItem>(agentSupervisorRows, item_0 => item_0.statusContext === 'blocked_question') : 0;
+  const agentViewWorkingCount = agentView ? count<SupervisorListItem>(agentSupervisorRows, item_0 => item_0.statusContext === 'running') : 0;
+  const agentViewCompletedCount = agentView ? count<SupervisorListItem>(agentSupervisorRows, item_0 => item_0.statusContext === 'ready_result' || item_0.status === 'completed') : 0;
+  const agentViewDispatchDefaultsLabel = agentView ? formatAgentViewDispatchDefaults(agentViewDispatchDefaults) : null;
+  const subtitle = agentView ? <AgentViewHeader cwd={process.cwd()} dispatchDefaultsLabel={agentViewDispatchDefaultsLabel} awaitingInputCount={agentViewAwaitingInputCount} workingCount={agentViewWorkingCount} completedCount={agentViewCompletedCount} totalCount={agentViewTotalCount} /> : intersperse([...(activeTeammateCount > 0 ? [<Text key="teammates">
               {activeTeammateCount}{' '}
               {activeTeammateCount !== 1 ? 'teammates' : 'teammate'}
             </Text>] : []), ...(activeBashCount > 0 ? [<Text key="shells">
@@ -1431,20 +1276,20 @@ function BackgroundTasksDialogImpl({
   const supervisorDismissPending = agentView && currentSelection?.type === 'supervisor_agent' && pendingDismiss?.id === currentSelection.id && pendingDismiss.expiresAt > Date.now();
   const agentViewHighDensity = agentView && shouldUseAgentViewHighDensity(supervisorJobs.length, terminalColumns);
   const agentViewDashboardHeight = agentView ? Math.max(8, terminalRows - 3) : undefined;
-  const agentViewDispatchDefaultsLabel = agentView ? formatAgentViewDispatchDefaults(agentViewDispatchDefaults) : null;
-  const agentViewSelectionHint = agentViewNextHint();
+  const agentViewSelectionHint = agentView
+    ? getAgentViewSelectionHint({
+        inputMode: agentViewInputMode,
+        currentSelection,
+      })
+    : null;
+  const agentViewShortcutActions = agentView
+    ? buildAgentViewShortcutActions({
+        currentSupervisorSelection,
+        dismissPending: agentDismissPending || supervisorDismissPending,
+      })
+    : [];
   const actions = agentView ? [
-    ...(currentSupervisorSelection ? [
-      <KeyboardShortcutHint key="primary" shortcut={currentSupervisorSelection.primaryAction.shortcut} action={supervisorActionLabel(currentSupervisorSelection.primaryAction)} />,
-      ...(currentSupervisorSelection.secondaryAction ? [
-        <KeyboardShortcutHint key="secondary" shortcut={currentSupervisorSelection.secondaryAction.shortcut} action={supervisorActionLabel(currentSupervisorSelection.secondaryAction)} />,
-      ] : []),
-    ] : [
-      <KeyboardShortcutHint key="enter" shortcut="Enter/→" action={t('ui.agentView.attach')} />,
-      <KeyboardShortcutHint key="space" shortcut="Space" action={t('ui.agentView.peek')} />,
-    ]),
-    <KeyboardShortcutHint key="stop" shortcut="Ctrl+X" action={agentDismissPending || supervisorDismissPending ? t('ui.agentView.confirmDismiss') : t('ui.agentView.stop')} />,
-    <KeyboardShortcutHint key="help" shortcut="?" action={t('ui.agentView.help')} />,
+    ...agentViewShortcutActions.map(action => <KeyboardShortcutHint key={action.key} shortcut={action.shortcut} action={action.action} />),
   ] : [<KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />, <KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />, ...(currentSelection?.type === 'in_process_teammate' && isInterruptibleBackgroundStatus(currentSelection.status) ? [<KeyboardShortcutHint key="foreground" shortcut="f" action="foreground" />] : []), ...((currentSelection?.type === 'local_bash' || currentSelection?.type === 'local_agent' || currentSelection?.type === 'in_process_teammate' || currentSelection?.type === 'local_workflow' || currentSelection?.type === 'monitor_mcp' || currentSelection?.type === 'dream' || currentSelection?.type === 'remote_agent') && (isInterruptibleBackgroundStatus(currentSelection.status) || (currentSelection.type === 'local_workflow' && isStoppableWorkflowStatus(currentSelection.status))) ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />] : []), ...(agentTasks.some(t => isInterruptibleBackgroundStatus(t.status)) ? [<KeyboardShortcutHint key="kill-all" shortcut={killAgentsShortcut} action="stop all agents" />] : []), <KeyboardShortcutHint key="esc" shortcut="←/Esc" action="close" />];
   const handleCancel = () => {
     if (agentView) {
@@ -1455,24 +1300,6 @@ function BackgroundTasksDialogImpl({
       display: 'system'
     });
   };
-  const renderAgentViewInlineInput = (): React.ReactNode => {
-    const modeColor = agentViewDispatchQuery ? "success" : agentViewInputMode === 'command' ? "warning" : "suggestion";
-    const cursor = Math.max(0, Math.min(agentViewQueryCursorOffset, agentViewQuery.length));
-    if (!agentViewQuery) {
-      return <Box>
-          <Text color={modeColor}>› </Text>
-          <Text inverse> </Text>
-          <Text dimColor>{t('ui.agentView.inputPlaceholder')}</Text>
-        </Box>;
-    }
-    const cursorChar = agentViewQuery[cursor] ?? ' ';
-    return <Box>
-        <Text color={modeColor}>› </Text>
-        {agentViewQuery.slice(0, cursor) && <Text>{agentViewQuery.slice(0, cursor)}</Text>}
-        <Text inverse>{cursorChar}</Text>
-        {cursor < agentViewQuery.length && <Text>{agentViewQuery.slice(cursor + 1)}</Text>}
-      </Box>;
-  };
   function renderInputGuide(exitState: ExitState): React.ReactNode {
     if (exitState.pending) {
       return <Text>Press {exitState.keyName} again to exit</Text>;
@@ -1481,15 +1308,9 @@ function BackgroundTasksDialogImpl({
   }
   return <Box flexDirection="column" tabIndex={0} autoFocus onKeyDown={handleKeyDown}>
       <Dialog title={agentView ? t('ui.agentView.title') : 'Background tasks'} subtitle={<>{subtitle}</>} onCancel={handleCancel} color="background" inputGuide={renderInputGuide} hideInputGuide={agentView} hideBorder={agentView} isCancelActive={!agentView}>
-        <Box flexDirection="column" height={agentViewDashboardHeight}>
+        <AgentViewDashboard height={agentViewDashboardHeight}>
         {allSelectableItems.length === 0 ? <Text dimColor>{agentView ? agentViewInputMode === 'filter' ? t('ui.agentView.noMatches') : agentViewInputMode === 'command' ? t('ui.agentView.commandPending') : t('ui.agentView.empty') : 'No tasks currently running'}</Text> : <Box flexDirection="column">
-            {supervisorGroups.length > 0 && <Box flexDirection="column">
-                {supervisorGroups.map((group, index) => <Box key={group.key} flexDirection="column" marginTop={index === 0 ? 0 : 1}>
-                    <Text dimColor>{collapsedSupervisorGroups.has(group.key) ? '▸ ' : ''}<Text bold>{agentViewGroupStageLabel(group.stage)}</Text></Text>
-                    {!collapsedSupervisorGroups.has(group.key) && group.items.map(item_5 => <Item key={item_5.id} item={item_5} isSelected={item_5.id === currentSelection?.id} prStatus={agentSupervisorPrStatuses[item_5.id]} highlightColor={agentSupervisorStatusFlashColors.get(item_5.id)} compact={agentViewHighDensity} />)}
-                    {!collapsedSupervisorGroups.has(group.key) && group.hiddenCount ? <Text dimColor>{'  '}… {t('ui.agentView.moreCompleted', { count: String(group.hiddenCount) })}</Text> : null}
-                  </Box>)}
-              </Box>}
+            {supervisorGroups.length > 0 && <AgentViewList hasItems emptyMessage="" supervisorGroups={supervisorGroups} collapsedGroups={collapsedSupervisorGroups} renderSupervisorItem={item_5 => <Item key={item_5.id} item={item_5} isSelected={item_5.id === currentSelection?.id} prStatus={agentSupervisorPrStatuses[item_5.id]} highlightColor={agentSupervisorStatusFlashColors.get(item_5.id)} compact={agentViewHighDensity} />} legacySections={null} />}
 
             {agentView && (teammateTasks.length > 0 || bashTasks.length > 0 || remoteSessions.length > 0 || agentTasks.length > 0 || workflowTasks.length > 0 || dreamTasks_0.length > 0) && <Box marginTop={supervisorGroups.length > 0 ? 1 : 0}>
                 <Text dimColor>
@@ -1559,30 +1380,8 @@ function BackgroundTasksDialogImpl({
               </Box>}
           </Box>}
         {agentView && <Box flexGrow={1} />}
-        {agentView && <Box flexDirection="column" marginTop={1}>
-            {agentViewHelpVisible && renderAgentViewHelpSections()}
-            {agentViewRename && <Text color="suggestion">{t('ui.agentView.renamePrompt')} {agentViewRename.text}</Text>}
-            {agentViewInputMode === 'command' && <Box flexDirection="column" marginBottom={1}>
-                <Text dimColor>{t('ui.agentView.paletteTitle')}</Text>
-                {agentViewCommandPaletteItems.length === 0 ? <Text dimColor>{t('ui.agentView.paletteEmpty')}</Text> : agentViewCommandPaletteItems.map((item, index) => <Box key={item.name}>
-                    <Text color={index === agentViewCommandPaletteIndex ? "success" : undefined}>{index === agentViewCommandPaletteIndex ? '› ' : '  '}/{item.name}</Text>
-                    <Text dimColor> · {item.kindLabel} · {truncateVisual(item.description, Math.max(24, terminalColumns - item.name.length - 18))}</Text>
-                  </Box>)}
-                <Text dimColor>{t('ui.agentView.paletteHint')}</Text>
-              </Box>}
-            {agentSupervisorDispatching && <Text dimColor>{t('ui.agentView.dispatching')}</Text>}
-            {agentSupervisorLoadError && <Text color="warning">{t('ui.agentView.supervisorLoadError')}: {agentSupervisorLoadError}</Text>}
-            {agentSupervisorDispatchError && <Text color="warning">{agentSupervisorDispatchError}</Text>}
-            {agentViewSelectionHint && <Text dimColor wrap="truncate-end">{t('ui.agentView.nextStep')}: {agentViewSelectionHint}</Text>}
-            {renderAgentViewInlineInput()}
-            {agentViewHelpVisible && <Text dimColor wrap="truncate-end">{t('ui.agentView.lastRefresh')}: {formatAgentViewRefreshAge(agentSupervisorLastRefreshAt)}
-              {agentViewDispatchDefaultsLabel ? <> · {t('ui.agentView.dispatchDefaults')}: {agentViewDispatchDefaultsLabel}</> : null}
-              {supervisorJobs.length > 0 ? <> · {t('ui.agentView.density', { groups: String(supervisorGroups.length), rows: String(supervisorJobs.length) })}</> : null}
-              {agentViewHighDensity ? <> · {t('ui.agentView.highDensityMode')}</> : null}
-            </Text>}
-            <Text dimColor italic><Byline>{actions}</Byline></Text>
-          </Box>}
-        </Box>
+        {agentView && <AgentViewFooter helpVisible={agentViewHelpVisible} renameText={agentViewRename?.text ?? null} inputMode={agentViewInputMode} commandPaletteItems={agentViewCommandPaletteItems} commandPaletteIndex={agentViewCommandPaletteIndex} terminalColumns={terminalColumns} dispatching={agentSupervisorDispatching} loadError={agentSupervisorLoadError} dispatchError={agentSupervisorDispatchError} selectionHint={agentViewSelectionHint} query={agentViewQuery} cursorOffset={agentViewQueryCursorOffset} dispatchActive={agentViewDispatchQuery} lastRefreshAt={agentSupervisorLastRefreshAt} dispatchDefaultsLabel={agentViewDispatchDefaultsLabel} supervisorGroupCount={supervisorGroups.length} supervisorJobCount={supervisorJobs.length} highDensity={agentViewHighDensity} actions={actions} />}
+        </AgentViewDashboard>
       </Dialog>
     </Box>;
 }
@@ -1677,90 +1476,12 @@ function Item({
     return <Box flexDirection="row">{pointerNode}<Text color={selectedColor}>@{TEAM_LEAD_NAME}</Text></Box>;
   }
   if (item.type === "supervisor_agent") {
-    return <Box flexDirection="row">{pointerNode}<SupervisorAgentRow item={item} prStatus={prStatus} maxActivityWidth={maxActivityWidth} color={selectedColor} highlightColor={highlightColor} compact={compact} selected={isSelected} /></Box>;
+    return <AgentViewRow item={item} isSelected={isSelected} prStatus={prStatus} highlightColor={highlightColor} compact={compact} />;
   }
   if (itemTask === null) {
     return null;
   }
   return <Box flexDirection="row">{pointerNode}<Text color={selectedColor}><BackgroundTaskComponent task={itemTask} maxActivityWidth={maxActivityWidth} /></Text></Box>;
-}
-function SupervisorAgentRow({
-  item,
-  prStatus,
-  maxActivityWidth,
-  color,
-  highlightColor,
-  compact = false,
-  selected = false
-}: {
-  item: SupervisorListItem;
-  prStatus?: AgentSupervisorPrStatus;
-  maxActivityWidth: number;
-  color?: string;
-  highlightColor?: string;
-  compact?: boolean;
-  selected?: boolean;
-}) {
-  const prLabel = prStatus?.label ?? getSupervisorAgentPrStatus(item);
-  const cwd = shortenPathForAgentView(item.cwd);
-  const fallbackSummary = item.cwdAvailable ? cwd : `${cwd} · missing cwd`;
-  const rawSummary =
-    item.lastQuestionText?.trim() ||
-    item.resultSummary?.trim() ||
-    item.lastSummaryLine?.trim() ||
-    fallbackSummary;
-  const summary = rawSummary.toLowerCase() === item.label.trim().toLowerCase() ? '' : rawSummary;
-  const statusLabel = agentViewStatusLabel(item.status);
-  const actionHint = `${item.primaryAction.shortcut} ${supervisorRowActionLabel(item.primaryAction.kind)}`;
-  const activity = [statusLabel, actionHint, summary].filter(Boolean).join(' · ');
-  const rowColor = color ?? highlightColor;
-  const processShape = item.processAlive ? '✻ ' : '∙ ';
-  const titlePrefix = `${processShape}${item.pinned ? '★ ' : ''}`;
-  const prDotWidth = prStatus ? 2 : 0;
-  const titleWidth = compact
-    ? Math.min(28, Math.max(16, Math.floor(maxActivityWidth * 0.35)))
-    : Math.min(42, Math.max(20, Math.floor(maxActivityWidth * 0.34)));
-  const age = formatAgentViewJobAge(item.updatedAt);
-  const ageWidth = age ? visualWidth(age) + 1 : 0;
-  const titleTextWidth = Math.max(8, titleWidth - prDotWidth);
-  const title = padVisualEnd(truncateVisual(`${titlePrefix}${item.label}`, titleTextWidth), titleTextWidth);
-  const rightMetaParts = [
-    prLabel,
-    item.resultBadge,
-    item.agent ? `@${item.agent}` : null,
-    item.model,
-  ].filter((part): part is string => Boolean(part));
-  const rightMeta = rightMetaParts.length > 0
-    ? truncateVisual(rightMetaParts.join(' · '), compact ? 18 : 30)
-    : '';
-  const metaWidth = rightMeta ? visualWidth(rightMeta) + 1 : 0;
-  const summaryWidth = Math.max(12, maxActivityWidth - titleWidth - ageWidth - metaWidth - prDotWidth - 2);
-  const summaryText = truncateVisual(activity, summaryWidth);
-  const rowWithoutAge = `${title} ${summaryText}${rightMeta ? ` ${rightMeta}` : ''}`;
-  const spacer = age ? ' '.repeat(Math.max(1, maxActivityWidth - prDotWidth - visualWidth(rowWithoutAge) - visualWidth(age))) : '';
-  return <Text color={rowColor} dimColor={!rowColor && !selected} inverse={selected}>{prStatus && <PrStatusDot status={prStatus.state} />}{rowWithoutAge}{spacer}{age}</Text>;
-}
-function supervisorRowActionLabel(
-  kind: SupervisorListItem['primaryAction']['kind'],
-): string {
-  switch (kind) {
-    case 'attach':
-      return t('ui.agentView.actionAttach');
-    case 'inspect':
-      return t('ui.agentView.actionInspect');
-    case 'peek':
-      return t('ui.agentView.actionPeek');
-    case 'reply':
-      return t('ui.agentView.actionReply');
-    case 'review':
-      return t('ui.agentView.actionReview');
-  }
-}
-function PrStatusDot({ status }: { status: AgentSupervisorPrStatus['state'] }) {
-  if (status === 'checks_running') return <Text color="warning">● </Text>;
-  if (status === 'checks_passed') return <Text color="success">● </Text>;
-  if (status === 'merged') return <Text color="suggestion">● </Text>;
-  return <Text dimColor>● </Text>;
 }
 function TeammateTaskGroups(t0: {
   teammateTasks: TeammateListItem[];

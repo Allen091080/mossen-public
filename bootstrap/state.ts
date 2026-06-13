@@ -18,6 +18,14 @@ import { resetSettingsCache } from 'src/utils/settings/settingsCache.js'
 import type { PluginHookMatcher } from 'src/utils/settings/types.js'
 import { createSignal } from 'src/utils/signal.js'
 import { getUserType } from '../utils/userType.js'
+import {
+  createSessionGoalStateController,
+  type MossenGoalState,
+} from './sessionGoalState.js'
+export {
+  estimateSessionGoalTokens,
+  type MossenGoalState,
+} from './sessionGoalState.js'
 
 // Union type for registered hooks - can be SDK callbacks or native plugin hooks
 type RegisteredHookMatcher = HookCallbackMatcher | PluginHookMatcher
@@ -269,28 +277,6 @@ type State = {
   // logAPISuccess to tag the first post-compaction API call so we can
   // distinguish compaction-induced cache misses from TTL expiry.
   pendingPostCompaction: boolean
-}
-
-export type MossenGoalState = {
-  id: string
-  text: string
-  successCriteria?: string
-  createdAt: string
-  updatedAt: string
-  evaluatorModel: string
-  turnBudget: number
-  tokenBudget?: number | null
-  maxDurationSec?: number | null
-  turnCount: number
-  tokenEstimate?: number
-  lastTurnTokenEstimate?: number
-  lastEvaluatorTokenEstimate?: number
-  lastEvaluatorReason?: string
-  lastEvaluatorAt?: string
-  lastEvaluatorStatus?: 'met' | 'not_met' | 'error' | 'max_turns' | 'deferred'
-  evaluationFailureCount: number
-  clearReason?: string
-  status: 'active' | 'paused' | 'blocked' | 'cleared' | 'completed' | 'failed'
 }
 
 // ALSO HERE - THINK THRICE BEFORE MODIFYING
@@ -737,6 +723,55 @@ export function getTotalCacheCreationInputTokens(): number {
   return sumBy(Object.values(STATE.modelUsage), 'cacheCreationInputTokens')
 }
 
+const sessionGoalStateController = createSessionGoalStateController({
+  getState: () => STATE,
+  getTotalInputTokens,
+  getTotalOutputTokens,
+  getTotalCacheReadInputTokens,
+  getTotalCacheCreationInputTokens,
+})
+
+export const getSessionGoalActualTokenUsage =
+  sessionGoalStateController.getSessionGoalActualTokenUsage
+export const getSessionGoalHistory =
+  sessionGoalStateController.getSessionGoalHistory
+export const getSessionGoalState =
+  sessionGoalStateController.getSessionGoalState
+export const replaceSessionGoalStateForRestore =
+  sessionGoalStateController.replaceSessionGoalStateForRestore
+export const setSessionGoalState =
+  sessionGoalStateController.setSessionGoalState
+export const clearSessionGoalState =
+  sessionGoalStateController.clearSessionGoalState
+export const recordSessionGoalEvidence =
+  sessionGoalStateController.recordSessionGoalEvidence
+export const recordSessionGoalNegativeEvidence =
+  sessionGoalStateController.recordSessionGoalNegativeEvidence
+export const recordSessionGoalBlockerAttempt =
+  sessionGoalStateController.recordSessionGoalBlockerAttempt
+export const completeSessionGoalState =
+  sessionGoalStateController.completeSessionGoalState
+export const pauseSessionGoalState =
+  sessionGoalStateController.pauseSessionGoalState
+export const failSessionGoalState =
+  sessionGoalStateController.failSessionGoalState
+export const blockSessionGoalState =
+  sessionGoalStateController.blockSessionGoalState
+export const budgetLimitSessionGoalState =
+  sessionGoalStateController.budgetLimitSessionGoalState
+export const resumeSessionGoalState =
+  sessionGoalStateController.resumeSessionGoalState
+export const editSessionGoalState =
+  sessionGoalStateController.editSessionGoalState
+export const updateSessionGoalBudgets =
+  sessionGoalStateController.updateSessionGoalBudgets
+export const recordSessionGoalEvaluation =
+  sessionGoalStateController.recordSessionGoalEvaluation
+export const deferSessionGoalEvaluation =
+  sessionGoalStateController.deferSessionGoalEvaluation
+export const incrementSessionGoalTurnCount =
+  sessionGoalStateController.incrementSessionGoalTurnCount
+
 export function getTotalWebSearchRequests(): number {
   return sumBy(Object.values(STATE.modelUsage), 'webSearchRequests')
 }
@@ -1008,265 +1043,6 @@ export function getStrictToolResultPairing(): boolean {
 
 export function setStrictToolResultPairing(value: boolean): void {
   STATE.strictToolResultPairing = value
-}
-
-// G5: sharper token estimate. The previous heuristic was a flat chars/4, which
-// badly under- or over-counts CJK-heavy text (CJK is roughly one token per
-// character, whereas Latin text is ~4 chars/token). Count CJK codepoints at ~1
-// token each and the remaining characters at ~4 chars/token. Still an estimate
-// (no live tokenizer), but materially closer for mixed Chinese/English goals.
-const CJK_RANGE =
-  /[　-〿぀-ヿ㐀-䶿一-鿿豈-﫿＀-￯]/u
-
-export function estimateSessionGoalTokens(text: string): number {
-  if (!text) return 1
-  let cjk = 0
-  let other = 0
-  for (const ch of text) {
-    if (CJK_RANGE.test(ch)) cjk++
-    else other++
-  }
-  const estimate = cjk + Math.ceil(other / 4)
-  return Math.max(1, estimate)
-}
-
-/** Max terminal goals retained in session history (G4). */
-const MAX_SESSION_GOAL_HISTORY = 10
-
-/** Archive a terminal goal into session history (most recent last, capped). */
-function archiveSessionGoal(goal: MossenGoalState): void {
-  const next = [...STATE.sessionGoalHistory, goal]
-  STATE.sessionGoalHistory =
-    next.length > MAX_SESSION_GOAL_HISTORY
-      ? next.slice(next.length - MAX_SESSION_GOAL_HISTORY)
-      : next
-}
-
-/** Terminal goals from this session, most recent last (G4). */
-export function getSessionGoalHistory(): readonly MossenGoalState[] {
-  return STATE.sessionGoalHistory
-}
-
-function getDefaultSessionGoalTurnBudget(): number {
-  const raw = process.env.MOSSEN_CODE_GOAL_MAX_TURNS
-  if (!raw) return 20
-  const parsed = Number(raw)
-  if (!Number.isFinite(parsed)) return 20
-  return Math.min(500, Math.max(1, Math.floor(parsed)))
-}
-
-function getDefaultSessionGoalEvaluatorModel(): string {
-  const raw = process.env.MOSSEN_CODE_GOAL_EVALUATOR?.trim()
-  return raw || 'haiku'
-}
-
-export function getSessionGoalState(): MossenGoalState | null {
-  return STATE.sessionGoal
-}
-
-export function setSessionGoalState(
-  text: string,
-  successCriteria?: string,
-  options?: Partial<
-    Pick<
-      MossenGoalState,
-      | 'id'
-      | 'createdAt'
-      | 'evaluatorModel'
-      | 'turnBudget'
-      | 'tokenBudget'
-      | 'maxDurationSec'
-      | 'turnCount'
-      | 'tokenEstimate'
-    >
-  >,
-): MossenGoalState {
-  const now = new Date().toISOString()
-  const goal: MossenGoalState = {
-    id:
-      options?.id ??
-      `goal_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
-    text,
-    ...(successCriteria ? { successCriteria } : {}),
-    createdAt: options?.createdAt ?? now,
-    updatedAt: now,
-    ...(options?.tokenBudget !== undefined
-      ? { tokenBudget: options.tokenBudget }
-      : {}),
-    ...(options?.maxDurationSec !== undefined
-      ? { maxDurationSec: options.maxDurationSec }
-      : {}),
-    turnCount: options?.turnCount ?? 0,
-    evaluatorModel: options?.evaluatorModel ?? getDefaultSessionGoalEvaluatorModel(),
-    turnBudget: options?.turnBudget ?? getDefaultSessionGoalTurnBudget(),
-    tokenEstimate: options?.tokenEstimate ?? estimateSessionGoalTokens(
-      successCriteria ? `${text}\n${successCriteria}` : text,
-    ),
-    evaluationFailureCount: 0,
-    status: 'active',
-  }
-  // Archive a goal being replaced mid-flight (active/paused) so the history
-  // trail (G4) captures it too, not just user-cleared / completed goals.
-  const previous = STATE.sessionGoal
-  if (previous && (previous.status === 'active' || previous.status === 'paused' || previous.status === 'blocked')) {
-    archiveSessionGoal({
-      ...previous,
-      updatedAt: now,
-      clearReason: 'replaced',
-      status: 'cleared',
-    })
-  }
-  STATE.sessionGoal = goal
-  return goal
-}
-
-export function clearSessionGoalState(reason = 'user_cancel'): MossenGoalState | null {
-  if (!STATE.sessionGoal) return null
-  STATE.sessionGoal = {
-    ...STATE.sessionGoal,
-    updatedAt: new Date().toISOString(),
-    clearReason: reason,
-    status: 'cleared',
-  }
-  archiveSessionGoal(STATE.sessionGoal)
-  return STATE.sessionGoal
-}
-
-export function completeSessionGoalState(reason?: string): MossenGoalState | null {
-  if (!STATE.sessionGoal || STATE.sessionGoal.status !== 'active') return null
-  STATE.sessionGoal = {
-    ...STATE.sessionGoal,
-    updatedAt: new Date().toISOString(),
-    ...(reason ? { lastEvaluatorReason: reason } : {}),
-    ...(reason
-      ? {
-          lastEvaluatorAt: new Date().toISOString(),
-          lastEvaluatorStatus: 'met' as const,
-        }
-      : {}),
-    status: 'completed',
-  }
-  archiveSessionGoal(STATE.sessionGoal)
-  return STATE.sessionGoal
-}
-
-export function pauseSessionGoalState(
-  reason: string,
-  options?: { evaluatorError?: boolean },
-): MossenGoalState | null {
-  if (!STATE.sessionGoal || STATE.sessionGoal.status !== 'active') return null
-  STATE.sessionGoal = {
-    ...STATE.sessionGoal,
-    updatedAt: new Date().toISOString(),
-    ...(options?.evaluatorError
-      ? {
-          lastEvaluatorAt: new Date().toISOString(),
-          lastEvaluatorStatus: 'error' as const,
-        }
-      : {}),
-    lastEvaluatorReason: reason,
-    evaluationFailureCount: options?.evaluatorError
-      ? STATE.sessionGoal.evaluationFailureCount + 1
-      : STATE.sessionGoal.evaluationFailureCount,
-    status: 'paused',
-  }
-  return STATE.sessionGoal
-}
-
-export function blockSessionGoalState(reason: string): MossenGoalState | null {
-  if (!STATE.sessionGoal || STATE.sessionGoal.status !== 'active') return null
-  STATE.sessionGoal = {
-    ...STATE.sessionGoal,
-    updatedAt: new Date().toISOString(),
-    lastEvaluatorAt: new Date().toISOString(),
-    lastEvaluatorReason: reason,
-    status: 'blocked',
-  }
-  return STATE.sessionGoal
-}
-
-export function resumeSessionGoalState(): MossenGoalState | null {
-  if (
-    !STATE.sessionGoal ||
-    (STATE.sessionGoal.status !== 'paused' && STATE.sessionGoal.status !== 'blocked')
-  ) return null
-  STATE.sessionGoal = {
-    ...STATE.sessionGoal,
-    updatedAt: new Date().toISOString(),
-    status: 'active',
-  }
-  return STATE.sessionGoal
-}
-
-export function recordSessionGoalEvaluation(
-  status: NonNullable<MossenGoalState['lastEvaluatorStatus']>,
-  reason: string,
-  options?: {
-    turnCount?: number
-    tokenEstimate?: number
-    lastTurnTokenEstimate?: number
-    lastEvaluatorTokenEstimate?: number
-    incrementFailureCount?: boolean
-  },
-): MossenGoalState | null {
-  if (!STATE.sessionGoal || STATE.sessionGoal.status !== 'active') return null
-  STATE.sessionGoal = {
-    ...STATE.sessionGoal,
-    updatedAt: new Date().toISOString(),
-    lastEvaluatorAt: new Date().toISOString(),
-    lastEvaluatorStatus: status,
-    lastEvaluatorReason: reason,
-    ...(options?.turnCount !== undefined
-      ? { turnCount: options.turnCount }
-      : {}),
-    ...(options?.tokenEstimate !== undefined
-      ? { tokenEstimate: options.tokenEstimate }
-      : {}),
-    ...(options?.lastTurnTokenEstimate !== undefined
-      ? { lastTurnTokenEstimate: options.lastTurnTokenEstimate }
-      : {}),
-    ...(options?.lastEvaluatorTokenEstimate !== undefined
-      ? { lastEvaluatorTokenEstimate: options.lastEvaluatorTokenEstimate }
-      : {}),
-    evaluationFailureCount:
-      status === 'error' || options?.incrementFailureCount
-        ? STATE.sessionGoal.evaluationFailureCount + 1
-        : 0,
-  }
-  return STATE.sessionGoal
-}
-
-export function deferSessionGoalEvaluation(
-  reason: string,
-  options?: {
-    tokenEstimate?: number
-    lastTurnTokenEstimate?: number
-  },
-): MossenGoalState | null {
-  if (!STATE.sessionGoal || STATE.sessionGoal.status !== 'active') return null
-  STATE.sessionGoal = {
-    ...STATE.sessionGoal,
-    updatedAt: new Date().toISOString(),
-    lastEvaluatorAt: new Date().toISOString(),
-    lastEvaluatorStatus: 'deferred',
-    lastEvaluatorReason: reason,
-    ...(options?.tokenEstimate !== undefined
-      ? { tokenEstimate: options.tokenEstimate }
-      : {}),
-    ...(options?.lastTurnTokenEstimate !== undefined
-      ? { lastTurnTokenEstimate: options.lastTurnTokenEstimate }
-      : {}),
-  }
-  return STATE.sessionGoal
-}
-
-export function incrementSessionGoalTurnCount(): void {
-  if (!STATE.sessionGoal || STATE.sessionGoal.status !== 'active') return
-  STATE.sessionGoal = {
-    ...STATE.sessionGoal,
-    updatedAt: new Date().toISOString(),
-    turnCount: STATE.sessionGoal.turnCount + 1,
-  }
 }
 
 // Field name 'userMsgOptIn' avoids excluded-string substrings ('BriefTool',

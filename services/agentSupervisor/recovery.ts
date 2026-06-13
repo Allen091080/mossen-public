@@ -200,6 +200,17 @@ function pidStillAlive(pid: number | null | undefined): boolean {
   }
 }
 
+function isStaleNonTerminalState(state: AgentSupervisorJobState): boolean {
+  return (
+    !state.process.alive &&
+    (
+      state.status === 'queued' ||
+      state.status === 'working' ||
+      state.status === 'idle'
+    )
+  )
+}
+
 export type SupervisorReconcileSummary = {
   jobsScanned: number
   jobsMarkedDead: number
@@ -254,13 +265,20 @@ export async function reconcileDeadSupervisorJobs(): Promise<SupervisorReconcile
     try {
       const state = await readAgentSupervisorJobState(jobId)
       if (!state) continue
-      // Detect stale alive=true: state insists the worker is up, but its
-      // pid is gone. Mark the job failed so the dashboard list reflects
-      // reality and the cleanup path below is allowed to touch the
-      // worktree.
-      if (state.process.alive && !pidStillAlive(state.process.pid)) {
+      // Detect stale active jobs:
+      // 1. state insists the worker is up, but its pid is gone.
+      // 2. old pre-PTY/state-migration jobs can say queued/working/idle even
+      //    though process.alive is already false. Those rows must not route
+      //    Enter into a dead attach socket forever.
+      if (
+        (state.process.alive && !pidStillAlive(state.process.pid)) ||
+        isStaleNonTerminalState(state)
+      ) {
         const exitedAt = new Date().toISOString()
         const paths = getAgentSupervisorJobPaths(jobId)
+        const signal = state.process.alive
+          ? 'reconciled_pid_gone'
+          : 'reconciled_inactive_nonterminal'
         try {
           const seq = await getNextSupervisorJsonlSeq(paths.events)
           await appendSupervisorJsonlLine(paths.events, {
@@ -271,7 +289,7 @@ export async function reconcileDeadSupervisorJobs(): Promise<SupervisorReconcile
               ts: exitedAt,
             }),
             exitCode: null,
-            signal: 'reconciled_pid_gone',
+            signal,
           })
         } catch (error) {
           summary.errors.push({
@@ -292,7 +310,7 @@ export async function reconcileDeadSupervisorJobs(): Promise<SupervisorReconcile
                 ...current.process,
                 alive: false,
                 lastExitedAt: current.process.lastExitedAt ?? exitedAt,
-                signal: current.process.signal ?? 'reconciled_pid_gone',
+                signal: current.process.signal ?? signal,
               },
             }
           })

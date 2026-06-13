@@ -3,13 +3,16 @@ import type {
   LocalJSXCommandContext,
   LocalJSXCommandOnDone,
 } from '../../types/command.js'
+import type { TranscriptMessage } from '../../types/logs.js'
 import { t } from '../../utils/i18n/index.js'
 import { formatDuration, formatNumber } from '../../utils/format.js'
+import { extractTextContent } from '../../utils/messages.js'
 import {
   listWorkflowRuns,
   loadRunLog,
   loadRunMeta,
   runScriptPath,
+  workflowReportPath,
   type WorkflowRunMeta,
 } from '../../tools/WorkflowTool/engine/journalStore.js'
 import { isUltracodeActive, setUltracodeActive } from '../../bootstrap/state.js'
@@ -26,6 +29,7 @@ import {
   WorkflowRunsDialog,
 } from './WorkflowRunsDialog.js'
 import { saveRun } from './saveWorkflow.js'
+import { exportWorkflowRunReport } from './exportWorkflowReport.js'
 import {
   buildWorkflowResumeNextInput,
   buildWorkflowResumeResult,
@@ -40,6 +44,14 @@ import {
   workflowAgentElapsedMs,
   workflowFiniteNumber,
 } from './progressSummary.js'
+import {
+  buildWorkflowVerificationSummary,
+  workflowRuntimeStatusToMachineState,
+} from './workflowProgressTree.js'
+import {
+  flushSessionStorage,
+  loadTranscriptFile,
+} from '../../utils/sessionStorage.js'
 
 type WorkflowAgentSnapshot = Partial<WorkflowAgentTaskProgress> & {
   agentNumber?: number
@@ -131,6 +143,53 @@ function formatToolCall(tool: { name: string; summary?: string }): string {
   return `${tool.name}${tool.summary ? ` ${tool.summary}` : ''}`
 }
 
+function workflowTranscriptMessageText(message: TranscriptMessage): string | null {
+  if (message.type === 'user') {
+    const text = compact(extractTextContent(message.message?.content, '\n'), 240)
+    return text ? `User: ${text}` : null
+  }
+  if (message.type === 'assistant') {
+    const text = compact(extractTextContent(message.message?.content, '\n'), 240)
+    return text ? `Assistant: ${text}` : null
+  }
+  if (message.type === 'attachment') {
+    const attachmentType =
+      typeof message.attachment?.type === 'string'
+        ? message.attachment.type
+        : 'attachment'
+    return `Attachment: ${attachmentType}`
+  }
+  if (message.type === 'system') {
+    const subtype =
+      typeof message.subtype === 'string' ? `:${message.subtype}` : ''
+    return `System${subtype}`
+  }
+  return null
+}
+
+async function workflowAgentTranscriptTail(
+  agent: WorkflowAgentSnapshot,
+  maxLines = 8,
+): Promise<string[]> {
+  if (!agent.transcriptPath) return []
+  try {
+    await flushSessionStorage()
+    const transcript = await loadTranscriptFile(agent.transcriptPath, {
+      keepAllLeaves: true,
+    })
+    const allMessages = Array.from(transcript.messages.values())
+    const scopedMessages = agent.agentId
+      ? allMessages.filter(message => message.agentId === agent.agentId)
+      : allMessages
+    const messages = (scopedMessages.length > 0 ? scopedMessages : allMessages)
+      .map(workflowTranscriptMessageText)
+      .filter((line): line is string => Boolean(line))
+    return messages.slice(-maxLines)
+  } catch {
+    return ['Transcript unavailable']
+  }
+}
+
 function agentLine(agent: WorkflowAgentSnapshot, now = Date.now()): string {
   const parts = [
     `#${agent.agentNumber ?? '?'} ${agent.phase ? `[${agent.phase}] ` : ''}${agent.label ?? 'agent'}`,
@@ -140,12 +199,17 @@ function agentLine(agent: WorkflowAgentSnapshot, now = Date.now()): string {
   ]
   const elapsed = workflowAgentElapsedMs(agent, now)
   if (elapsed > 0) parts.push(formatDuration(elapsed, { mostSignificantOnly: true }))
+  if (agent.agentId) parts.push(`agentId: ${agent.agentId}`)
+  if (agent.transcriptPath) parts.push(`transcript: ${agent.transcriptPath}`)
   const tool = compact(
     recentToolCalls(agent).at(-1)
       ? formatToolCall(recentToolCalls(agent).at(-1)!)
       : null,
     80,
   )
+  if (agent.remoteSessionId) parts.push(`remote: ${agent.remoteSessionId}`)
+  const prompt = compact(agent.promptPreview, 90)
+  if (prompt) parts.push(`${t('cmd.workflows.prompt')}: ${prompt}`)
   if (tool) parts.push(tool)
   const result = compact(agent.resultPreview, 100)
   if (result) parts.push(result)
@@ -161,6 +225,14 @@ function renderLiveRunDetail(
   const agents = task.agents ?? []
   const phaseTitles = phaseTitlesForTask(task)
   const runSummary = buildWorkflowRunMetricSummary(task, agents, now)
+  const verification = buildWorkflowVerificationSummary({
+    state: workflowRuntimeStatusToMachineState(task.status, {
+      paused: task.paused,
+    }),
+    result: task.result,
+    failures: task.failures,
+    reportPath: workflowReportPath(task.workflowRunId ?? task.runId ?? runId),
+  })
   const header = [
     `${statusGlyph((task.status as WorkflowRunMeta['status']) ?? 'running')} ${task.workflowName ?? runId} (${task.workflowRunId ?? task.runId ?? runId})`,
     `${t('cmd.workflows.status')}: ${task.paused ? 'paused' : (task.status ?? 'unknown')}`,
@@ -171,6 +243,8 @@ function renderLiveRunDetail(
     task.failures?.length
       ? `${t('cmd.workflows.failures')}: ${task.failures.length}`
       : null,
+    `verification: ${verification.state}${verification.summary ? ` · ${verification.summary}` : ''}`,
+    `report: ${workflowReportPath(task.workflowRunId ?? task.runId ?? runId)}`,
   ].filter((line): line is string => line !== null)
 
   const phaseLines =
@@ -281,6 +355,13 @@ function renderRunDetail(
     meta.failures?.length
       ? `${t('cmd.workflows.failures')}: ${meta.failures.length}`
       : null,
+    `verification: ${buildWorkflowVerificationSummary({
+      state: workflowRuntimeStatusToMachineState(meta.status),
+      result: meta.result,
+      failures: meta.failures,
+      reportPath: workflowReportPath(meta.runId),
+    }).state}`,
+    `report: ${workflowReportPath(meta.runId)}`,
   ].filter((l): l is string => l !== null)
   const body =
     log.length > 0
@@ -296,11 +377,11 @@ function renderRunDetail(
   ].join('\n')
 }
 
-function renderAgentDetail(
+async function renderAgentDetail(
   runId: string | undefined,
   agentId: string | undefined,
   tasks: Record<string, unknown> | null | undefined,
-): string {
+): Promise<string> {
   const agentNumber = parseWorkflowAgentNumber(agentId)
   if (!runId || !agentNumber) return t('cmd.workflows.agentDetailUsage')
   const found = findWorkflowTaskForRun(tasks, runId)
@@ -335,6 +416,9 @@ function renderAgentDetail(
     agent.agentType ? `agentType: ${agent.agentType}` : null,
     agent.model ? `model: ${agent.model}` : null,
     agent.isolation ? `isolation: ${agent.isolation}` : null,
+    agent.agentId ? `agentId: ${agent.agentId}` : null,
+    agent.transcriptPath ? `transcript: ${agent.transcriptPath}` : null,
+    agent.remoteSessionId ? `remote: ${agent.remoteSessionId}` : null,
     compact(agent.promptPreview)
       ? `${t('cmd.workflows.prompt')}: ${compact(agent.promptPreview)}`
       : null,
@@ -345,6 +429,13 @@ function renderAgentDetail(
       ? `${t('cmd.workflows.result')}: ${compact(agent.resultPreview)}`
       : null,
     agent.error ? `error: ${agent.error}` : null,
+    ...(agent.transcriptPath
+      ? [
+          '',
+          'Transcript tail:',
+          ...(await workflowAgentTranscriptTail(agent)).map(line => `  ${line}`),
+        ]
+      : []),
     '',
     t('cmd.workflows.agentControlsHint', {
       runId,
@@ -572,6 +663,11 @@ export async function call(
     return null
   }
 
+  if (tokens[0] === 'export' || tokens[0] === 'report') {
+    onDone(exportWorkflowRunReport(tokens[1]).message, { display: 'system' })
+    return null
+  }
+
   if (tokens[0] === 'resume') {
     const result = resumeRunFromJournal(tokens[1])
     onDone(result.message, {
@@ -585,7 +681,7 @@ export async function call(
 
   if (tokens[0] === 'agent') {
     onDone(
-      renderAgentDetail(tokens[1], tokens[2], context.getAppState().tasks),
+      await renderAgentDetail(tokens[1], tokens[2], context.getAppState().tasks),
       { display: 'system' },
     )
     return null

@@ -80,6 +80,7 @@ import {
   flushSessionStorage,
   recordTranscript,
 } from './utils/sessionStorage.js'
+import { getActiveSessionGoalPromptSection } from './utils/sessionGoalPrompt.js'
 import { toExternalPermissionMode } from './utils/permissions/PermissionMode.js'
 import { asSystemPrompt } from './utils/systemPromptType.js'
 import { resolveThemeSetting } from './utils/systemTheme.js'
@@ -312,10 +313,12 @@ export class QueryEngine {
       customPrompt !== undefined && hasAutoMemPathOverride()
         ? await loadMemoryPrompt()
         : null
+    const sessionGoalPrompt = getActiveSessionGoalPromptSection()
 
     const systemPrompt = asSystemPrompt([
       ...(customPrompt !== undefined ? [customPrompt] : defaultSystemPrompt),
       ...(memoryMechanicsPrompt ? [memoryMechanicsPrompt] : []),
+      ...(sessionGoalPrompt ? [sessionGoalPrompt] : []),
       ...(appendSystemPrompt ? [appendSystemPrompt] : []),
     ])
 

@@ -335,7 +335,7 @@ export async function agentsTuiOrPrinterHandler(
   const resolvedOptions = { ...options, cwd: cwd.cwd }
   const dispatchDefaults = normalizeAgentViewDispatchDefaults(resolvedOptions)
 
-  if (options.doctor || options.gc || !canUseAgentViewTui()) {
+  if (options.json || options.doctor || options.gc || !canUseAgentViewTui()) {
     await agentsHandler(resolvedOptions)
     return
   }

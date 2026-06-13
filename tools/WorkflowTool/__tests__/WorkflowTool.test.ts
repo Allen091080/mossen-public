@@ -15,7 +15,9 @@ import {
   getSessionId,
   getSessionProjectDir,
   getOriginalCwd,
+  clearSessionGoalState,
   setProjectRoot,
+  setSessionGoalState,
   switchSession,
   setOriginalCwd,
   setUltracodeActive,
@@ -43,6 +45,7 @@ import {
   loadRunLog,
   loadRunMeta,
   STALE_RUNNING_WORKFLOW_MESSAGE,
+  workflowReportPath,
 } from '../engine/journalStore.js'
 import {
   getProjectWorkflowsDir,
@@ -212,6 +215,9 @@ describe('WorkflowTool official tool contract', () => {
     expect(
       WorkflowTool.toAutoClassifierInput({ scriptPath: '/tmp/workflow.js' }),
     ).toBe('')
+    expect(
+      WorkflowTool.toAutoClassifierInput({ task: 'audit the project' }),
+    ).toBe('audit the project')
   })
 
   it('uses a strict object input schema and requires a workflow source', () => {
@@ -226,6 +232,9 @@ return 'ok'
     ).toBe(false)
     expect(WorkflowTool.inputSchema.safeParse({ args: { ticket: 42 } }).success).toBe(
       false,
+    )
+    expect(WorkflowTool.inputSchema.safeParse({ task: 'audit the diff' }).success).toBe(
+      true,
     )
   })
 
@@ -522,6 +531,179 @@ return 'ok'
       isBackgrounded: true,
     })
   })
+
+  it('persists the active goal id as the workflow parent goal', async () => {
+    const goal = setSessionGoalState('ship workflow parent goal linkage')
+    let state = {
+      tasks: {},
+      toolPermissionContext: getEmptyToolPermissionContext(),
+    } as unknown as AppState
+
+    try {
+      const result = await WorkflowTool.call!(
+        {
+          script: `
+export const meta = { name: 'goal-parent-flow', description: 'Goal parent workflow' }
+return 'ok'
+`,
+        },
+        {
+          abortController: new AbortController(),
+          toolUseId: 'toolu_goal_parent_wf',
+          getAppState: () => state,
+          setAppState: (updater: (prev: AppState) => AppState) => {
+            state = updater(state)
+          },
+        } as unknown as ToolUseContext,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(loadRunMeta(result.data.runId!)?.parentGoalId).toBe(goal.id)
+      expect(
+        (state.tasks[result.data.taskId!] as LocalWorkflowTaskState)
+          .parentGoalId,
+      ).toBe(goal.id)
+    } finally {
+      clearSessionGoalState('user_cancel')
+    }
+  })
+})
+
+describe('WorkflowTool dynamic task launch', () => {
+  it('auto-plans a natural-language task into an executable workflow run', async () => {
+    const priorFactory = setWorkflowAgentRunnerFactoryForTests
+    let state = {
+      tasks: {},
+      toolPermissionContext: getEmptyToolPermissionContext(),
+    } as unknown as AppState
+    const setAppState = (updater: (prev: AppState) => AppState) => {
+      state = updater(state)
+    }
+    const calls: Array<{ label: string; phase: string | null; prompt: string }> = []
+
+    setWorkflowAgentRunnerFactoryForTests(() => async (prompt, _opts, meta) => {
+      calls.push({ label: meta.label, phase: meta.phase, prompt })
+      if (meta.label === 'planner') {
+        return {
+          value: {
+            summary: 'Plan Agent View recovery audit',
+            successCriteria: ['stale workers are detected'],
+            verificationPlan: ['run focused tests'],
+            workItems: [
+              {
+                key: 'state',
+                title: 'Inspect state model',
+                prompt: 'Check stale worker state projection.',
+              },
+              {
+                key: 'ui',
+                title: 'Inspect UI actions',
+                prompt: 'Check Agent View action labels.',
+              },
+            ],
+          },
+          tokens: 11,
+          toolCalls: 1,
+          ok: true,
+        }
+      }
+      if (meta.label.startsWith('execute:')) {
+        return {
+          value: {
+            key: meta.label.replace('execute:', ''),
+            summary: `executed ${meta.label}`,
+            evidence: ['focused evidence'],
+            artifacts: ['commands/workflows/workflows.tsx'],
+            risks: [],
+            nextActions: [],
+          },
+          tokens: 13,
+          toolCalls: 2,
+          ok: true,
+        }
+      }
+      if (meta.label.startsWith('verify:')) {
+        return {
+          value: {
+            key: meta.label.replace('verify:', ''),
+            accepted: true,
+            summary: `verified ${meta.label}`,
+            evidence: ['verification evidence'],
+            gaps: [],
+          },
+          tokens: 7,
+          toolCalls: 1,
+          ok: true,
+        }
+      }
+      return {
+        value: {
+          summary: 'Agent View dynamic workflow completed.',
+          evidence: ['planner, execution, and verification agents completed'],
+          validationCommands: ['bun test tools/WorkflowTool/__tests__/WorkflowTool.test.ts'],
+          artifacts: ['commands/workflows/workflows.tsx'],
+          residualRisks: [],
+          openQuestions: [],
+        },
+        tokens: 5,
+        toolCalls: 1,
+        ok: true,
+      }
+    })
+
+    try {
+      const result = await WorkflowTool.call!(
+        {
+          task: 'Audit Agent View status recovery and produce verification evidence.',
+        },
+        {
+          abortController: new AbortController(),
+          toolUseId: 'toolu_dynamic_task_wf',
+          getAppState: () => state,
+          setAppState,
+        } as unknown as ToolUseContext,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(result.data.status).toBe('async_launched')
+      expect(result.data.summary).toContain('Auto-plan, execute, verify')
+      expect(result.data.scriptPath).toContain(`${result.data.runId}/script.js`)
+      expect(readFileSync(result.data.scriptPath!, 'utf8')).toContain(
+        'const PLAN_SCHEMA',
+      )
+      expect(await waitForRunMetaStatus(result.data.runId!, 'completed')).toBe(
+        'completed',
+      )
+      const meta = loadRunMeta(result.data.runId!)
+      expect(meta?.workflowName).toStartWith(
+        'dynamic-audit-agent-view-status-recovery',
+      )
+      expect(meta?.workflowName).toContain('produce-verification')
+      expect(meta?.phases?.map(phase => phase.title)).toEqual([
+        'Plan',
+        'Execute',
+        'Verify',
+        'Synthesize',
+      ])
+      expect(meta?.result).toContain('Agent View dynamic workflow completed.')
+      expect(meta?.result).toContain(
+        'bun test tools/WorkflowTool/__tests__/WorkflowTool.test.ts',
+      )
+      expect(calls.map(call => `${call.phase}:${call.label}`)).toEqual([
+        'Plan:planner',
+        'Execute:execute:state',
+        'Execute:execute:ui',
+        'Verify:verify:state',
+        'Verify:verify:ui',
+        'Synthesize:synthesis',
+      ])
+      expect(calls[0]?.prompt).toContain(
+        'Audit Agent View status recovery and produce verification evidence.',
+      )
+    } finally {
+      priorFactory(null)
+    }
+  })
 })
 
 describe('WorkflowTool final result delivery', () => {
@@ -566,6 +748,12 @@ return { answer: 42, text: 'done <ok>' }
     const runLogText = loadRunLog(result.data.runId!).join('\n')
     expect(runLogText).toContain('result: {')
     expect(runLogText).toContain('"answer": 42')
+    const reportPath = workflowReportPath(result.data.runId!)
+    expect(await waitForCondition(() => existsSync(reportPath))).toBe(true)
+    const reportText = readFileSync(reportPath, 'utf8')
+    expect(reportText).toContain('# Workflow Report: result-flow')
+    expect(reportText).toContain('## Verification Evidence')
+    expect(reportText).toContain('"answer": 42')
 
     const notification = dequeueAll()
       .map(command => command.value)
@@ -896,7 +1084,7 @@ describe('WorkflowTool resume input contract', () => {
         } as never,
         async () => ({ behavior: 'allow' }) as never,
       ),
-    ).rejects.toThrow('Must provide script, name, or scriptPath')
+    ).rejects.toThrow('Must provide script, name, scriptPath, or task')
   })
 
   it('validates resumeFromRunId against the official run id shape', async () => {

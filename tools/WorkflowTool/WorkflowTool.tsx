@@ -10,6 +10,7 @@ import {
   getOriginalCwd,
   getCurrentTurnTokenBudget,
   getProjectRoot,
+  getSessionGoalState,
   getSessionId,
   getSessionProjectDir,
   getTurnOutputTokens,
@@ -76,6 +77,10 @@ import {
   WORKFLOW_AUTO_LAUNCH_CONSENT_SOURCES,
   WORKFLOW_PROJECT_LAUNCH_CONSENT_SOURCES,
 } from './usageConsent.js'
+import {
+  buildDynamicWorkflowScript,
+  MAX_DYNAMIC_WORKFLOW_TASK_CHARS,
+} from './dynamicWorkflow.js'
 
 /** Default wall-clock ceiling for a whole workflow run (30 minutes). */
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
@@ -98,6 +103,13 @@ const inputSchema = z
       .optional()
       .describe(
         'Name of a saved, plugin-provided, or bundled workflow to run. Alternative to script or scriptPath.',
+      ),
+    task: z
+      .string()
+      .max(MAX_DYNAMIC_WORKFLOW_TASK_CHARS)
+      .optional()
+      .describe(
+        'Natural-language task to auto-plan into a dynamic multi-agent workflow. Use when the user explicitly asked for workflow-scale orchestration but did not provide a workflow script.',
       ),
     description: z
       .string()
@@ -133,8 +145,8 @@ const inputSchema = z
         'Resume a prior run: the longest unchanged prefix of agent() calls returns cached results instantly; the first changed/new call and everything after runs live. Same script + args ⇒ full cache hit.',
       ),
   })
-  .refine(input => Boolean(input.script || input.name || input.scriptPath), {
-    message: 'Must provide script, name, or scriptPath',
+  .refine(input => Boolean(input.script || input.name || input.scriptPath || input.task), {
+    message: 'Must provide script, name, scriptPath, or task',
   })
 
 type WorkflowInput = z.infer<typeof inputSchema>
@@ -187,7 +199,7 @@ type ResolvedWorkflowSource = {
 type WorkflowSourceResolution = {
   source: string
   resolvedScriptPath?: string
-  scope?: SavedWorkflowRef['scope'] | 'inline' | 'scriptPath'
+  scope?: SavedWorkflowRef['scope'] | 'inline' | 'scriptPath' | 'task'
 }
 
 type WorkflowAgentRunnerFactory = typeof createWorkflowAgentRunner
@@ -274,7 +286,10 @@ async function resolveSource(
   if (typeof input.script === 'string' && input.script.trim()) {
     return { source: input.script, scope: 'inline' }
   }
-  throw new Error('Must provide script, name, or scriptPath')
+  if (typeof input.task === 'string' && input.task.trim()) {
+    return { source: buildDynamicWorkflowScript(input.task), scope: 'task' }
+  }
+  throw new Error('Must provide script, name, scriptPath, or task')
 }
 
 function normalizeResumeRunId(value: unknown): string | null {
@@ -286,11 +301,12 @@ function normalizeResumeRunId(value: unknown): string | null {
   return runId
 }
 
-function workflowInvocationMode(input: WorkflowInput): 'scriptPath' | 'named' | 'inline' {
+function workflowInvocationMode(input: WorkflowInput): 'scriptPath' | 'named' | 'inline' | 'task' {
   if (typeof input.scriptPath === 'string' && input.scriptPath.trim()) {
     return 'scriptPath'
   }
   if (typeof input.name === 'string' && input.name.trim()) return 'named'
+  if (typeof input.task === 'string' && input.task.trim()) return 'task'
   return 'inline'
 }
 
@@ -464,6 +480,26 @@ function formatWorkflowResultForNotification(result: unknown): string | undefine
   return `${text.slice(0, MAX_WORKFLOW_NOTIFICATION_RESULT_CHARS)}\n[truncated after ${MAX_WORKFLOW_NOTIFICATION_RESULT_CHARS} chars]`
 }
 
+async function exportTerminalWorkflowReport(runId: string): Promise<void> {
+  try {
+    const { exportWorkflowRunReport } = await import(
+      '../../commands/workflows/exportWorkflowReport.js'
+    )
+    exportWorkflowRunReport(runId)
+    const { captureWorkflowRunMemoryCandidate } = await import(
+      '../../services/memorySidecar/workflowMemory.js'
+    )
+    await captureWorkflowRunMemoryCandidate({
+      runId,
+      cwd: getProjectRoot(),
+      sessionId: getSessionId(),
+    })
+  } catch {
+    // Report export and memory capture are observability artifacts; workflow
+    // completion must not fail if either best-effort write cannot run.
+  }
+}
+
 function shouldSkipWorkflowLaunchPrompt(
   permissionContext: ReturnType<ToolUseContext['getAppState']>['toolPermissionContext'],
   context?: ToolUseContext,
@@ -529,7 +565,7 @@ export const WorkflowTool = buildTool({
     return true
   },
   toAutoClassifierInput(input) {
-    return input.script ?? input.name ?? ''
+    return input.script ?? input.name ?? input.task ?? ''
   },
   async validateInput(input, context) {
     if (!isWorkflowRuntimeEnabled()) {
@@ -705,7 +741,11 @@ export const WorkflowTool = buildTool({
     } catch {
       // fall through to a generic label if meta can't be parsed yet
     }
-    return input.name ? `Workflow: ${input.name}` : WORKFLOW_TOOL_NAME
+    return input.name
+      ? `Workflow: ${input.name}`
+      : input.task
+        ? `Dynamic workflow: ${input.task}`
+        : WORKFLOW_TOOL_NAME
   },
   async call(input: WorkflowInput, toolUseContext, canUseTool) {
     // Resume path: reuse the prior runId for the journal. The script source
@@ -767,6 +807,9 @@ export const WorkflowTool = buildTool({
     const prior = resumeRunId ? loadJournal(runId) : null
     const persistedScriptPath = runScriptPath(runId)
     const transcriptDir = workflowTranscriptDir(runId)
+    const parentGoal = getSessionGoalState()
+    const parentGoalId =
+      parentGoal?.status === 'active' ? parentGoal.id : undefined
     removeInactiveWorkflowResumeTasks(
       typeof toolUseContext.getAppState === 'function'
         ? toolUseContext.getAppState().tasks
@@ -786,6 +829,7 @@ export const WorkflowTool = buildTool({
       args: input.args,
       scriptPath: persistedScriptPath,
       transcriptDir,
+      parentGoalId: parentGoalId ?? null,
       createdAt: new Date().toISOString(),
       status: 'running',
     })
@@ -818,6 +862,7 @@ export const WorkflowTool = buildTool({
       title: meta.title,
       phaseDefinitions: meta.phases,
       transcriptDir,
+      parentGoalId: parentGoalId ?? null,
       defaultModel: meta.model,
       toolUseId: toolUseContext.toolUseId,
       abortController: runAbort,
@@ -862,6 +907,8 @@ export const WorkflowTool = buildTool({
       toolUseContext,
       canUseTool,
       runId,
+      transcriptDir,
+      parentGoalId,
       abortController: runAbort,
       registerAgentController: (
         agentNumber: number,
@@ -1010,6 +1057,7 @@ export const WorkflowTool = buildTool({
           durationMs: durationMs(),
           result: finalResult,
         })
+        void exportTerminalWorkflowReport(runId)
       })
       .catch((err: unknown) => {
         const killed =
@@ -1052,6 +1100,7 @@ export const WorkflowTool = buildTool({
             ...patch,
             error: (err as Error).message,
           })
+        void exportTerminalWorkflowReport(runId)
       })
 
     return {

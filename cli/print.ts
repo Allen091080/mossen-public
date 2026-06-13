@@ -209,14 +209,14 @@ import {
   setSdkAgentProgressSummariesEnabled,
 } from 'src/bootstrap/state.js'
 import {
-  evaluateActiveSessionGoalAfterTurn,
-  getSessionGoalPostTurnEvents,
-} from 'src/utils/sessionGoalEvaluator.js'
-import { createSessionGoalEventMessage } from 'src/utils/sessionGoalEvents.js'
-import {
   createSDKGoalEventMessage,
   formatSessionGoalEventForStderr,
 } from 'src/utils/sessionGoalOutput.js'
+import {
+  enqueueSessionGoalContinuation,
+  evaluateSessionGoalRuntimeAfterTurn,
+  getSessionGoalTaskBudgetForRequest,
+} from 'src/utils/sessionGoalRuntime.js'
 import { createSyntheticOutputTool } from 'src/tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { parseSessionIdentifier } from 'src/utils/sessionUrl.js'
 import { asSessionId } from 'src/types/ids.js'
@@ -2313,6 +2313,7 @@ function runHeadlessStreaming(
           // inside the closure.
           const cmd = command
           incrementSessionGoalTurnCount()
+          let didCompleteSuccessfulTurn = false
           await runWithWorkload(cmd.workload ?? options.workload, async () => {
             for await (const message of ask({
               commands: uniqBy(
@@ -2329,7 +2330,9 @@ function runHeadlessStreaming(
               thinkingConfig: options.thinkingConfig,
               maxTurns: options.maxTurns,
               maxBudgetUsd: options.maxBudgetUsd,
-              taskBudget: options.taskBudget,
+              taskBudget:
+                getSessionGoalTaskBudgetForRequest(cmd.workload ?? options.workload) ??
+                options.taskBudget,
               canUseTool,
               userSpecifiedModel: activeUserSpecifiedModel,
               fallbackModel: options.fallbackModel,
@@ -2378,6 +2381,13 @@ function runHeadlessStreaming(
                 })
               },
             })) {
+              if (
+                message.type === 'result' &&
+                message.subtype === 'success' &&
+                !message.is_error
+              ) {
+                didCompleteSuccessfulTurn = true
+              }
               if (message.type === 'result') {
                 // Flush pending SDK events so they appear before result on the stream.
                 for (const event of drainSdkEvents()) {
@@ -2507,37 +2517,29 @@ function runHeadlessStreaming(
             }
           }) // end runWithWorkload
 
-          const sessionGoalAction = await evaluateActiveSessionGoalAfterTurn(
-            mutableMessages,
-            abortController.signal,
-          )
-          const sessionGoalEvents =
-            getSessionGoalPostTurnEvents(sessionGoalAction)
-          for (const sessionGoalEvent of sessionGoalEvents) {
-            mutableMessages.push(createSessionGoalEventMessage(sessionGoalEvent))
-            output.enqueue(createSDKGoalEventMessage(sessionGoalEvent, getSessionId()))
-            if (options.outputFormat !== 'stream-json') {
-              process.stderr.write(
-                `${formatSessionGoalEventForStderr(sessionGoalEvent)}\n`,
-              )
-            }
-          }
-          if (sessionGoalAction.type === 'continue') {
-            removeByFilter(
-              cmd =>
-                cmd.workload === 'goal' &&
-                cmd.isMeta === true &&
-                typeof cmd.value === 'string' &&
-                cmd.value.includes('<session-goal-continuation>'),
-            )
-            enqueue({
-              mode: 'prompt',
-              value: sessionGoalAction.prompt,
-              isMeta: true,
-              skipSlashCommands: true,
-              priority: 'later',
-              workload: cmd.workload ?? options.workload ?? 'goal',
+          if (didCompleteSuccessfulTurn) {
+            const sessionGoalRuntime = await evaluateSessionGoalRuntimeAfterTurn({
+              messages: mutableMessages,
+              signal: abortController.signal,
+              tasks: getAppState().tasks,
             })
+            const sessionGoalAction = sessionGoalRuntime.action
+            for (const sessionGoalEventMessage of sessionGoalRuntime.eventMessages) {
+              mutableMessages.push(sessionGoalEventMessage)
+              output.enqueue(createSDKGoalEventMessage(sessionGoalEventMessage.goalEvent, getSessionId()))
+              if (options.outputFormat !== 'stream-json') {
+                process.stderr.write(
+                  `${formatSessionGoalEventForStderr(sessionGoalEventMessage.goalEvent)}\n`,
+                )
+              }
+            }
+            if (sessionGoalAction.type === 'continue') {
+              enqueueSessionGoalContinuation(sessionGoalAction, {
+                enqueue,
+                removeByFilter,
+                workload: cmd.workload ?? options.workload ?? 'goal',
+              })
+            }
           }
 
           for (const uuid of batchUuids) {

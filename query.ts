@@ -243,9 +243,10 @@ export type QueryParams = {
   skipCacheWrite?: boolean
   // API task_budget (output_config.task_budget, beta task-budgets-2026-03-13).
   // Distinct from the tokenBudget +500k auto-continue feature. `total` is the
-  // budget for the whole agentic turn; `remaining` is computed per iteration
-  // from cumulative API usage. See configureTaskBudgetParams in mossen.ts.
-  taskBudget?: { total: number }
+  // budget for the whole agentic turn; `remaining` can be provided by callers
+  // that already have cross-turn usage, then query.ts keeps decrementing it
+  // across compaction boundaries. See configureTaskBudgetParams in mossen.ts.
+  taskBudget?: { total: number; remaining?: number }
   deps?: QueryDeps
 }
 
@@ -341,7 +342,7 @@ async function* queryLoop(
   // multiple compacts: each subtracts the final context at that compact's
   // trigger point. Loop-local (not on State) to avoid touching the 7 continue
   // sites.
-  let taskBudgetRemaining: number | undefined = undefined
+  let taskBudgetRemaining: number | undefined = params.taskBudget?.remaining
   let actionPromiseRecoveryCount = 0
 
   // Snapshot immutable env/statsig/session state once at entry. See QueryConfig

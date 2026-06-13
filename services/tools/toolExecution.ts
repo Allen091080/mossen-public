@@ -9,7 +9,11 @@ import {
   mcpToolDetailsForAnalytics,
   sanitizeToolNameForAnalytics,
 } from 'src/services/analytics/metadata.js'
-import { addToToolDuration, getStatsStore } from '../../bootstrap/state.js'
+import {
+  addToToolDuration,
+  getStatsStore,
+  recordSessionGoalNegativeEvidence,
+} from '../../bootstrap/state.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
   findToolByName,
@@ -64,6 +68,10 @@ import {
   startSessionActivity,
   stopSessionActivity,
 } from '../../utils/sessionActivity.js'
+import {
+  GOAL_NEGATIVE_EVIDENCE_METRIC,
+  observeSessionGoalMetric,
+} from '../../utils/sessionGoalMetrics.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { Stream } from '../../utils/stream.js'
 import {
@@ -88,6 +96,13 @@ import { mcpInfoFromString } from '../mcp/mcpStringUtils.js'
 import { normalizeNameForMCP } from '../mcp/normalization.js'
 import type { MCPServerConnection } from '../mcp/types.js'
 import { getLoggingSafeMcpBaseUrl, isMcpTool } from '../mcp/utils.js'
+
+function recordGoalToolNegativeEvidence(toolName: string, detail: string): void {
+  recordSessionGoalNegativeEvidence(
+    `Tool ${toolName} failed: ${detail}`.slice(0, 1000),
+  )
+  observeSessionGoalMetric(GOAL_NEGATIVE_EVIDENCE_METRIC)
+}
 import {
   resolveHookPermissionDecision,
   runPostToolUseFailureHooks,
@@ -254,6 +269,7 @@ export async function* runToolUse(
   // Check if the tool exists
   if (!tool) {
     const sanitizedToolName = sanitizeToolNameForAnalytics(toolName)
+    recordGoalToolNegativeEvidence(toolName, `No such tool available: ${toolName}`)
     logForDebugging(`Unknown tool ${toolName}: ${toolUse.id}`)
     logMossenEvent('mossen.tool.use.error', {
       error:
@@ -529,6 +545,7 @@ async function checkPermissionsAndCallTool(
     logForDebugging(
       `${tool.name} tool input error: ${errorContent.slice(0, 200)}`,
     )
+    recordGoalToolNegativeEvidence(tool.name, `InputValidationError: ${errorContent}`)
     logMossenEvent('mossen.tool.use.error', {
       error:
         'InputValidationError' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -585,6 +602,7 @@ async function checkPermissionsAndCallTool(
     logForDebugging(
       `${tool.name} tool validation error: ${isValidCall.message?.slice(0, 200)}`,
     )
+    recordGoalToolNegativeEvidence(tool.name, isValidCall.message ?? 'tool validation failed')
     logMossenEvent('mossen.tool.use.error', {
       messageID:
         messageId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -1387,6 +1405,7 @@ async function checkPermissionsAndCallTool(
 
     if (!(error instanceof AbortError)) {
       const errorMsg = errorMessage(error)
+      recordGoalToolNegativeEvidence(tool.name, errorMsg)
       logForDebugging(
         `${tool.name} tool error (${durationMs}ms): ${errorMsg.slice(0, 200)}`,
       )

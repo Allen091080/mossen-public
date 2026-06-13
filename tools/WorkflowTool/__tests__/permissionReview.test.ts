@@ -159,6 +159,31 @@ return 'ok'
     }
   })
 
+  test('compiles natural-language task input into a reviewable workflow source', () => {
+    const review = buildWorkflowPermissionReview({
+      task: 'Audit workflow status recovery and produce verification evidence.',
+    })
+
+    expect(review.sourceKind).toBe('task')
+    expect(review.sourceLabel).toBe(
+      'Audit workflow status recovery and produce verification evidence.',
+    )
+    expect(review.meta?.name).toStartWith(
+      'dynamic-audit-workflow-status-recovery',
+    )
+    expect(review.meta?.name).toContain('produce-verification-evidence')
+    expect(review.meta?.phases?.map(phase => phase.title)).toEqual([
+      'Plan',
+      'Execute',
+      'Verify',
+      'Synthesize',
+    ])
+    expect(review.scriptSource).toContain('const PLAN_SCHEMA')
+    expect(review.scriptPreview).toContain('export const meta')
+    expect(review.staticSummary?.estimatedAgents).toBeGreaterThanOrEqual(4)
+    expect(review.usageConsentHash).toMatch(/^wf_sha256:[a-f0-9]{64}$/)
+  })
+
   test('surfaces parse failures in the review payload', () => {
     const review = buildWorkflowPermissionReview({
       script: 'log("missing meta")',
@@ -175,7 +200,7 @@ return 'ok'
 
     expect(review.sourceKind).toBe('missing')
     expect(review.resumeFromRunId).toBe('wf_resume1')
-    expect(review.metaError).toBe('Must provide script, name, or scriptPath')
+    expect(review.metaError).toBe('Must provide script, name, scriptPath, or task')
     expect(review.scriptPreview).toBeNull()
     expect(review.staticSummary).toBeNull()
   })

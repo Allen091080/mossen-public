@@ -2,18 +2,29 @@ import { z } from 'zod/v4'
 import {
   blockSessionGoalState,
   completeSessionGoalState,
+  getSessionGoalActualTokenUsage,
   getSessionGoalState,
+  recordSessionGoalBlockerAttempt,
   setSessionGoalState,
   type MossenGoalState,
 } from '../../bootstrap/state.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { createSessionGoalEventMessage } from '../../utils/sessionGoalEvents.js'
+import {
+  GOAL_BLOCKED_METRIC,
+  GOAL_COMPLETED_METRIC,
+  GOAL_CREATED_METRIC,
+  observeSessionGoalMetric,
+} from '../../utils/sessionGoalMetrics.js'
+import { persistCurrentSessionGoalSnapshot } from '../../utils/sessionGoalStore.js'
+import { validateSessionGoalCompletionEvidence } from '../../utils/sessionGoalValidation.js'
 
 const GoalStatusSchema = z.enum([
   'active',
   'paused',
   'blocked',
+  'budget_limited',
   'complete',
   'cleared',
   'failed',
@@ -22,6 +33,8 @@ const GoalStatusSchema = z.enum([
 const GoalToolGoalSchema = z.object({
   id: z.string(),
   objective: z.string(),
+  success_criteria: z.string().nullable(),
+  constraints: z.string().nullable(),
   status: GoalStatusSchema,
   turn_budget: z.number(),
   turns_used: z.number(),
@@ -32,6 +45,15 @@ const GoalToolGoalSchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   reason: z.string().nullable(),
+  recent_evidence: z.array(z.string()),
+  negative_evidence: z.array(z.string()),
+  blocker_history: z.array(z.object({
+    fingerprint: z.string(),
+    reason: z.string(),
+    turn_count: z.number(),
+    recorded_at: z.string(),
+  })),
+  next_plan: z.string().nullable(),
 })
 
 const GoalToolOutputSchema = z.object({
@@ -49,7 +71,7 @@ function goalStatusForTool(goal: MossenGoalState): z.infer<typeof GoalStatusSche
 }
 
 function goalToToolGoal(goal: MossenGoalState): z.infer<typeof GoalToolGoalSchema> {
-  const tokensUsed = goal.tokenEstimate ?? 0
+  const tokensUsed = getSessionGoalActualTokenUsage(goal) ?? goal.tokenEstimate ?? 0
   const remainingTokens =
     goal.tokenBudget !== undefined && goal.tokenBudget !== null
       ? Math.max(0, goal.tokenBudget - tokensUsed)
@@ -57,6 +79,8 @@ function goalToToolGoal(goal: MossenGoalState): z.infer<typeof GoalToolGoalSchem
   return {
     id: goal.id,
     objective: goal.text,
+    success_criteria: goal.successCriteria ?? null,
+    constraints: goal.constraints ?? null,
     status: goalStatusForTool(goal),
     turn_budget: goal.turnBudget,
     turns_used: goal.turnCount,
@@ -67,6 +91,15 @@ function goalToToolGoal(goal: MossenGoalState): z.infer<typeof GoalToolGoalSchem
     created_at: goal.createdAt,
     updated_at: goal.updatedAt,
     reason: goal.lastEvaluatorReason ?? goal.clearReason ?? null,
+    recent_evidence: goal.recentEvidence,
+    negative_evidence: goal.negativeEvidence,
+    blocker_history: goal.blockerHistory.map(item => ({
+      fingerprint: item.fingerprint,
+      reason: item.reason,
+      turn_count: item.turnCount,
+      recorded_at: item.recordedAt,
+    })),
+    next_plan: goal.nextPlan ?? null,
   }
 }
 
@@ -140,6 +173,16 @@ const createGoalInputSchema = lazySchema(() =>
       .describe(
         'Required. The concrete objective to start pursuing. Only use when the user explicitly asks to set a goal.',
       ),
+    success_criteria: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('Optional explicit success criteria supplied by the user or derived from their requested goal.'),
+    constraints: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('Optional constraints that must remain true while pursuing the goal.'),
     token_budget: z
       .number()
       .int()
@@ -170,7 +213,7 @@ export const CreateGoalTool = buildTool({
   renderToolUseMessage() {
     return null
   },
-  async call({ objective, token_budget }) {
+  async call({ objective, success_criteria, constraints, token_budget }) {
     const existing = getSessionGoalState()
     if (existing && existing.status !== 'cleared' && existing.status !== 'failed') {
       return {
@@ -181,9 +224,12 @@ export const CreateGoalTool = buildTool({
       }
     }
 
-    const goal = setSessionGoalState(objective, undefined, {
+    const goal = setSessionGoalState(objective, success_criteria, {
+      ...(constraints !== undefined ? { constraints } : {}),
       ...(token_budget !== undefined ? { tokenBudget: token_budget } : {}),
     })
+    persistCurrentSessionGoalSnapshot()
+    observeSessionGoalMetric(GOAL_CREATED_METRIC)
 
     return {
       data: responseForGoal(goal),
@@ -192,6 +238,8 @@ export const CreateGoalTool = buildTool({
           type: 'goal_created',
           goalId: goal.id,
           condition: goal.text,
+          successCriteria: goal.successCriteria,
+          constraints: goal.constraints,
           createdAt: goal.createdAt,
           evaluatorModel: goal.evaluatorModel,
           turnBudget: goal.turnBudget,
@@ -213,6 +261,21 @@ const updateGoalInputSchema = lazySchema(() =>
       .describe(
         'Required. Set complete only when the objective is achieved and no required work remains. Set blocked only after the same blocking condition repeats for at least three consecutive goal turns and further progress is impossible without user input or an external-state change.',
       ),
+    reason: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('Required for blocked; strongly recommended for complete. Summarize the proof or blocking condition.'),
+    evidence: z
+      .array(z.string().min(1))
+      .max(20)
+      .optional()
+      .describe('Required for complete. Concrete evidence such as files changed, commands run, tests passed, screenshots verified, or explicit user confirmation.'),
+    next_plan: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('Optional next step summary, especially useful when marking blocked.'),
   }),
 )
 type UpdateGoalInputSchema = ReturnType<typeof updateGoalInputSchema>
@@ -223,7 +286,7 @@ export const UpdateGoalTool = buildTool({
   alwaysLoad: true,
   maxResultSizeChars: 20_000,
   async description() {
-    return 'Update the existing goal. Use only to mark the goal achieved or genuinely blocked. You cannot use this tool to pause, resume, budget-limit, or usage-limit a goal; those changes are controlled by the user or system.'
+    return 'Update the existing goal. Use only to mark the goal achieved or genuinely blocked. Complete requires concrete evidence. Blocked requires a reason and at least three goal turns with the same blocking condition. You cannot use this tool to pause, resume, budget-limit, or usage-limit a goal; those changes are controlled by the user or system.'
   },
   async prompt() {
     return ''
@@ -237,7 +300,7 @@ export const UpdateGoalTool = buildTool({
   renderToolUseMessage() {
     return null
   },
-  async call({ status }) {
+  async call({ status, reason, evidence, next_plan }) {
     const current = getSessionGoalState()
     if (!current || current.status !== 'active') {
       return {
@@ -248,7 +311,43 @@ export const UpdateGoalTool = buildTool({
     }
 
     if (status === 'complete') {
-      const completed = completeSessionGoalState('model_reported_complete') ?? current
+      const cleanedEvidence = (evidence ?? []).map(item => item.trim()).filter(Boolean)
+      if (cleanedEvidence.length === 0) {
+        return {
+          data: responseForGoal(current, {
+            error:
+              'update_goal complete requires concrete evidence; include files, commands, tests, screenshots, runtime output, or explicit user confirmation that proves the objective is done',
+          }),
+        }
+      }
+      const evidenceCheck = validateSessionGoalCompletionEvidence(
+        current,
+        cleanedEvidence,
+      )
+      if (!evidenceCheck.ok) {
+        const details = [
+          evidenceCheck.missingCriteria.length
+            ? `missing criteria evidence: ${evidenceCheck.missingCriteria.join('; ')}`
+            : null,
+          evidenceCheck.unresolvedNegativeEvidence.length
+            ? `unresolved negative evidence: ${evidenceCheck.unresolvedNegativeEvidence.join('; ')}`
+            : null,
+        ].filter((item): item is string => item !== null)
+        return {
+          data: responseForGoal(current, {
+            error: `update_goal complete rejected because evidence does not prove the full goal: ${details.join(' | ')}`,
+          }),
+        }
+      }
+      const completed = completeSessionGoalState(
+        reason ?? 'model_reported_complete',
+        {
+          evidence: cleanedEvidence,
+          ...(next_plan ? { nextPlan: next_plan } : {}),
+        },
+      ) ?? current
+      persistCurrentSessionGoalSnapshot()
+      observeSessionGoalMetric(GOAL_COMPLETED_METRIC)
       return {
         data: responseForGoal(completed, { completionBudgetReport: true }),
         newMessages: [
@@ -258,13 +357,38 @@ export const UpdateGoalTool = buildTool({
             reason: 'condition_met',
             clearedAt: completed.updatedAt,
             turnsUsed: completed.turnCount,
-            tokensUsed: completed.tokenEstimate ?? 0,
+            tokensUsed: getSessionGoalActualTokenUsage(completed) ??
+              completed.tokenEstimate ??
+              0,
           }),
         ],
       }
     }
 
-    const blocked = blockSessionGoalState('model_reported_blocked') ?? current
+    const blockedReason = reason?.trim()
+    if (!blockedReason) {
+      return {
+        data: responseForGoal(current, {
+          error: 'update_goal blocked requires a reason that names the blocking condition',
+        }),
+      }
+    }
+    const blockerAudit = recordSessionGoalBlockerAttempt(blockedReason)
+    const latest = getSessionGoalState() ?? current
+    if (current.turnCount < 3 || blockerAudit.repeatCount < 3) {
+      return {
+        data: responseForGoal(latest, {
+          error:
+            `update_goal blocked requires the same blocking condition to repeat for at least three goal turns; observed ${blockerAudit.repeatCount}/3 for this blocker`,
+        }),
+      }
+    }
+    const blocked = blockSessionGoalState(blockedReason, {
+      evidence: evidence ?? [],
+      ...(next_plan ? { nextPlan: next_plan } : {}),
+    }) ?? current
+    persistCurrentSessionGoalSnapshot()
+    observeSessionGoalMetric(GOAL_BLOCKED_METRIC)
     return {
       data: responseForGoal(blocked),
       newMessages: [

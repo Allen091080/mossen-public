@@ -140,6 +140,55 @@ describe('LocalWorkflowTask pause/resume controls', () => {
     expect(task.scriptPath).toBe('/tmp/workflows/wf_register_separate/script.js')
   })
 
+  test('workflow agent identity updates live state without adding log noise', () => {
+    const runId = 'wf_identity_test'
+    let state = {
+      tasks: {
+        [runId]: workflowTask(runId),
+      },
+    } as unknown as AppState
+    const setAppState: SetAppState = updater => {
+      state = updater(state)
+    }
+
+    updateWorkflowTaskProgress(
+      runId,
+      {
+        kind: 'agent_start',
+        label: 'Inspect identity',
+        phase: 'Scan',
+        agentNumber: 1,
+        startedAt: 1_800_000_000_000,
+      },
+      setAppState,
+    )
+    updateWorkflowTaskProgress(
+      runId,
+      {
+        kind: 'agent_progress',
+        label: 'Inspect identity',
+        phase: 'Scan',
+        agentNumber: 1,
+        agentId: 'agent_identity_test',
+        transcriptPath:
+          '/tmp/workflows/wf_identity_test/transcripts/agent-agent_identity_test.jsonl',
+        startedAt: 1_800_000_000_000,
+        lastProgressAt: 1_800_000_001_000,
+      },
+      setAppState,
+    )
+
+    const task = state.tasks[runId] as LocalWorkflowTaskState
+    expect(task.agents[0]).toMatchObject({
+      agentNumber: 1,
+      agentId: 'agent_identity_test',
+      transcriptPath:
+        '/tmp/workflows/wf_identity_test/transcripts/agent-agent_identity_test.jsonl',
+      status: 'running',
+    })
+    expect(task.log).toEqual(['agent #1 started: Inspect identity'])
+  })
+
   test('buildWorkflowResumePrompt includes args like official resumable workflow prompt', () => {
     expect(
       buildWorkflowResumePrompt({

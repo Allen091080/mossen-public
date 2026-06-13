@@ -124,6 +124,8 @@ export type LaunchAgentSupervisorBackgroundJobOptions = {
   dangerouslySkipPermissions?: boolean
   testMode?: boolean
   sessionId?: string | null
+  parentWorkflowId?: string | null
+  parentGoalId?: string | null
   forceWorktreeIsolation?: boolean
 }
 
@@ -452,6 +454,8 @@ export async function launchAgentSupervisorBackgroundJob(
       options.allowDangerouslySkipPermissions ?? false,
     dangerouslySkipPermissions: options.dangerouslySkipPermissions ?? false,
     sessionId,
+    parentWorkflowId: options.parentWorkflowId ?? null,
+    parentGoalId: options.parentGoalId ?? null,
   })
   await writeAgentSupervisorJobState(state)
   if (sessionId) {
