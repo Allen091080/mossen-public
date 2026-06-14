@@ -6,11 +6,52 @@ import {
   resumeSessionGoalState,
   setSessionGoalState,
 } from '../../bootstrap/state.js'
-import { evaluateActiveSessionGoalAfterTurn } from '../sessionGoalEvaluator.js'
+import {
+  clearMossenConfigOverrides,
+  setMossenConfigOverride,
+} from '../../services/config/facade.js'
+import {
+  evaluateActiveSessionGoalAfterTurn,
+  isGoalEvaluatorBackendUnavailableError,
+} from '../sessionGoalEvaluator.js'
+
+const BACKEND_ENV_KEYS = [
+  'MOSSEN_CODE_API_BASE_URL',
+  'MOSSEN_CODE_AUTH_TOKEN',
+  'MOSSEN_CODE_AUTH_TOKEN_FILE_DESCRIPTOR',
+  'MOSSEN_CODE_AUTH_REFRESH_TOKEN',
+  'MOSSEN_CODE_CUSTOM_BASE_URL',
+  'MOSSEN_CODE_ENABLE_HOSTED_AUTH_ADAPTER',
+  'MOSSEN_CODE_USE_CUSTOM_BACKEND',
+] as const
 
 beforeEach(() => {
   resetStateForTests()
+  clearMossenConfigOverrides()
 })
+
+async function withNoBackendConfigured(
+  callback: () => Promise<void>,
+): Promise<void> {
+  const previousEnv = new Map<string, string | undefined>()
+  for (const key of BACKEND_ENV_KEYS) {
+    previousEnv.set(key, process.env[key])
+    delete process.env[key]
+  }
+  setMossenConfigOverride('mossen.activeProfile', null)
+  try {
+    await callback()
+  } finally {
+    for (const [key, value] of previousEnv) {
+      if (value === undefined) {
+        delete process.env[key]
+      } else {
+        process.env[key] = value
+      }
+    }
+    clearMossenConfigOverrides()
+  }
+}
 
 describe('evaluateActiveSessionGoalAfterTurn', () => {
   test('budget-limits before evaluator when the time budget is already exhausted', async () => {
@@ -80,5 +121,58 @@ describe('evaluateActiveSessionGoalAfterTurn', () => {
     expect(getSessionGoalState()?.evaluationFailureCount).toBe(3)
     if (third.type !== 'error') throw new Error('expected error action')
     expect(third.events.map(event => event.type)).toContain('goal_failed')
+  })
+
+  test('pauses instead of querying when evaluator backend is not configured', async () => {
+    await withNoBackendConfigured(async () => {
+      setSessionGoalState('finish the visible user journey')
+
+      const result = await evaluateActiveSessionGoalAfterTurn(
+        [
+          {
+            type: 'assistant',
+            message: {
+              content: [
+                {
+                  type: 'text',
+                  text: 'I have a concrete transcript to evaluate.',
+                },
+              ],
+            },
+          },
+        ],
+        new AbortController().signal,
+      )
+
+      if (result.type !== 'paused') throw new Error('expected paused action')
+      expect(result.reason).toContain('Goal auto-evaluation paused')
+      expect(result.reason).toContain('no Mossen backend is configured')
+      expect(getSessionGoalState()?.status).toBe('paused')
+      expect(getSessionGoalState()?.lastEvaluatorStatus).toBe('deferred')
+      expect(getSessionGoalState()?.evaluationFailureCount).toBe(0)
+      expect(result.events.map(event => event.type)).toEqual([
+        'goal_eval',
+        'goal_paused',
+      ])
+    })
+  })
+
+  test('classifies missing backend configuration as evaluator unavailable', () => {
+    expect(
+      isGoalEvaluatorBackendUnavailableError(
+        new Error('No Mossen backend is configured. Set MOSSEN_CODE_CUSTOM_BASE_URL.'),
+      ),
+    ).toBe(true)
+    expect(
+      isGoalEvaluatorBackendUnavailableError(
+        new Error('Custom backend mode requires MOSSEN_CODE_CUSTOM_BASE_URL to be set.'),
+      ),
+    ).toBe(true)
+    expect(
+      isGoalEvaluatorBackendUnavailableError(
+        'APIError: No Mossen backend is configured. For personal edition, set MOSSEN_CODE_CUSTOM_BASE_URL.',
+      ),
+    ).toBe(true)
+    expect(isGoalEvaluatorBackendUnavailableError(new Error('invalid JSON'))).toBe(false)
   })
 })

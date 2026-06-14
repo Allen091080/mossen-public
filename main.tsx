@@ -4443,8 +4443,9 @@ async function run(): Promise<CommanderCommand> {
     await agentsTuiOrPrinterHandler(options);
     process.exit(process.exitCode ?? 0);
   });
-  program.command('workflows').description('List workflow runs recorded for this session').option('--json', 'Print workflow runs as a JSON array.').action(async (options: {
+  program.command('workflows').description('List workflow runs recorded for this session').option('--json', 'Print workflow runs as a JSON array.').option('--session-id <uuid>', 'Read workflow runs for a specific session ID.').action(async (options: {
     json?: boolean;
+    sessionId?: string;
   }) => {
     const {
       workflowsHandler
@@ -4452,9 +4453,10 @@ async function run(): Promise<CommanderCommand> {
     await workflowsHandler(options);
     process.exit(process.exitCode ?? 0);
   });
-  program.command('workflow <id>').description('Show one workflow run').option('--json', 'Print workflow run details as JSON.').option('--report', 'Export a Markdown report for this workflow run.').action(async (id: string, options: {
+  program.command('workflow <id>').description('Show one workflow run').option('--json', 'Print workflow run details as JSON.').option('--report', 'Export a Markdown report for this workflow run.').option('--session-id <uuid>', 'Read the workflow run from a specific session ID.').action(async (id: string, options: {
     json?: boolean;
     report?: boolean;
+    sessionId?: string;
   }) => {
     const {
       workflowHandler

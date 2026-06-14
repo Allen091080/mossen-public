@@ -19,10 +19,14 @@ import {
   type WorkflowJsonRun,
 } from '../../commands/workflows/workflowProgressTree.js'
 import { exportWorkflowRunReport } from '../../commands/workflows/exportWorkflowReport.js'
+import { switchSession } from '../../bootstrap/state.js'
+import { asSessionId } from '../../types/ids.js'
+import { validateUuid } from '../../utils/uuid.js'
 
 export type WorkflowsHandlerOptions = {
   json?: boolean
   report?: boolean
+  sessionId?: string
 }
 
 function workflowRunWithLog(run: WorkflowJsonRun): WorkflowJsonRun & { log: string[] } {
@@ -44,9 +48,22 @@ function formatWorkflowRun(run: WorkflowJsonRun): string {
   return `${run.id} · ${run.state} · ${title}${metrics.length ? ` · ${metrics.join(' · ')}` : ''}`
 }
 
+function applyWorkflowSessionOption(options: WorkflowsHandlerOptions): boolean {
+  if (!options.sessionId) return true
+  const sessionId = validateUuid(options.sessionId)
+  if (!sessionId) {
+    console.error(`Invalid workflow session id: ${options.sessionId}`)
+    process.exitCode = 1
+    return false
+  }
+  switchSession(asSessionId(sessionId))
+  return true
+}
+
 export async function workflowsHandler(
   options: WorkflowsHandlerOptions = {},
 ): Promise<void> {
+  if (!applyWorkflowSessionOption(options)) return
   const runs = listWorkflowRuns()
   if (options.json) {
     console.log(JSON.stringify(workflowRunsToJson(runs), null, 2))
@@ -63,6 +80,7 @@ export async function workflowHandler(
   runId: string,
   options: WorkflowsHandlerOptions = {},
 ): Promise<void> {
+  if (!applyWorkflowSessionOption(options)) return
   if (options.report) {
     const result = exportWorkflowRunReport(runId)
     console[result.ok ? 'log' : 'error'](result.message)

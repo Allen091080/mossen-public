@@ -13,6 +13,10 @@ import {
 } from '../bootstrap/state.js'
 import { errorMessage } from './errors.js'
 import { isEnvTruthy } from './envUtils.js'
+import {
+  getCustomBackendBaseUrl,
+  isCustomBackendEnabled,
+} from './customBackend.js'
 import { safeParseJSON } from './json.js'
 import { extractTextContent } from './messages.js'
 import {
@@ -58,6 +62,13 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
     '$1$2[REDACTED]$4',
   ],
 ]
+
+class GoalEvaluatorUnavailableError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'GoalEvaluatorUnavailableError'
+  }
+}
 
 type GoalEvaluatorResponse = {
   ok: boolean
@@ -297,6 +308,41 @@ function parseEvaluatorResponse(text: string): GoalEvaluatorResponse | null {
   }
 }
 
+export function isGoalEvaluatorBackendUnavailableError(error: unknown): boolean {
+  const message = errorMessage(error)
+  return (
+    message.includes('No Mossen backend is configured') ||
+    message.includes('No Mossen files backend is configured') ||
+    message.includes('Custom backend mode requires MOSSEN_CODE_CUSTOM_BASE_URL')
+  )
+}
+
+function buildGoalEvaluatorUnavailableReason(error: unknown): string {
+  const message = errorMessage(error)
+  return truncate(
+    `Goal auto-evaluation paused because no Mossen backend is configured. Configure MOSSEN_CODE_CUSTOM_BASE_URL and an API key/token, then run /goal resume. (${message})`,
+    MAX_REASON_CHARS,
+  )
+}
+
+export function getSessionGoalBackendConfigurationError(): string | null {
+  if (isCustomBackendEnabled()) {
+    return getCustomBackendBaseUrl()
+      ? null
+      : 'Custom backend mode requires MOSSEN_CODE_CUSTOM_BASE_URL to be set.'
+  }
+  if (process.env.MOSSEN_CODE_API_BASE_URL?.trim()) return null
+  if (
+    isEnvTruthy(process.env.MOSSEN_CODE_ENABLE_HOSTED_AUTH_ADAPTER) ||
+    process.env.MOSSEN_CODE_AUTH_TOKEN ||
+    process.env.MOSSEN_CODE_AUTH_TOKEN_FILE_DESCRIPTOR ||
+    process.env.MOSSEN_CODE_AUTH_REFRESH_TOKEN
+  ) {
+    return null
+  }
+  return 'No Mossen backend is configured.'
+}
+
 function buildGoalEvalEvent(
   goal: MossenGoalState,
   verdict: GoalEvalVerdict,
@@ -483,6 +529,12 @@ async function queryGoalEvaluator(
   transcript: string,
   signal: AbortSignal,
 ): Promise<GoalEvaluatorResponse> {
+  const configurationError = getSessionGoalBackendConfigurationError()
+  if (configurationError) {
+    throw new GoalEvaluatorUnavailableError(
+      buildGoalEvaluatorUnavailableReason(configurationError),
+    )
+  }
   let lastError: string | null = null
   for (let attempt = 1; attempt <= MAX_EVALUATOR_ATTEMPTS; attempt++) {
     const startedAt = Date.now()
@@ -522,6 +574,11 @@ async function queryGoalEvaluator(
       })
 
       const text = extractTextContent(response.message.content, '\n').trim()
+      if (isGoalEvaluatorBackendUnavailableError(text)) {
+        throw new GoalEvaluatorUnavailableError(
+          buildGoalEvaluatorUnavailableReason(text),
+        )
+      }
       const parsed = parseEvaluatorResponse(text)
       if (parsed) {
         observeSessionGoalMetric(GOAL_EVALUATOR_SUCCESS_METRIC)
@@ -535,6 +592,12 @@ async function queryGoalEvaluator(
       lastError = 'Goal evaluator returned invalid JSON.'
     } catch (error) {
       if (signal.aborted) throw error
+      if (error instanceof GoalEvaluatorUnavailableError) throw error
+      if (isGoalEvaluatorBackendUnavailableError(error)) {
+        throw new GoalEvaluatorUnavailableError(
+          buildGoalEvaluatorUnavailableReason(error),
+        )
+      }
       observeSessionGoalMetric(GOAL_EVALUATOR_FAILURE_METRIC)
       lastError = errorMessage(error)
     }
@@ -646,6 +709,24 @@ export async function evaluateActiveSessionGoalAfterTurn(
     }
   } catch (error) {
     if (signal.aborted) return { type: 'none' }
+    if (error instanceof GoalEvaluatorUnavailableError) {
+      const reason = truncate(error.message, MAX_REASON_CHARS)
+      const evaluated = recordSessionGoalEvaluation(
+        'deferred',
+        reason,
+        tokenSnapshot ?? undefined,
+      ) ?? goal
+      const paused = pauseSessionGoalState(reason) ?? evaluated
+      const evalEvent = buildGoalEvalEvent(evaluated, 'deferred', reason)
+      const pausedEvent = buildGoalPausedEvent(paused, reason)
+      observeSessionGoalMetric(GOAL_PAUSED_METRIC)
+      return {
+        type: 'paused',
+        reason,
+        event: pausedEvent,
+        events: [evalEvent, pausedEvent],
+      }
+    }
     const reason = `Goal evaluator failed: ${errorMessage(error)}`
     const truncatedReason = truncate(reason, MAX_REASON_CHARS)
     const evaluated = recordSessionGoalEvaluation(

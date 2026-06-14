@@ -16,7 +16,10 @@ import {
   extractTurnBudget,
   parseSessionGoalAction,
 } from '../../utils/sessionGoalCommand.js'
-import { buildSessionGoalStartPrompt } from '../../utils/sessionGoalEvaluator.js'
+import {
+  buildSessionGoalStartPrompt,
+  getSessionGoalBackendConfigurationError,
+} from '../../utils/sessionGoalEvaluator.js'
 import { createSessionGoalEventMessage } from '../../utils/sessionGoalEvents.js'
 import {
   GOAL_COMPLETED_METRIC,
@@ -297,22 +300,33 @@ export async function call(
       ...(constraints ? { constraints } : {}),
     },
   )
+  const backendConfigurationError = getSessionGoalBackendConfigurationError()
+  const backendPauseReason = backendConfigurationError
+    ? `${t('cmd.goal.set.pausedBackendUnavailable')} (${backendConfigurationError})`
+    : null
+  const statusGoal = backendPauseReason
+    ? pauseSessionGoalState(backendPauseReason) ?? goal
+    : goal
   persistCurrentSessionGoalSnapshot()
   observeSessionGoalMetric(GOAL_CREATED_METRIC)
+  if (backendPauseReason && statusGoal.status === 'paused') {
+    observeSessionGoalMetric(GOAL_PAUSED_METRIC)
+  }
   onDone(
     [
       t('cmd.goal.set.ok'),
       truncated
         ? t('cmd.goal.set.truncated', { max: MAX_GOAL_GRAPHEMES })
         : null,
+      backendPauseReason ? t('cmd.goal.set.pausedBackendUnavailable') : null,
       '',
-      renderGoalStatus(goal),
+      renderGoalStatus(statusGoal),
     ]
       .filter((line): line is string => line !== null)
       .join('\n'),
     {
       display: 'system',
-      shouldQuery: true,
+      shouldQuery: !backendPauseReason,
       systemMessages: [
         ...(replacementEvent ? [replacementEvent] : []),
         createSessionGoalEventMessage({
@@ -327,8 +341,18 @@ export async function call(
           tokenBudget: goal.tokenBudget,
           maxDurationSec: goal.maxDurationSec,
         }),
+        ...(backendPauseReason && statusGoal.status === 'paused'
+          ? [
+              createSessionGoalEventMessage({
+                type: 'goal_paused',
+                goalId: statusGoal.id,
+                cause: backendPauseReason,
+                pausedAt: statusGoal.updatedAt,
+              }),
+            ]
+          : []),
       ],
-      metaMessages: [buildSessionGoalStartPrompt(goal)],
+      metaMessages: backendPauseReason ? [] : [buildSessionGoalStartPrompt(goal)],
     },
   )
   return null

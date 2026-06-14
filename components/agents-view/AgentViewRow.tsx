@@ -15,6 +15,7 @@ import {
   padVisualEnd,
   shortenPathForAgentView,
 } from '../agents/agentViewHelpers.js'
+import { formatAgentViewActionToken } from './agentViewInteractionModel.js'
 
 export function AgentViewRow({
   item,
@@ -78,7 +79,10 @@ function SupervisorAgentRowContent({
   const summary =
     rawSummary.toLowerCase() === item.label.trim().toLowerCase() ? '' : rawSummary
   const statusLabel = agentViewStatusLabel(item.status)
-  const actionHint = `${item.primaryAction.shortcut} ${supervisorRowActionLabel(item.primaryAction.kind)}`
+  const actionHint = formatAgentViewActionToken(
+    item.primaryAction.shortcut,
+    supervisorRowActionLabel(item.primaryAction.kind),
+  )
   const activity = [statusLabel, actionHint, summary].filter(Boolean).join(' · ')
   const rowColor = color ?? highlightColor
   const processShape = item.processAlive ? '✻ ' : '∙ '

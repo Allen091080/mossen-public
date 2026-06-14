@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import {
   buildAgentViewShortcutActions,
+  formatAgentViewActionToken,
+  formatAgentViewShortcutGuide,
   getAgentViewSelectionHint,
   supervisorActionLabel,
 } from '../agentViewInteractionModel.js'
@@ -79,6 +81,19 @@ describe('getAgentViewSelectionHint', () => {
 })
 
 describe('buildAgentViewShortcutActions', () => {
+  test('formats shortcuts as PTY-readable key action tokens', () => {
+    expect(formatAgentViewActionToken('Enter/→', 'attach terminal')).toBe(
+      'enter/right:attach-terminal',
+    )
+    expect(
+      formatAgentViewShortcutGuide([
+        { key: 'primary', shortcut: 'Enter/→', action: 'attach terminal' },
+        { key: 'secondary', shortcut: 'Space', action: 'preview card' },
+        { key: 'help', shortcut: '?', action: 'help' },
+      ]),
+    ).toBe('enter/right:attach-terminal | space:preview-card | ?:help')
+  })
+
   test('shows generic dashboard actions when no supervisor row is selected', () => {
     expect(
       buildAgentViewShortcutActions({

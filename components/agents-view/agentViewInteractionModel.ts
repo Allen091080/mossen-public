@@ -19,6 +19,32 @@ export type AgentViewShortcutAction = {
   action: string
 }
 
+function compactAgentViewShortcutText(text: string): string {
+  return text
+    .trim()
+    .replace(/→/g, 'right')
+    .replace(/←/g, 'left')
+    .replace(/↑/g, 'up')
+    .replace(/↓/g, 'down')
+    .replace(/\s+/g, '-')
+    .toLowerCase()
+}
+
+export function formatAgentViewActionToken(
+  shortcut: string,
+  action: string,
+): string {
+  return `${compactAgentViewShortcutText(shortcut)}:${compactAgentViewShortcutText(action)}`
+}
+
+export function formatAgentViewShortcutGuide(
+  actions: readonly AgentViewShortcutAction[],
+): string {
+  return actions
+    .map(action => formatAgentViewActionToken(action.shortcut, action.action))
+    .join(' | ')
+}
+
 export function supervisorActionLabel(
   action: Pick<SupervisorAgentViewAction, 'kind'>,
 ): string {

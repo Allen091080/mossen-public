@@ -25,8 +25,12 @@ import {
   cleanupAgentSupervisorWorktree,
   readAgentSupervisorWorktreeMetadata,
 } from './worktreeIsolation.js'
+import {
+  formatAgentSupervisorProcessOutcome,
+  isTerminalAgentSupervisorStatus,
+  normalizeAgentSupervisorExitCode,
+} from './statusText.js'
 
-const TERMINAL_STATUSES = new Set(['completed', 'failed', 'stopped'])
 const DEFAULT_WAIT_POLL_MS = 500
 const AGENT_SUPERVISOR_ATTACH_STRIPPED_ENV_KEYS = [
   'MOSSEN_CODE_AGENT_SUPERVISOR_CHILD',
@@ -239,7 +243,9 @@ function indentBlock(text: string): string {
 function getWaitExitCode(state: AgentSupervisorJobState): number {
   if (state.status === 'completed') return 0
   if (state.status === 'stopped') return 130
-  if (state.status === 'failed') return state.process.exitCode ?? 1
+  if (state.status === 'failed') {
+    return normalizeAgentSupervisorExitCode(state.status, state.process) ?? 1
+  }
   return 1
 }
 
@@ -247,10 +253,13 @@ function formatWaitMessage(
   state: AgentSupervisorJobState,
   resultPayload = state.resultPayload ?? null,
 ): string {
-  const code = state.process.exitCode ?? 'n/a'
-  const signal = state.process.signal ?? 'n/a'
+  const outcome = formatAgentSupervisorProcessOutcome(
+    state.status,
+    state.process,
+    state.errors,
+  )
   const result = formatAgentSupervisorResultPayload(resultPayload)
-  return `Job ${state.id} finished: ${state.status} (exit=${code}, signal=${signal})${result ? `\n${result}` : ''}`
+  return `Job ${state.id} finished: ${state.status} (${outcome})${result ? `\n${result}` : ''}`
 }
 
 async function formatPreservedAgentSupervisorData(
@@ -312,7 +321,15 @@ export async function formatAgentSupervisorLogs(
     malformedLines > 0 || partialTrailingLine
       ? `\n[diagnostics] malformedLines=${malformedLines} partialTrailingLine=${partialTrailingLine}`
       : ''
-  return `${header}${result ? `\n${result}` : ''}\n${lines.length > 0 ? lines.join('\n') : '(no output yet)'}${diagnostics}`
+  const terminalStatus =
+    isTerminalAgentSupervisorStatus(state.status) || state.process.signal
+      ? `\n[status] ${state.status} (${formatAgentSupervisorProcessOutcome(
+          state.status,
+          state.process,
+          state.errors,
+        )})`
+      : ''
+  return `${header}${terminalStatus}${result ? `\n${result}` : ''}\n${lines.length > 0 ? lines.join('\n') : '(no output yet)'}${diagnostics}`
 }
 
 async function appendControl(
@@ -360,6 +377,13 @@ export async function stopAgentSupervisorJob(
   rawJobId: string,
 ): Promise<string> {
   const state = await requireJobState(rawJobId)
+  if (isTerminalAgentSupervisorStatus(state.status) && !isJobProcessAlive(state)) {
+    return `Job ${state.id} is already ${state.status} (${formatAgentSupervisorProcessOutcome(
+      state.status,
+      state.process,
+      state.errors,
+    )}). Nothing to stop.`
+  }
   await appendControl(state.id, 'stop', 'user_requested')
   const paths = getAgentSupervisorJobPaths(state.id)
   const eventSeq = await getNextSupervisorJsonlSeq(paths.events)
@@ -434,7 +458,7 @@ export async function purgeAgentSupervisorJob(
 ): Promise<string> {
   const state = await requireJobState(rawJobId)
   const command = `mossen rm ${state.id} --purge`
-  if (!TERMINAL_STATUSES.has(state.status)) {
+  if (!isTerminalAgentSupervisorStatus(state.status)) {
     return `Purge blocked for ${state.id}: job is ${state.status}. Stop or wait for it to finish before purging preserved files.`
   }
   const plan = await buildPurgePlan(state)
@@ -462,7 +486,7 @@ async function buildGcPlan(rawBefore: string): Promise<GcPlan> {
   for (const item of roster.jobs) {
     const state = await readAgentSupervisorJobState(item.id)
     if (!state) continue
-    if (!TERMINAL_STATUSES.has(state.status)) continue
+    if (!isTerminalAgentSupervisorStatus(state.status)) continue
     if (Date.parse(state.updatedAt) >= Date.parse(before)) continue
     jobs.push(await buildPurgePlan(state))
   }
@@ -544,7 +568,9 @@ export async function respawnAllAgentSupervisorJobs(
   options: { testMode?: boolean } = {},
 ): Promise<string[]> {
   const roster = await readAgentSupervisorRoster()
-  const candidates = roster.jobs.filter(job => TERMINAL_STATUSES.has(job.status))
+  const candidates = roster.jobs.filter(job =>
+    isTerminalAgentSupervisorStatus(job.status),
+  )
   const messages: string[] = []
   for (const job of candidates) {
     const result = await respawnAgentSupervisorJob(job.id, options)
@@ -561,7 +587,7 @@ export async function waitAgentSupervisorJob(
   const timeoutMs = Math.max(0, options.timeoutMs ?? 0)
   const pollMs = Math.max(50, options.pollMs ?? DEFAULT_WAIT_POLL_MS)
   let state = await requireJobState(rawJobId)
-  while (!TERMINAL_STATUSES.has(state.status)) {
+  while (!isTerminalAgentSupervisorStatus(state.status)) {
     if (timeoutMs > 0 && Date.now() - startedAt >= timeoutMs) {
       return {
         state,
@@ -609,19 +635,35 @@ export async function attachAgentSupervisorJob(
   const link = await readAgentSupervisorTranscriptLink(state.id)
   const sessionId = link?.sessionId ?? state.sessionId
   if (!sessionId) {
+    const terminal = isTerminalAgentSupervisorStatus(state.status) && !isJobProcessAlive(state)
+    const outcome = terminal
+      ? ` ${state.status} (${formatAgentSupervisorProcessOutcome(
+          state.status,
+          state.process,
+          state.errors,
+        )})`
+      : ''
     process.stderr.write(
       getLocalizedText({
-        en: `Job ${state.id} has no attachable session yet. Use \`mossen logs ${state.id}\` for output; full attach requires a session-backed job.\n`,
-        zh: `任务 ${state.id} 还没有可接入的会话。可先用 \`mossen logs ${state.id}\` 查看输出；完整接入需要 session-backed job。\n`,
+        en: `Job ${state.id}${outcome} has no attachable session. Use \`mossen logs ${state.id}\` for captured output; use \`mossen respawn ${state.id}\` to retry terminal jobs.\n`,
+        zh: `任务 ${state.id}${outcome} 没有可接入的会话。可用 \`mossen logs ${state.id}\` 查看已捕获输出；终态任务可用 \`mossen respawn ${state.id}\` 重试。\n`,
       }),
     )
     return 1
   }
   if (link && !(await agentSupervisorTranscriptExists(link)) && !isJobProcessAlive(state)) {
+    const terminal = isTerminalAgentSupervisorStatus(state.status)
+    const outcome = terminal
+      ? ` ${state.status} (${formatAgentSupervisorProcessOutcome(
+          state.status,
+          state.process,
+          state.errors,
+        )})`
+      : ''
     process.stderr.write(
       getLocalizedText({
-        en: `Job ${state.id} has session ${sessionId}, but the transcript is not available yet. Use \`mossen logs ${state.id}\` for captured output.\n`,
-        zh: `任务 ${state.id} 有会话 ${sessionId}，但 transcript 还不可用。可先用 \`mossen logs ${state.id}\` 查看已捕获输出。\n`,
+        en: `Job ${state.id}${outcome} has session ${sessionId}, but the transcript is not available. Use \`mossen logs ${state.id}\` for captured output; use \`mossen respawn ${state.id}\` to retry terminal jobs.\n`,
+        zh: `任务 ${state.id}${outcome} 有会话 ${sessionId}，但 transcript 不可用。可用 \`mossen logs ${state.id}\` 查看已捕获输出；终态任务可用 \`mossen respawn ${state.id}\` 重试。\n`,
       }),
     )
     return 1
@@ -691,7 +733,7 @@ export async function attachAgentSupervisorJob(
   const latest = await readAgentSupervisorJobState(state.id)
   const stillRunning =
     latest &&
-    (!TERMINAL_STATUSES.has(latest.status) || isJobProcessAlive(latest))
+    (!isTerminalAgentSupervisorStatus(latest.status) || isJobProcessAlive(latest))
   const status = latest?.status ?? state.status
   process.stdout.write(
     stillRunning

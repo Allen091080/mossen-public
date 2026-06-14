@@ -20,9 +20,7 @@ import {
 } from '../../tools/WorkflowTool/engine/journalStore.js'
 import { formatDuration, formatNumber } from '../../utils/format.js'
 import { t } from '../../utils/i18n/index.js'
-import { Byline } from '../../components/design-system/Byline.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
-import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js'
 import { deriveWorkflowSaveName, saveRun } from './saveWorkflow.js'
 import { exportWorkflowRunReport } from './exportWorkflowReport.js'
 import {
@@ -503,30 +501,23 @@ export function workflowLiveRunListMetricSummary(
   return buildWorkflowRunMetricSummary(task, task.agents)
 }
 
+export function workflowInputGuideText(mode: WorkflowDialogMode): string {
+  if (mode === 'save') return 'tab:switch-scope | enter:save | esc:back'
+  return [
+    'up/down:select',
+    'enter/right:open',
+    'esc/left:back',
+    mode === 'agent' ? 'j/k:scroll' : null,
+    'p:pause/resume',
+    'x:stop',
+    'r:restart-agent',
+    's:save',
+    'e:export-report',
+  ].filter((item): item is string => item !== null).join(' | ')
+}
+
 function inputGuide(mode: WorkflowDialogMode) {
-  return () => (
-    <Byline>
-      {mode === 'save' ? (
-        <>
-          <KeyboardShortcutHint shortcut="Tab" action="switch scope" />
-          <KeyboardShortcutHint shortcut="Enter" action="save" />
-          <KeyboardShortcutHint shortcut="Esc" action="back" />
-        </>
-      ) : (
-        <>
-          <KeyboardShortcutHint shortcut="up/down" action="select" />
-          <KeyboardShortcutHint shortcut="Enter/right" action="open" />
-          <KeyboardShortcutHint shortcut="Esc/left" action="back" />
-          {mode === 'agent' ? <KeyboardShortcutHint shortcut="j/k" action="scroll" /> : null}
-          <KeyboardShortcutHint shortcut="p" action="pause/resume" />
-          <KeyboardShortcutHint shortcut="x" action="stop" />
-          <KeyboardShortcutHint shortcut="r" action="restart agent" />
-          <KeyboardShortcutHint shortcut="s" action="save" />
-          <KeyboardShortcutHint shortcut="e" action="export report" />
-        </>
-      )}
-    </Byline>
-  )
+  return () => workflowInputGuideText(mode)
 }
 
 export function WorkflowRunsDialog({ onDone }: Props): React.ReactNode {

@@ -1,5 +1,18 @@
 import { describe, expect, test } from 'bun:test'
-import type { WorkflowRunMeta } from '../../../tools/WorkflowTool/engine/journalStore.js'
+import { Console } from 'node:console'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Writable } from 'node:stream'
+import {
+  getSessionId,
+  switchSession,
+} from '../../../bootstrap/state.js'
+import { getMossenConfigHomeDir } from '../../../utils/envUtils.js'
+import {
+  initRunArtifacts,
+  type WorkflowRunMeta,
+} from '../../../tools/WorkflowTool/engine/journalStore.js'
 import {
   buildWorkflowProgressTree,
   buildWorkflowVerificationSummary,
@@ -9,6 +22,23 @@ import {
   workflowStatusToMachineState,
 } from '../../../commands/workflows/workflowProgressTree.js'
 import { renderWorkflowReport } from '../../../commands/workflows/exportWorkflowReport.js'
+import {
+  workflowHandler,
+  workflowsHandler,
+} from '../workflows.js'
+
+function resetConfigHomeMemo(): void {
+  getMossenConfigHomeDir.cache.clear?.()
+}
+
+function captureStream(chunks: string[]): Writable {
+  return new Writable({
+    write(chunk, _encoding, callback) {
+      chunks.push(String(chunk ?? ''))
+      callback()
+    },
+  })
+}
 
 function meta(overrides: Partial<WorkflowRunMeta> = {}): WorkflowRunMeta {
   return {
@@ -295,5 +325,56 @@ describe('workflowRunToJson', () => {
       summary: 'No explicit verification evidence captured',
       evidence: [],
     })
+  })
+})
+
+describe('workflow CLI handlers', () => {
+  test('can read workflow runs from an explicit session id', async () => {
+    const priorSession = getSessionId()
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
+    const root = mkdtempSync(join(tmpdir(), 'workflow-cli-session-'))
+    const targetSession =
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' as ReturnType<typeof getSessionId>
+    const runId = 'wf_cli_session_lookup'
+    const logs: string[] = []
+    const errors: string[] = []
+    const priorConsole = globalThis.console
+
+    try {
+      process.env.MOSSEN_CONFIG_DIR = join(root, '.mossen')
+      resetConfigHomeMemo()
+      switchSession(targetSession)
+      initRunArtifacts(runId, 'return "ok"', {
+        ...meta({
+          runId,
+          workflowName: 'cli-session-flow',
+          title: 'CLI session flow',
+          status: 'completed',
+        }),
+      })
+      switchSession('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' as ReturnType<typeof getSessionId>)
+
+      globalThis.console = new Console({
+        stdout: captureStream(logs),
+        stderr: captureStream(errors),
+      }) as unknown as typeof globalThis.console
+
+      await workflowsHandler({ json: true, sessionId: targetSession })
+      await workflowHandler(runId, { json: true, sessionId: targetSession })
+
+      expect(errors).toEqual([])
+      expect(logs.join('\n')).toContain(runId)
+      expect(logs.join('\n')).toContain('cli-session-flow')
+    } finally {
+      globalThis.console = priorConsole
+      switchSession(priorSession)
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
+      resetConfigHomeMemo()
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

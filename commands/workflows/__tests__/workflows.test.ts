@@ -26,6 +26,7 @@ import {
   workflowRunOpenTarget,
   workflowSaveOpenTarget,
   workflowSaveRunArgs,
+  workflowInputGuideText,
   workflowSelectedActionHint,
 } from '../WorkflowRunsDialog.js'
 import {
@@ -160,12 +161,14 @@ describe('/workflows resume', () => {
     const priorSession = getSessionId()
     const priorProjectDir = getSessionProjectDir()
     const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
     const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
     const root = mkdtempSync(join(tmpdir(), 'wf-save-command-name-'))
     const sessionId =
       '33333333-3333-4333-8333-333333333333' as ReturnType<typeof getSessionId>
     try {
       process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'home')
       process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
       setProjectRoot(root)
       switchSession(sessionId)
@@ -203,6 +206,11 @@ return 'ok'
         delete process.env.MOSSEN_HOME
       } else {
         process.env.MOSSEN_HOME = priorHome
+      }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
       }
       if (priorWorkflowHome === undefined) {
         delete process.env[WORKFLOW_HOME_ENV]
@@ -249,12 +257,14 @@ return 'ok'
     const priorSession = getSessionId()
     const priorProjectDir = getSessionProjectDir()
     const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
     const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
     const root = mkdtempSync(join(tmpdir(), 'wf-save-user-scope-'))
     const sessionId =
       '66666666-6666-4666-8666-666666666666' as ReturnType<typeof getSessionId>
     try {
       process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'home')
       process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
       setProjectRoot(root)
       switchSession(sessionId)
@@ -293,6 +303,11 @@ return 'ok'
       } else {
         process.env.MOSSEN_HOME = priorHome
       }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
       if (priorWorkflowHome === undefined) {
         delete process.env[WORKFLOW_HOME_ENV]
       } else {
@@ -307,11 +322,13 @@ return 'ok'
     const priorSession = getSessionId()
     const priorProjectDir = getSessionProjectDir()
     const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
     const root = mkdtempSync(join(tmpdir(), 'wf-export-report-'))
     const sessionId =
       '88888888-8888-4888-8888-888888888888' as ReturnType<typeof getSessionId>
     try {
       process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'home')
       getProjectDir.cache.clear()
       resetProjectForTesting()
       setProjectRoot(root)
@@ -365,6 +382,11 @@ return 'ok'
       } else {
         process.env.MOSSEN_HOME = priorHome
       }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
       rmSync(root, { recursive: true, force: true })
     }
   })
@@ -412,6 +434,11 @@ return 'ok'
   })
 
   test('interactive action hints only advertise valid selected-agent controls', () => {
+    expect(workflowInputGuideText('run')).toContain('up/down:select | enter/right:open')
+    expect(workflowInputGuideText('run')).toContain('e:export-report')
+    expect(workflowInputGuideText('agent')).toContain('j/k:scroll')
+    expect(workflowInputGuideText('save')).toBe('tab:switch-scope | enter:save | esc:back')
+
     expect(canStopWorkflowAgentStatus('queued')).toBe(true)
     expect(canStopWorkflowAgentStatus('running')).toBe(true)
     expect(canStopWorkflowAgentStatus('completed')).toBe(false)
@@ -561,11 +588,13 @@ return 'ok'
     const priorSession = getSessionId()
     const priorProjectDir = getSessionProjectDir()
     const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
     const root = mkdtempSync(join(tmpdir(), 'wf-resume-status-'))
     const sessionId =
       '44444444-4444-4444-8444-444444444444' as ReturnType<typeof getSessionId>
     try {
       process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'home')
       setProjectRoot(root)
       switchSession(sessionId)
       initRunArtifacts(
@@ -662,6 +691,11 @@ return 'ok'
       } else {
         process.env.MOSSEN_HOME = priorHome
       }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
       rmSync(root, { recursive: true, force: true })
     }
   })
@@ -723,11 +757,13 @@ return 'ok'
     const priorSession = getSessionId()
     const priorProjectDir = getSessionProjectDir()
     const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
     const root = mkdtempSync(join(tmpdir(), 'wf-history-detail-'))
     const sessionId =
       '55555555-5555-4555-8555-555555555555' as ReturnType<typeof getSessionId>
     try {
       process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'home')
       setProjectRoot(root)
       switchSession(sessionId)
       const runId = 'wf_history_detail'
@@ -830,6 +866,11 @@ return 'ok'
       } else {
         process.env.MOSSEN_HOME = priorHome
       }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
       rmSync(root, { recursive: true, force: true })
     }
   })
@@ -839,11 +880,13 @@ return 'ok'
     const priorSession = getSessionId()
     const priorProjectDir = getSessionProjectDir()
     const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
     const root = mkdtempSync(join(tmpdir(), 'wf-history-result-only-'))
     const sessionId =
       '77777777-7777-4777-8777-777777777777' as ReturnType<typeof getSessionId>
     try {
       process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'home')
       setProjectRoot(root)
       switchSession(sessionId)
       const runId = 'wf_history_result_only'
@@ -883,6 +926,11 @@ return 'ok'
         delete process.env.MOSSEN_HOME
       } else {
         process.env.MOSSEN_HOME = priorHome
+      }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
       }
       rmSync(root, { recursive: true, force: true })
     }

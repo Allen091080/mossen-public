@@ -310,8 +310,17 @@ export async function reconcileDeadSupervisorJobs(): Promise<SupervisorReconcile
                 ...current.process,
                 alive: false,
                 lastExitedAt: current.process.lastExitedAt ?? exitedAt,
+                exitCode: null,
                 signal: current.process.signal ?? signal,
               },
+              errors: [
+                ...current.errors,
+                {
+                  ts: exitedAt,
+                  source: 'recovery',
+                  message: `Worker process is no longer alive (${signal}).`,
+                },
+              ],
             }
           })
           if (next) {

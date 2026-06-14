@@ -134,6 +134,8 @@ export const STRINGS_EN = {
   'cmd.goal.set.empty':
     'Usage: /goal set <goal>, /goal status, /goal why, /goal clear (or stop/off/reset/none/cancel), /goal pause, /goal resume, or /goal done',
   'cmd.goal.set.truncated': 'Goal was truncated to {max} graphemes.',
+  'cmd.goal.set.pausedBackendUnavailable':
+    'Goal was created but paused because no model backend is configured. Configure a provider, then run /goal resume.',
   'cmd.goal.status.none':
     'No active session goal. Use /goal set <goal> to add one.',
   'cmd.goal.status.scope':
@@ -325,20 +327,19 @@ export const STRINGS_EN = {
   'ui.agentView.nextStep': 'next',
   'ui.agentView.nextEmpty': 'Type a task to start a background job; use /agents library for agent definitions.',
   'ui.agentView.nextFilter': 'Filtering list; Esc clears the filter.',
-  'ui.agentView.nextCommand': 'Choose a skill/template with Enter or Tab, then press Enter to dispatch it as a background job.',
-  'ui.agentView.nextDispatch':
-    'Press Enter to dispatch, or Shift+Enter to dispatch and open the new job.',
-  'ui.agentView.nextNeedsInput': 'Press r to reply, Space to open the preview card, or Enter/→ to attach the live terminal.',
-  'ui.agentView.nextRunning': 'Press Enter/→ to attach the live terminal, Space to preview the card, or Ctrl+X to stop.',
-  'ui.agentView.nextReadyResult': 'Press Space to review the result.',
-  'ui.agentView.nextReadyResultLive': 'Press Space to review the result, or Enter/→ to attach the live terminal for follow-up.',
-  'ui.agentView.nextFailed': 'Press Space for details, or use `mossen respawn <id>` from a shell.',
+  'ui.agentView.nextCommand': 'enter/tab:choose-skill | enter:dispatch-job',
+  'ui.agentView.nextDispatch': 'enter:dispatch | shift+enter:dispatch-open',
+  'ui.agentView.nextNeedsInput': 'r:reply | space:preview-card | enter/right:attach-terminal',
+  'ui.agentView.nextRunning': 'enter/right:attach-terminal | space:preview-card | ctrl+x:stop',
+  'ui.agentView.nextReadyResult': 'space:review-result',
+  'ui.agentView.nextReadyResultLive': 'space:review-result | enter/right:attach-terminal',
+  'ui.agentView.nextFailed': 'space:details | shell:mossen-respawn-id',
   'ui.agentView.nextTerminal':
     'Press Space to review, Ctrl+X twice to remove from the roster, or use `mossen rm <id> --dry-run`.',
-  'ui.agentView.nextLeader': 'Press Enter/→ to return to the main session.',
-  'ui.agentView.nextShell': 'Press Enter to inspect shell output; Ctrl+X stops a running shell.',
-  'ui.agentView.nextLocalAgent': 'Press Enter/→ to view this local agent in the main chat.',
-  'ui.agentView.nextGenericTask': 'Press Enter to inspect, or ←/Esc to close Agent View.',
+  'ui.agentView.nextLeader': 'enter/right:return-main-session',
+  'ui.agentView.nextShell': 'enter:inspect-shell | ctrl+x:stop-running-shell',
+  'ui.agentView.nextLocalAgent': 'enter/right:view-local-agent',
+  'ui.agentView.nextGenericTask': 'enter:inspect | left/esc:close-agent-view',
   'ui.agentView.density': '{groups} groups · {rows} visible jobs',
   'ui.agentView.highDensityMode':
     'High-density view: low-value path detail is hidden; status, title, and summary remain.',

@@ -1,6 +1,5 @@
 import React from 'react'
 import { Box, Text } from '../../ink.js'
-import { Byline } from '../design-system/Byline.js'
 import { t } from '../../utils/i18n/index.js'
 import { truncateVisual } from '../../utils/visualWidth.js'
 import {
@@ -9,6 +8,10 @@ import {
   type AgentViewCommandPaletteItem,
   type AgentViewInputMode,
 } from '../agents/agentViewHelpers.js'
+import {
+  formatAgentViewShortcutGuide,
+  type AgentViewShortcutAction,
+} from './agentViewInteractionModel.js'
 import { AgentViewComposer } from './AgentViewComposer.js'
 
 export function AgentViewFooter({
@@ -50,7 +53,7 @@ export function AgentViewFooter({
   supervisorGroupCount: number
   supervisorJobCount: number
   highDensity: boolean
-  actions: React.ReactNode[]
+  actions: AgentViewShortcutAction[]
 }): React.ReactNode {
   return (
     <Box flexDirection="column" marginTop={1}>
@@ -126,8 +129,8 @@ export function AgentViewFooter({
           {highDensity ? <> · {t('ui.agentView.highDensityMode')}</> : null}
         </Text>
       )}
-      <Text dimColor italic>
-        <Byline>{actions}</Byline>
+      <Text dimColor italic wrap="truncate-end">
+        {formatAgentViewShortcutGuide(actions)}
       </Text>
     </Box>
   )

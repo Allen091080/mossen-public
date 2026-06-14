@@ -11,6 +11,7 @@ import {
   type AgentSupervisorRoster,
   type AgentSupervisorRosterJob,
 } from './schema.js'
+import { normalizeAgentSupervisorExitCode } from './statusText.js'
 
 function isENOENT(error: unknown): boolean {
   return (
@@ -81,7 +82,7 @@ export function rosterJobFromState(
     parentGoalId: state.parentGoalId ?? null,
     lastStartedAt: state.process.lastStartedAt,
     lastExitedAt: state.process.lastExitedAt,
-    exitCode: state.process.exitCode,
+    exitCode: normalizeAgentSupervisorExitCode(state.status, state.process),
     signal: state.process.signal,
     errorCount: state.errors.length,
     lastErrorMessage: lastError?.message ?? null,
