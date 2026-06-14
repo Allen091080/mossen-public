@@ -25,6 +25,7 @@ import { sleep } from './sleep.js'
 import { profileReport } from './startupProfiler.js'
 import { drainStdoutPipe } from './process.js'
 import { logMossenEvent } from '../services/analytics/mossenEventLogger.js'
+import { validateUuid } from './uuid.js'
 
 /**
  * Clean up terminal modes synchronously before process exit.
@@ -136,6 +137,9 @@ function printResumeHint(): void {
   ) {
     try {
       const sessionId = getSessionId()
+      if (!validateUuid(sessionId)) {
+        return
+      }
       // Don't show resume hint if no session file exists (e.g., subcommands like `mossen update`)
       if (!sessionIdExists(sessionId)) {
         return
@@ -155,7 +159,7 @@ function printResumeHint(): void {
       writeSync(
         1,
         chalk.dim(
-          `\nResume this session with:\nmossen --resume ${resumeArg}\n`,
+          `\nResume this session with:\n  mossen --resume ${resumeArg}\n\n`,
         ),
       )
       resumeHintPrinted = true

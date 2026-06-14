@@ -148,6 +148,7 @@ export function createCronScheduler(
     filter,
   } = options
   const lockOpts = dir || lockIdentity ? { dir, lockIdentity } : undefined
+  const schedulerStartedAt = Date.now()
 
   // File-backed tasks only. Session tasks (durable: false) are NOT loaded
   // here — they can be added/removed mid-session with no file event, so
@@ -274,6 +275,28 @@ export function createCronScheduler(
       }
 
       if (now < next) return
+
+      if (
+        shouldConfirmPreexistingOneShotTask(t, schedulerStartedAt) &&
+        !isSession &&
+        !missedAsked.has(t.id)
+      ) {
+        missedAsked.add(t.id)
+        nextFireAt.set(t.id, Infinity)
+        inFlight.add(t.id)
+        onFire(buildPreexistingOneShotTaskNotification([t]))
+        void removeCronTasks([t.id], dir)
+          .catch(e =>
+            logForDebugging(
+              `[ScheduledTasks] failed to remove preexisting one-shot task ${t.id}: ${e}`,
+            ),
+          )
+          .finally(() => inFlight.delete(t.id))
+        logForDebugging(
+          `[ScheduledTasks] asked before running preexisting one-shot task ${t.id}`,
+        )
+        return
+      }
 
       logForDebugging(
         `[ScheduledTasks] firing ${t.id}${t.recurring ? ' (recurring)' : ''}`,
@@ -523,6 +546,13 @@ export function createCronScheduler(
   }
 }
 
+export function shouldConfirmPreexistingOneShotTask(
+  task: CronTask,
+  schedulerStartedAtMs: number,
+): boolean {
+  return !task.recurring && task.createdAt < schedulerStartedAtMs
+}
+
 /**
  * Build the missed-task notification text. Guidance precedes the task list
  * and the list is wrapped in a code fence so a multi-line imperative prompt
@@ -541,19 +571,37 @@ export function buildMissedTaskNotification(missed: CronTask[]): string {
     `First use the AskUserQuestion tool to ask whether to run ${plural ? 'each one' : 'it'} now. ` +
     `Only execute if the user confirms.`
 
-  const blocks = missed.map(t => {
-    const meta = `[${cronToHuman(t.cron)}, created ${new Date(t.createdAt).toLocaleString()}]`
-    // Use a fence one longer than any backtick run in the prompt so a
-    // prompt containing ``` cannot close the fence early and un-wrap the
-    // trailing text (CommonMark fence-matching rule).
-    const backtickRuns = (t.prompt.match(/`+/g) ?? []) as string[]
-    const longestRun = backtickRuns.reduce(
-      (max, run) => Math.max(max, run.length),
-      0,
-    )
-    const fence = '`'.repeat(Math.max(3, longestRun + 1))
-    return `${meta}\n${fence}\n${t.prompt}\n${fence}`
-  })
+  return `${header}\n\n${formatTaskPromptBlocks(missed)}`
+}
 
-  return `${header}\n\n${blocks.join('\n\n')}`
+export function buildPreexistingOneShotTaskNotification(
+  tasks: CronTask[],
+): string {
+  const plural = tasks.length > 1
+  const header =
+    `The following one-shot scheduled task${plural ? 's were' : ' was'} created before this Mossen session and ${plural ? 'are' : 'is'} due now. ` +
+    `${plural ? 'They have' : 'It has'} already been removed from .mossen/scheduled_tasks.json.\n\n` +
+    `Do NOT execute ${plural ? 'these prompts' : 'this prompt'} yet. ` +
+    `First use the AskUserQuestion tool to ask whether to run ${plural ? 'each one' : 'it'} now. ` +
+    `Only execute if the user confirms.`
+
+  return `${header}\n\n${formatTaskPromptBlocks(tasks)}`
+}
+
+function formatTaskPromptBlocks(tasks: CronTask[]): string {
+  return tasks
+    .map(t => {
+      const meta = `[${cronToHuman(t.cron)}, created ${new Date(t.createdAt).toLocaleString()}]`
+      // Use a fence one longer than any backtick run in the prompt so a
+      // prompt containing ``` cannot close the fence early and un-wrap the
+      // trailing text (CommonMark fence-matching rule).
+      const backtickRuns = (t.prompt.match(/`+/g) ?? []) as string[]
+      const longestRun = backtickRuns.reduce(
+        (max, run) => Math.max(max, run.length),
+        0,
+      )
+      const fence = '`'.repeat(Math.max(3, longestRun + 1))
+      return `${meta}\n${fence}\n${t.prompt}\n${fence}`
+    })
+    .join('\n\n')
 }

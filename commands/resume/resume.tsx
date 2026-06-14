@@ -21,7 +21,7 @@ import { logError } from '../../utils/log.js';
 import { getLocalizedText } from '../../utils/uiLanguage.js';
 import { selectPreferredCurrentWorktreeLog } from '../../utils/worktreeResume.js';
 import { getLastSessionLog, getSessionIdFromLog, isCustomTitleEnabled, isLiteLog, loadAllProjectsMessageLogs, loadFullLog, loadSameRepoMessageLogs, searchSessionsByCustomTitle } from '../../utils/sessionStorage.js';
-import { validateUuid } from '../../utils/uuid.js';
+import { extractLeadingUuid, validateUuid } from '../../utils/uuid.js';
 type ResumeResult = {
   resultType: 'sessionNotFound';
   arg: string;
@@ -268,25 +268,30 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     return <ResumeError message={message} args={arg} onDone={() => onDone(message)} />;
   }
 
-  // First, check if arg is a valid UUID
-  const maybeSessionId = validateUuid(arg);
-  if (maybeSessionId) {
-    const matchingLogs = logs.filter(l => getSessionIdFromLog(l) === maybeSessionId).sort((a, b) => b.modified.getTime() - a.modified.getTime());
+  async function resumeBySessionId(sessionId: UUID) {
+    const matchingLogs = logs.filter(l => getSessionIdFromLog(l) === sessionId).sort((a, b) => b.modified.getTime() - a.modified.getTime());
     if (matchingLogs.length > 0) {
       const log = matchingLogs[0]!;
       const fullLog = isLiteLog(log) ? await loadFullLog(log) : log;
-      void onResume(maybeSessionId, fullLog, 'slash_command_session_id');
-      return null;
+      void onResume(sessionId, fullLog, 'slash_command_session_id');
+      return true;
     }
 
     // Enriched logs didn't find it — try direct file lookup. This handles
     // sessions filtered out by enrichLogs (e.g., first message >16KB makes
     // firstPrompt extraction fail, causing the session to be dropped).
-    const directLog = await getLastSessionLog(maybeSessionId);
+    const directLog = await getLastSessionLog(sessionId);
     if (directLog) {
-      void onResume(maybeSessionId, directLog, 'slash_command_session_id');
-      return null;
+      void onResume(sessionId, directLog, 'slash_command_session_id');
+      return true;
     }
+    return false;
+  }
+
+  // First, check if arg is a valid UUID
+  const maybeSessionId = validateUuid(arg);
+  if (maybeSessionId && await resumeBySessionId(maybeSessionId)) {
+    return null;
   }
 
   // Next, try exact custom title match (only if feature is enabled)
@@ -314,6 +319,11 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
       });
       return <ResumeError message={message} args={arg} onDone={() => onDone(message)} />;
     }
+  }
+
+  const maybePastedSessionId = maybeSessionId ? null : extractLeadingUuid(arg);
+  if (maybePastedSessionId && await resumeBySessionId(maybePastedSessionId)) {
+    return null;
   }
 
   // No match found - show error

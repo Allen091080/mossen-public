@@ -3,6 +3,8 @@ import type { AgentId } from 'src/types/ids.js'
 
 const uuidRegex =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const leadingUuidRegex =
+  /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
 
 /**
  * Validate uuid
@@ -14,6 +16,16 @@ export function validateUuid(maybeUuid: unknown): UUID | null {
   if (typeof maybeUuid !== 'string') return null
 
   return uuidRegex.test(maybeUuid) ? (maybeUuid as UUID) : null
+}
+
+/**
+ * Extract a UUID when terminal prompt/status text was accidentally pasted
+ * immediately after it (for example from a resume hint line).
+ */
+export function extractLeadingUuid(maybeUuid: unknown): UUID | null {
+  if (typeof maybeUuid !== 'string') return null
+  const match = maybeUuid.trim().match(leadingUuidRegex)
+  return match ? (match[1] as UUID) : null
 }
 
 /**

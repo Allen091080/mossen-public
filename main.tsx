@@ -146,7 +146,7 @@ import type { ValidationError } from './utils/settings/validation.js';
 import { DEFAULT_TASKS_MODE_TASK_LIST_ID, TASK_STATUSES } from './utils/tasks.js';
 import { logPluginLoadErrors, logPluginsEnabledForSession } from './services/analytics/pluginMetadata.js';
 import { generateTempFilePath } from './utils/tempfile.js';
-import { validateUuid } from './utils/uuid.js';
+import { extractLeadingUuid, validateUuid } from './utils/uuid.js';
 // Plugin startup checks are now handled non-blockingly in REPL.tsx
 
 import { registerMcpAddCommand } from 'src/commands/mcp/addCommand.js';
@@ -3533,8 +3533,13 @@ async function run(): Promise<CommanderCommand> {
             matchedLog = matches[0]!;
             maybeSessionId = getSessionIdFromLog(matchedLog) ?? null;
           } else {
-            // No match or multiple matches - use as search term for picker
-            searchTerm = trimmedValue;
+            // If terminal prompt/status text was accidentally pasted after a
+            // resume UUID, recover the UUID instead of opening a dead search.
+            maybeSessionId = extractLeadingUuid(trimmedValue);
+            if (!maybeSessionId) {
+              // No match or multiple matches - use as search term for picker
+              searchTerm = trimmedValue;
+            }
           }
         }
       }
