@@ -373,7 +373,7 @@ export function getProjectMcpServerStatus(
     return 'approved'
   }
 
-  // In bypass permissions mode (--dangerously-skip-permissions), there's no way
+  // In YOLO mode (--yolo), there's no way
   // to show an approval popup. Auto-approve if projectSettings is enabled since
   // the user has explicitly chosen to bypass all permission checks.
   // SECURITY: We intentionally only check skipDangerousModePermissionPrompt via

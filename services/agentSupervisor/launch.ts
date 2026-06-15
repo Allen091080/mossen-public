@@ -630,10 +630,10 @@ async function processSupervisorJobTurn(
     args.push('--fallback-model', state.fallbackModel)
   }
   if (state.allowDangerouslySkipPermissions) {
-    args.push('--allow-dangerously-skip-permissions')
+    args.push('--allow-yolo')
   }
   if (state.dangerouslySkipPermissions) {
-    args.push('--dangerously-skip-permissions')
+    args.push('--yolo')
   }
 
   const child = spawn(command, args, {
@@ -828,10 +828,10 @@ async function runAgentSupervisorPtyWorker(
     ptyArgs.push('--fallback-model', initialState.fallbackModel)
   }
   if (initialState.allowDangerouslySkipPermissions) {
-    ptyArgs.push('--allow-dangerously-skip-permissions')
+    ptyArgs.push('--allow-yolo')
   }
   if (initialState.dangerouslySkipPermissions) {
-    ptyArgs.push('--dangerously-skip-permissions')
+    ptyArgs.push('--yolo')
   }
 
   let pty: PtySession

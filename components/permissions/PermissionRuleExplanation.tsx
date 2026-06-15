@@ -22,13 +22,13 @@ function stringsForDecisionReason(reason: PermissionDecisionReason | undefined, 
   if (!reason) {
     return null;
   }
-  if ((feature('BASH_CLASSIFIER') || feature('TRANSCRIPT_CLASSIFIER')) && reason.type === 'classifier') {
-    if (reason.classifier === 'auto-mode') {
-      return {
-        reasonString: `Auto mode classifier requires confirmation for this ${toolType}.\n${reason.reason}`,
-        configString: undefined,
-        themeColor: 'error'
-      };
+	if ((feature('BASH_CLASSIFIER') || feature('TRANSCRIPT_CLASSIFIER')) && reason.type === 'classifier') {
+		if (reason.classifier === 'auto-mode') {
+			return {
+				reasonString: `Approve for me classifier requires confirmation for this ${toolType}.\n${reason.reason}`,
+				configString: undefined,
+				themeColor: 'error'
+			};
     }
     return {
       reasonString: `Classifier ${chalk.bold(reason.classifier)} requires confirmation for this ${toolType}.\n${reason.reason}`,

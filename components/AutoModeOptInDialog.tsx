@@ -64,7 +64,10 @@ export function AutoModeOptInDialog({
       value: 'accept-default',
     },
     {
-      label: languageTag === 'zh' ? '是，启用自动模式' : 'Yes, enable auto mode',
+      label:
+        languageTag === 'zh'
+          ? '是，启用自动审批'
+          : 'Yes, enable Approve for me',
       value: 'accept',
     },
     {
@@ -81,7 +84,11 @@ export function AutoModeOptInDialog({
 
   return (
     <Dialog
-      title={languageTag === 'zh' ? '启用自动模式？' : 'Enable auto mode?'}
+      title={
+        languageTag === 'zh'
+          ? '启用自动审批？'
+          : 'Enable Approve for me?'
+      }
       color="warning"
       onCancel={onDecline}
     >

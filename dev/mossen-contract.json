@@ -25,7 +25,7 @@
       "--permission-prompt-tool",
       "--append-system-prompt",
       "--resume",
-      "--allow-dangerously-skip-permissions",
+      "--allow-yolo",
       "--add-dir",
       "--plugin-dir",
       "-p"

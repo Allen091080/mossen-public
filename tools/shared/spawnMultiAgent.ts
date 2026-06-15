@@ -220,14 +220,14 @@ function buildInheritedCliFlags(options?: {
     permissionMode === 'bypassPermissions' ||
     getSessionBypassPermissionsMode()
   ) {
-    flags.push('--dangerously-skip-permissions')
+    flags.push('--yolo')
   } else if (permissionMode === 'acceptEdits') {
-    flags.push('--permission-mode acceptEdits')
+    flags.push('--permission-mode autoEdit')
   } else if (permissionMode === 'auto') {
     // Teammates inherit auto mode so the classifier auto-approves their tool
     // calls too. The teammate's own startup (permissionSetup.ts) handles
     // Dynamic-config gate checks and setAutoModeActive(true) independently.
-    flags.push('--permission-mode auto')
+    flags.push('--permission-mode approveForMe')
   }
 
   // Propagate --model if explicitly set via CLI

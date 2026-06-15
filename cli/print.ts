@@ -6030,7 +6030,7 @@ function handleSetPermissionMode(
   toolPermissionContext: ToolPermissionContext,
   output: Stream<StdoutMessage>,
 ): ToolPermissionContext {
-  // Check if trying to switch to bypassPermissions mode
+  // Check if trying to switch to YOLO mode
   if (request.mode === 'bypassPermissions') {
     if (isBypassPermissionsModeDisabled()) {
       output.enqueue({
@@ -6039,7 +6039,7 @@ function handleSetPermissionMode(
           subtype: 'error',
           request_id: requestId,
           error:
-            'Cannot set permission mode to bypassPermissions because it is disabled by settings or configuration',
+            'Cannot set permission mode to YOLO mode because it is disabled by settings or configuration',
         },
       })
       return toolPermissionContext
@@ -6051,14 +6051,14 @@ function handleSetPermissionMode(
           subtype: 'error',
           request_id: requestId,
           error:
-            'Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions',
+            'Cannot set permission mode to YOLO mode because the session was not launched with --yolo or --allow-yolo',
         },
       })
       return toolPermissionContext
     }
   }
 
-  // Check if trying to switch to auto mode without the classifier gate
+  // Check if trying to switch to Approve for me without the classifier gate
   if (
     feature('TRANSCRIPT_CLASSIFIER') &&
     request.mode === 'auto' &&

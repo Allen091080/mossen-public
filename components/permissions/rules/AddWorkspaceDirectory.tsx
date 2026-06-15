@@ -34,14 +34,14 @@ type Props = {
 type RememberDirectoryOption = 'yes-session' | 'yes-remember' | 'no';
 
 function PermissionDescription() {
-  return (
-    <Text dimColor>
-      {getLocalizedText({
-        en: `${getProductAssistantName()} will be able to read files in this directory and make edits when auto-accept edits is on.`,
-        zh: `${getProductAssistantName()} 将能够读取此目录中的文件，并在自动接受编辑开启时进行修改。`,
-      })}
-    </Text>
-  );
+	return (
+		<Text dimColor>
+			{getLocalizedText({
+				en: `${getProductAssistantName()} will be able to read files in this directory and make edits when Auto Edit is on.`,
+				zh: `${getProductAssistantName()} 将能够读取此目录中的文件，并在自动编辑开启时进行修改。`,
+			})}
+		</Text>
+	);
 }
 
 function DirectoryDisplay({ path }: { path: string }) {

@@ -224,11 +224,11 @@ export function PromptInputHelpMenu(props) {
     t29 = $[41];
   }
   let t30;
-  if ($[42] !== cycleModeShortcut || $[43] !== dimColor) {
-    t30 = <Box><Text dimColor={dimColor}>{getLocalizedText({
-      en: `${cycleModeShortcut} to auto-accept edits`,
-      zh: `${cycleModeShortcut} 用于切换权限模式`
-    })}</Text></Box>;
+	if ($[42] !== cycleModeShortcut || $[43] !== dimColor) {
+		t30 = <Box><Text dimColor={dimColor}>{getLocalizedText({
+			en: `${cycleModeShortcut} to switch permission mode`,
+			zh: `${cycleModeShortcut} 用于切换权限模式`
+		})}</Text></Box>;
     $[42] = cycleModeShortcut;
     $[43] = dimColor;
     $[44] = t30;

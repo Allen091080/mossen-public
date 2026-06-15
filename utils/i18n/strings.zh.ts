@@ -294,7 +294,7 @@ export const STRINGS_ZH = {
   'ui.agentView.inputPlaceholder': '描述一个新会话任务',
   'ui.agentView.rootBackHint': '已经在 Agent View 主界面。Space 打开预览卡片；等待输入时按 r 回复；Enter/→ 接管 live 终端；输入 /exit 关闭。',
   'ui.agentView.dispatchDefaults': '派发默认值',
-  'ui.agentView.dispatchDefaultsSkipPermissions': '跳过权限',
+  'ui.agentView.dispatchDefaultsSkipPermissions': 'YOLO 模式',
   'ui.agentView.lastRefresh': '最近刷新',
   'ui.agentView.nextStep': '下一步',
   'ui.agentView.nextEmpty': '输入任务即可启动后台任务；智能体配置请用 /agents library。',

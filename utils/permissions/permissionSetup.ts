@@ -726,8 +726,10 @@ export function initialPermissionModeFromCLI({
     }
   }
   if (settings.permissions?.defaultMode) {
-    const settingsMode = settings.permissions.defaultMode as PermissionMode
-    // CCR only supports acceptEdits and plan — ignore other defaultModes from
+    const settingsMode = permissionModeFromString(
+      settings.permissions.defaultMode as string,
+    )
+    // CCR only supports autoEdit/acceptEdits and plan — ignore other defaultModes from
     // settings (e.g. bypassPermissions would otherwise silently grant full
     // access in a remote environment).
     if (
@@ -735,7 +737,7 @@ export function initialPermissionModeFromCLI({
       !['acceptEdits', 'plan', 'default'].includes(settingsMode)
     ) {
       logForDebugging(
-        `settings defaultMode "${settingsMode}" is not supported in MOSSEN_CODE_REMOTE — only acceptEdits and plan are allowed`,
+        `settings defaultMode "${settingsMode}" is not supported in MOSSEN_CODE_REMOTE — only autoEdit and plan are allowed`,
         { level: 'warn' },
       )
       logMossenEvent('mossen.permission.unsupportedDefaultModeIgnored', {
@@ -765,13 +767,12 @@ export function initialPermissionModeFromCLI({
         logForDebugging('bypassPermissions mode is disabled by remote policy gate', {
           level: 'warn',
         })
-        notification =
-          'Bypass permissions mode was disabled by your organization policy'
+        notification = 'YOLO mode was disabled by your organization policy'
       } else {
         logForDebugging('bypassPermissions mode is disabled by settings', {
           level: 'warn',
         })
-        notification = 'Bypass permissions mode was disabled by settings'
+        notification = 'YOLO mode was disabled by settings'
       }
       continue // Skip this mode if it's disabled
     }
@@ -1039,20 +1040,20 @@ export function getAutoModeUnavailableNotification(
   switch (reason) {
     case 'settings':
       base = getLocalizedText({
-        en: 'auto mode disabled by settings',
-        zh: '自动模式已被设置禁用',
+        en: 'Approve for me disabled by settings',
+        zh: '自动审批已被设置禁用',
       })
       break
     case 'circuit-breaker':
       base = getLocalizedText({
-        en: 'auto mode is unavailable for your plan',
-        zh: '你的方案暂不支持自动模式',
+        en: 'Approve for me is unavailable for your plan',
+        zh: '你的方案暂不支持自动审批',
       })
       break
     case 'model':
       base = getLocalizedText({
-        en: 'auto mode unavailable for this model',
-        zh: '当前模型暂不支持自动模式',
+        en: 'Approve for me unavailable for this model',
+        zh: '当前模型暂不支持自动审批',
       })
       break
   }

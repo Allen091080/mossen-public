@@ -27,6 +27,8 @@ import {
   parseSlashCommandToolsFromFrontmatter,
 } from '../../utils/markdownConfigLoader.js'
 import {
+  normalizePermissionModeInput,
+  PERMISSION_MODE_INPUTS,
   PERMISSION_MODES,
   type PermissionMode,
 } from '../../utils/permissions/PermissionMode.js'
@@ -81,7 +83,15 @@ const AgentJsonSchema = lazySchema(() =>
       .transform(m => (m.toLowerCase() === 'inherit' ? 'inherit' : m))
       .optional(),
     effort: z.union([z.enum(EFFORT_LEVELS), z.number().int()]).optional(),
-    permissionMode: z.enum(PERMISSION_MODES).optional(),
+    permissionMode: z
+      .preprocess(
+        value =>
+          typeof value === 'string'
+            ? (normalizePermissionModeInput(value) ?? value)
+            : value,
+        z.enum(PERMISSION_MODES),
+      )
+      .optional(),
     mcpServers: z.array(AgentMcpServerSpecSchema()).optional(),
     hooks: HooksSchema().optional(),
     maxTurns: z.number().int().positive().optional(),
@@ -651,12 +661,13 @@ export function parseAgentFromMarkdown(
     const permissionModeRaw = frontmatter['permissionMode'] as
       | string
       | undefined
-    const isValidPermissionMode =
-      permissionModeRaw &&
-      (PERMISSION_MODES as readonly string[]).includes(permissionModeRaw)
+    const normalizedPermissionMode = permissionModeRaw
+      ? normalizePermissionModeInput(permissionModeRaw)
+      : undefined
+    const isValidPermissionMode = Boolean(normalizedPermissionMode)
 
     if (permissionModeRaw && !isValidPermissionMode) {
-      const errorMsg = `Agent file ${filePath} has invalid permissionMode '${permissionModeRaw}'. Valid options: ${PERMISSION_MODES.join(', ')}`
+      const errorMsg = `Agent file ${filePath} has invalid permissionMode '${permissionModeRaw}'. Valid options: ${PERMISSION_MODE_INPUTS.join(', ')}`
       logForDebugging(errorMsg)
     }
 
@@ -754,7 +765,7 @@ export function parseAgentFromMarkdown(
       ...(model !== undefined ? { model } : {}),
       ...(parsedEffort !== undefined ? { effort: parsedEffort } : {}),
       ...(isValidPermissionMode
-        ? { permissionMode: permissionModeRaw as PermissionMode }
+        ? { permissionMode: normalizedPermissionMode as PermissionMode }
         : {}),
       ...(maxTurns !== undefined ? { maxTurns } : {}),
       ...(background ? { background } : {}),

@@ -23,6 +23,22 @@ export const EXTERNAL_PERMISSION_MODES = [
 
 export type ExternalPermissionMode = (typeof EXTERNAL_PERMISSION_MODES)[number]
 
+export const EXTERNAL_PERMISSION_MODE_ALIASES = [
+  'askForApproval',
+  'autoEdit',
+  'yolo',
+] as const
+
+export const EXTERNAL_PERMISSION_MODE_INPUTS = [
+  ...EXTERNAL_PERMISSION_MODES,
+  ...EXTERNAL_PERMISSION_MODE_ALIASES,
+] as const
+
+export type ExternalPermissionModeAlias =
+  (typeof EXTERNAL_PERMISSION_MODE_ALIASES)[number]
+export type ExternalPermissionModeInput =
+  (typeof EXTERNAL_PERMISSION_MODE_INPUTS)[number]
+
 // Exhaustive mode union for typechecking. The user-addressable runtime set
 // is INTERNAL_PERMISSION_MODES below.
 export type InternalPermissionMode = ExternalPermissionMode | 'auto' | 'bubble'
@@ -36,6 +52,53 @@ export const INTERNAL_PERMISSION_MODES = [
 ] as const satisfies readonly PermissionMode[]
 
 export const PERMISSION_MODES = INTERNAL_PERMISSION_MODES
+
+export const INTERNAL_PERMISSION_MODE_ALIASES = [
+  ...EXTERNAL_PERMISSION_MODE_ALIASES,
+  ...(feature('TRANSCRIPT_CLASSIFIER')
+    ? (['approveForMe'] as const)
+    : ([] as const)),
+] as const
+
+export const PERMISSION_MODE_INPUTS = [
+  ...PERMISSION_MODES,
+  ...INTERNAL_PERMISSION_MODE_ALIASES,
+] as const
+
+export type PermissionModeAlias =
+  (typeof INTERNAL_PERMISSION_MODE_ALIASES)[number]
+export type PermissionModeInput = (typeof PERMISSION_MODE_INPUTS)[number]
+
+export function normalizeExternalPermissionModeInput(
+  value: string,
+): ExternalPermissionMode | undefined {
+  switch (value) {
+    case 'askForApproval':
+      return 'default'
+    case 'autoEdit':
+      return 'acceptEdits'
+    case 'yolo':
+      return 'bypassPermissions'
+    default:
+      return (EXTERNAL_PERMISSION_MODES as readonly string[]).includes(value)
+        ? (value as ExternalPermissionMode)
+        : undefined
+  }
+}
+
+export function normalizePermissionModeInput(
+  value: string,
+): PermissionMode | undefined {
+  if (value === 'approveForMe') {
+    return feature('TRANSCRIPT_CLASSIFIER') ? 'auto' : undefined
+  }
+  return (
+    normalizeExternalPermissionModeInput(value) ??
+    ((PERMISSION_MODES as readonly string[]).includes(value)
+      ? (value as PermissionMode)
+      : undefined)
+  )
+}
 
 // ============================================================================
 // Permission Behaviors

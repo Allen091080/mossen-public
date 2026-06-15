@@ -284,14 +284,14 @@ export function buildYoloRejectionMessage(reason: string): string {
  * Tells the agent to wait and retry, and suggests working on other tasks.
  */
 export function buildClassifierUnavailableMessage(
-  toolName: string,
-  classifierModel: string,
+	toolName: string,
+	classifierModel: string,
 ): string {
-  return (
-    `${classifierModel} is temporarily unavailable, so auto mode cannot determine the safety of ${toolName} right now. ` +
-    `Wait briefly and then try this action again. ` +
-    `If it keeps failing, continue with other tasks that don't require this action and come back to it later. ` +
-    `Note: reading files, searching code, and other read-only operations do not require the classifier and can still be used.`
+	return (
+		`${classifierModel} is temporarily unavailable, so Approve for me cannot determine the safety of ${toolName} right now. ` +
+		`Wait briefly and then try this action again. ` +
+		`If it keeps failing, continue with other tasks that don't require this action and come back to it later. ` +
+		`Note: reading files, searching code, and other read-only operations do not require the classifier and can still be used.`
   )
 }
 

@@ -76,8 +76,8 @@ export function UserToolErrorMessage(t0) {
     let t1;
     if ($[6] === Symbol.for("react.memo_cache_sentinel")) {
       t1 = <MessageResponse height={1}><Text dimColor={true}>{getLocalizedText({
-        en: `Denied by auto mode classifier ${BULLET_OPERATOR} /feedback if incorrect`,
-        zh: `已被自动模式分类器拒绝 ${BULLET_OPERATOR} 若判断有误请使用 /feedback`
+        en: `Denied by Approve for me classifier ${BULLET_OPERATOR} /feedback if incorrect`,
+        zh: `已被自动审批分类器拒绝 ${BULLET_OPERATOR} 若判断有误请使用 /feedback`
       })}</Text></MessageResponse>;
       $[6] = t1;
     } else {

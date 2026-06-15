@@ -17,7 +17,7 @@ import type {
   NormalizedMessage,
   NormalizedUserMessage,
 } from '../types/message.js'
-import { PERMISSION_MODES } from '../types/permissions.js'
+import { normalizePermissionModeInput } from '../types/permissions.js'
 import { suppressNextSkillListing } from './attachments.js'
 import {
   copyFileHistoryForResume,
@@ -172,14 +172,10 @@ export function deserializeMessagesWithInterruptDetection(
 
     // Strip invalid permissionMode values from deserialized user messages.
     // The field is unvalidated JSON from disk and may contain modes from a different build.
-    const validModes = new Set<string>(PERMISSION_MODES)
     for (const msg of migratedMessages) {
-      if (
-        msg.type === 'user' &&
-        msg.permissionMode !== undefined &&
-        !validModes.has(msg.permissionMode)
-      ) {
-        msg.permissionMode = undefined
+      if (msg.type === 'user' && msg.permissionMode !== undefined) {
+        const normalizedMode = normalizePermissionModeInput(msg.permissionMode)
+        msg.permissionMode = normalizedMode
       }
     }
 

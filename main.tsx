@@ -107,6 +107,24 @@ const STARTUP_PREFETCH_THROTTLE_KEY = 'mossen.startup.prefetchThrottleMs';
 const STARTUP_SKIP_FAST_MODE_PREFETCH_KEY = 'mossen.startup.skipFastModePrefetch';
 const REMOTE_BACKEND_TUI_KEY = 'mossen.session.remoteBackendEnabled';
 const MAX_CLI_GOAL_GRAPHEMES = 2000;
+const PUBLIC_PERMISSION_MODE_INPUTS = [
+  'askForApproval',
+  'autoEdit',
+  'yolo',
+  'dontAsk',
+  'plan',
+  ...(feature('TRANSCRIPT_CLASSIFIER') ? ['approveForMe'] : []),
+] as const
+const PUBLIC_PERMISSION_MODE_HELP = PUBLIC_PERMISSION_MODE_INPUTS.join(', ')
+
+function parsePermissionModeCliInput(value: string): string {
+  if (!normalizePermissionModeInput(value)) {
+    throw new InvalidArgumentError(
+      `It must be one of: ${PUBLIC_PERMISSION_MODE_HELP}`,
+    )
+  }
+  return value
+}
 import { initBundledSkills } from './skills/bundled/index.js';
 import type { AgentColorName } from './tools/AgentTool/agentColorManager.js';
 import { getActiveAgentsFromList, getAgentDefinitionsWithOverrides, isBuiltInAgent, isCustomAgent, parseAgentsFromJson } from './tools/AgentTool/loadAgentsDir.js';
@@ -128,7 +146,7 @@ import { logError } from './utils/log.js';
 import { getModelDeprecationWarning } from './utils/model/deprecation.js';
 import { getDefaultMainLoopModel, getUserSpecifiedModelSetting, normalizeModelStringForAPI, parseUserSpecifiedModel } from './utils/model/model.js';
 import { ensureModelStringsInitialized } from './utils/model/modelStrings.js';
-import { PERMISSION_MODES } from './utils/permissions/PermissionMode.js';
+import { normalizePermissionModeInput } from './utils/permissions/PermissionMode.js';
 import { checkAndDisableBypassPermissions, getAutoModeEnabledStateIfCached, initializeToolPermissionContext, initialPermissionModeFromCLI, isDefaultPermissionModeAuto, parseToolListFromCLI, removeDangerousPermissions, stripDangerousPermissionsForAutoMode, verifyAutoModeGateAccess } from './utils/permissions/permissionSetup.js';
 import { cleanupOrphanedPluginVersionsInBackground } from './utils/plugins/cacheUtils.js';
 import { initializeVersionedPlugins } from './utils/plugins/installedPluginsManager.js';
@@ -657,11 +675,15 @@ export async function main() {
         parseConnectUrl
       } = await import('./server/parseConnectUrl.js');
       const parsed = parseConnectUrl(ccUrl);
-      _pendingConnect.dangerouslySkipPermissions = rawCliArgs.includes('--dangerously-skip-permissions');
+      _pendingConnect.dangerouslySkipPermissions =
+        rawCliArgs.includes('--yolo') ||
+        rawCliArgs.includes('--dangerously-skip-permissions');
       if (rawCliArgs.includes('-p') || rawCliArgs.includes('--print')) {
         // Headless: rewrite to internal `open` subcommand
         const stripped = rawCliArgs.filter((_, i) => i !== ccIdx);
-        const dspIdx = stripped.indexOf('--dangerously-skip-permissions');
+        const dspIdx = stripped.findIndex(
+          arg => arg === '--yolo' || arg === '--dangerously-skip-permissions',
+        );
         if (dspIdx !== -1) {
           stripped.splice(dspIdx, 1);
         }
@@ -671,7 +693,9 @@ export async function main() {
         _pendingConnect.url = parsed.serverUrl;
         _pendingConnect.authToken = parsed.authToken;
         const stripped = rawCliArgs.filter((_, i) => i !== ccIdx);
-        const dspIdx = stripped.indexOf('--dangerously-skip-permissions');
+        const dspIdx = stripped.findIndex(
+          arg => arg === '--yolo' || arg === '--dangerously-skip-permissions',
+        );
         if (dspIdx !== -1) {
           stripped.splice(dspIdx, 1);
         }
@@ -756,7 +780,9 @@ export async function main() {
         _pendingSSH.local = true;
         rawCliArgs.splice(localIdx, 1);
       }
-      const dspIdx = rawCliArgs.indexOf('--dangerously-skip-permissions');
+      const dspIdx = rawCliArgs.findIndex(
+        arg => arg === '--yolo' || arg === '--dangerously-skip-permissions',
+      );
       if (dspIdx !== -1) {
         _pendingSSH.dangerouslySkipPermissions = true;
         rawCliArgs.splice(dspIdx, 1);
@@ -1039,8 +1065,10 @@ async function run(): Promise<CommanderCommand> {
   .option('--include-partial-messages', 'Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)', () => true)
   .addOption(new Option('--input-format <format>', 'Input format (only works with --print): "text" (default), or "stream-json" (realtime streaming input)').choices(['text', 'stream-json']))
   .option('--mcp-debug', '[DEPRECATED. Use --debug instead] Enable MCP debug mode (shows MCP server errors)', () => true)
-  .option('--dangerously-skip-permissions', 'Bypass all permission checks. Recommended only for sandboxes with no internet access.', () => true)
-  .option('--allow-dangerously-skip-permissions', 'Enable bypassing all permission checks as an option, without it being enabled by default. Recommended only for sandboxes with no internet access.', () => true)
+  .option('--yolo', 'Enable YOLO mode: bypass all permission checks. Use only in a sandbox.', () => true)
+  .option('--allow-yolo', 'Allow YOLO mode as an option without enabling it by default.', () => true)
+  .addOption(new Option('--dangerously-skip-permissions', 'Deprecated alias for --yolo').hideHelp())
+  .addOption(new Option('--allow-dangerously-skip-permissions', 'Deprecated alias for --allow-yolo').hideHelp())
   .addOption(new Option('--thinking <mode>', 'Thinking mode: enabled (equivalent to adaptive), disabled').choices(['enabled', 'adaptive', 'disabled']).hideHelp())
   .addOption(new Option('--max-thinking-tokens <tokens>', '[DEPRECATED. Use --thinking instead for newer models] Maximum number of thinking tokens (only works with --print)').argParser(Number).hideHelp())
   .addOption(new Option('--max-turns <turns>', 'Maximum number of agentic turns in non-interactive mode. This will early exit the conversation after the specified number of turns. (only works with --print)').argParser(Number).hideHelp())
@@ -1056,7 +1084,7 @@ async function run(): Promise<CommanderCommand> {
       throw new Error('--task-budget must be a positive integer');
     }
     return tokens;
-  }).hideHelp()).option('--replay-user-messages', 'Re-emit user messages from stdin back on stdout for acknowledgment (only works with --input-format=stream-json and --output-format=stream-json)', () => true).addOption(new Option('--replay-history', 'With --resume in --print mode, replay existing session history as stream-json and exit without calling the model.').hideHelp()).addOption(new Option('--enable-auth-status', 'Enable auth status messages in SDK mode').default(false).hideHelp()).option('--allowedTools, --allowed-tools <tools...>', 'Comma or space-separated list of tool names to allow (e.g. "Bash(git:*) Edit")').option('--tools <tools...>', 'Specify the list of available tools from the built-in set. Use "" to disable all tools, "default" to use all tools, or specify tool names (e.g. "Bash,Edit,Read").').option('--disallowedTools, --disallowed-tools <tools...>', 'Comma or space-separated list of tool names to deny (e.g. "Bash(git:*) Edit")').option('--mcp-config <configs...>', 'Load MCP servers from JSON files or strings (space-separated)').addOption(new Option('--permission-prompt-tool <tool>', 'MCP tool to use for permission prompts (only works with --print)').argParser(String).hideHelp()).addOption(new Option('--system-prompt <prompt>', 'System prompt to use for the session').argParser(String)).addOption(new Option('--system-prompt-file <file>', 'Read system prompt from a file').argParser(String).hideHelp()).addOption(new Option('--append-system-prompt <prompt>', 'Append a system prompt to the default system prompt').argParser(String)).addOption(new Option('--append-system-prompt-file <file>', 'Read system prompt from a file and append to the default system prompt').argParser(String).hideHelp()).addOption(new Option('--permission-mode <mode>', 'Permission mode to use for the session').argParser(String).choices(PERMISSION_MODES)).option('-c, --continue', 'Continue the most recent conversation in the current directory', () => true).option('-r, --resume [value]', 'Resume a conversation by session ID, or open interactive picker with optional search term', value => value || true).option('--fork-session', 'When resuming, create a new session ID instead of reusing the original (use with --resume or --continue)', () => true).addOption(new Option('--prefill <text>', 'Pre-fill the prompt input with text without submitting it').hideHelp()).addOption(new Option('--deep-link-origin', 'Signal that this session was launched from a deep link').hideHelp()).addOption(new Option('--deep-link-repo <slug>', 'Repo slug the deep link ?repo= parameter resolved to the current cwd').hideHelp()).addOption(new Option('--deep-link-last-fetch <ms>', 'FETCH_HEAD mtime in epoch ms, precomputed by the deep link trampoline').argParser(v => {
+  }).hideHelp()).option('--replay-user-messages', 'Re-emit user messages from stdin back on stdout for acknowledgment (only works with --input-format=stream-json and --output-format=stream-json)', () => true).addOption(new Option('--replay-history', 'With --resume in --print mode, replay existing session history as stream-json and exit without calling the model.').hideHelp()).addOption(new Option('--enable-auth-status', 'Enable auth status messages in SDK mode').default(false).hideHelp()).option('--allowedTools, --allowed-tools <tools...>', 'Comma or space-separated list of tool names to allow (e.g. "Bash(git:*) Edit")').option('--tools <tools...>', 'Specify the list of available tools from the built-in set. Use "" to disable all tools, "default" to use all tools, or specify tool names (e.g. "Bash,Edit,Read").').option('--disallowedTools, --disallowed-tools <tools...>', 'Comma or space-separated list of tool names to deny (e.g. "Bash(git:*) Edit")').option('--mcp-config <configs...>', 'Load MCP servers from JSON files or strings (space-separated)').addOption(new Option('--permission-prompt-tool <tool>', 'MCP tool to use for permission prompts (only works with --print)').argParser(String).hideHelp()).addOption(new Option('--system-prompt <prompt>', 'System prompt to use for the session').argParser(String)).addOption(new Option('--system-prompt-file <file>', 'Read system prompt from a file').argParser(String).hideHelp()).addOption(new Option('--append-system-prompt <prompt>', 'Append a system prompt to the default system prompt').argParser(String)).addOption(new Option('--append-system-prompt-file <file>', 'Read system prompt from a file and append to the default system prompt').argParser(String).hideHelp()).addOption(new Option('--permission-mode <mode>', `Permission mode to use for the session. Valid values: ${PUBLIC_PERMISSION_MODE_HELP}`).argParser(parsePermissionModeCliInput)).option('-c, --continue', 'Continue the most recent conversation in the current directory', () => true).option('-r, --resume [value]', 'Resume a conversation by session ID, or open interactive picker with optional search term', value => value || true).option('--fork-session', 'When resuming, create a new session ID instead of reusing the original (use with --resume or --continue)', () => true).addOption(new Option('--prefill <text>', 'Pre-fill the prompt input with text without submitting it').hideHelp()).addOption(new Option('--deep-link-origin', 'Signal that this session was launched from a deep link').hideHelp()).addOption(new Option('--deep-link-repo <slug>', 'Repo slug the deep link ?repo= parameter resolved to the current cwd').hideHelp()).addOption(new Option('--deep-link-last-fetch <ms>', 'FETCH_HEAD mtime in epoch ms, precomputed by the deep link trampoline').argParser(v => {
     const n = Number(v);
     return Number.isFinite(n) ? n : undefined;
   }).hideHelp()).option('--from-pr [value]', 'Resume a session linked to a PR by PR number/URL, or open interactive picker with optional search term', value => value || true).option('--no-session-persistence', 'Disable session persistence - sessions will not be saved to disk and cannot be resumed (only works with --print)').addOption(new Option('--resume-session-at <message id>', 'When resuming, only messages up to and including the assistant message with <message.id> (use with --resume in print mode)').argParser(String).hideHelp()).addOption(new Option('--rewind-files <user-message-id>', 'Restore files to state at the specified user message and exit (requires --resume)').hideHelp())
@@ -1100,6 +1128,8 @@ async function run(): Promise<CommanderCommand> {
       pluginDir?: string | string[];
       strictMcpConfig?: boolean;
       fallbackModel?: string;
+      allowYolo?: boolean;
+      yolo?: boolean;
       allowDangerouslySkipPermissions?: boolean;
       dangerouslySkipPermissions?: boolean;
     };
@@ -1142,8 +1172,10 @@ async function run(): Promise<CommanderCommand> {
         strictMcpConfig: supervisorJobOptions.strictMcpConfig === true,
         fallbackModel: supervisorJobOptions.fallbackModel ?? null,
         allowDangerouslySkipPermissions:
+          supervisorJobOptions.allowYolo === true ||
           supervisorJobOptions.allowDangerouslySkipPermissions === true,
         dangerouslySkipPermissions:
+          supervisorJobOptions.yolo === true ||
           supervisorJobOptions.dangerouslySkipPermissions === true,
         testMode: supervisorJobOptions.supervisorTestJob,
       });
@@ -1235,7 +1267,9 @@ async function run(): Promise<CommanderCommand> {
     const {
       debug = false,
       debugToStderr = false,
-      dangerouslySkipPermissions,
+      yolo = false,
+      allowYolo = false,
+      dangerouslySkipPermissions = false,
       allowDangerouslySkipPermissions = false,
       tools: baseTools = [],
       allowedTools = [],
@@ -1250,6 +1284,11 @@ async function run(): Promise<CommanderCommand> {
       includeHookEvents,
       includePartialMessages
     } = options;
+    const effectiveDangerouslySkipPermissions =
+      yolo || dangerouslySkipPermissions
+    const effectiveAllowDangerouslySkipPermissions =
+      allowYolo || allowDangerouslySkipPermissions
+
     if (options.prefill) {
       seedEarlyInput(options.prefill);
     }
@@ -1572,10 +1611,10 @@ async function run(): Promise<CommanderCommand> {
       notification: permissionModeNotification
     } = initialPermissionModeFromCLI({
       permissionModeCli,
-      dangerouslySkipPermissions
+      dangerouslySkipPermissions: effectiveDangerouslySkipPermissions
     });
 
-    // Store session bypass permissions mode for trust dialog check
+    // Store session YOLO mode for trust dialog check.
     setCurrentPermissionModeForSession(permissionMode);
     setSessionBypassPermissionsMode(permissionMode === 'bypassPermissions');
     if (feature('TRANSCRIPT_CLASSIFIER')) {
@@ -1931,7 +1970,7 @@ async function run(): Promise<CommanderCommand> {
       disallowedToolsCli: disallowedTools,
       baseToolsCli: baseTools,
       permissionMode,
-      allowDangerouslySkipPermissions,
+      allowDangerouslySkipPermissions: effectiveAllowDangerouslySkipPermissions,
       addDirs: addDir
     });
     let toolPermissionContext = initResult.toolPermissionContext;
@@ -2106,7 +2145,7 @@ async function run(): Promise<CommanderCommand> {
       initBuiltinPlugins();
       initBundledSkills();
     }
-    const setupPromise = setup(preSetupCwd, permissionMode, allowDangerouslySkipPermissions, worktreeEnabled, worktreeName, tmuxEnabled, sessionId ? validateUuid(sessionId) : undefined, worktreePRNumber, messagingSocketPath);
+    const setupPromise = setup(preSetupCwd, permissionMode, effectiveAllowDangerouslySkipPermissions, worktreeEnabled, worktreeName, tmuxEnabled, sessionId ? validateUuid(sessionId) : undefined, worktreePRNumber, messagingSocketPath);
     const commandsPromise = worktreeEnabled ? null : getCommands(preSetupCwd);
     const agentDefsPromise = worktreeEnabled ? null : getAgentDefinitionsWithOverrides(preSetupCwd);
     // Suppress transient unhandledRejection if these reject during the
@@ -2421,7 +2460,7 @@ async function run(): Promise<CommanderCommand> {
       });
       logForDebugging('[STARTUP] Running showSetupScreens()...');
       const setupScreensStart = Date.now();
-      const onboardingShown = await showSetupScreens(root, permissionMode, allowDangerouslySkipPermissions, commands, enableMossenInChrome, devChannels);
+      const onboardingShown = await showSetupScreens(root, permissionMode, effectiveAllowDangerouslySkipPermissions, commands, enableMossenInChrome, devChannels);
       logForDebugging(`[STARTUP] showSetupScreens() completed in ${Date.now() - setupScreensStart}ms`);
 
       // Check for pending agent memory snapshot updates (internal --agent mode only)
@@ -2671,10 +2710,10 @@ async function run(): Promise<CommanderCommand> {
       worktreeEnabled,
       skipWebFetchPreflight: getInitialSettings().skipWebFetchPreflight,
       githubActionInputs: process.env.GITHUB_ACTION_INPUTS,
-      dangerouslySkipPermissionsPassed: dangerouslySkipPermissions ?? false,
+      dangerouslySkipPermissionsPassed: effectiveDangerouslySkipPermissions,
       permissionMode,
       modeIsBypass: permissionMode === 'bypassPermissions',
-      allowDangerouslySkipPermissionsPassed: allowDangerouslySkipPermissions,
+      allowDangerouslySkipPermissionsPassed: effectiveAllowDangerouslySkipPermissions,
       systemPromptFlag: systemPrompt ? options.systemPromptFile ? 'file' : 'flag' : undefined,
       appendSystemPromptFlag: appendSystemPrompt ? options.appendSystemPromptFile ? 'file' : 'flag' : undefined,
       thinkingConfig,
@@ -2815,9 +2854,9 @@ async function run(): Promise<CommanderCommand> {
       // Init app state
       const headlessStore = createStore(headlessInitialState, onChangeAppState);
 
-      // Check if bypassPermissions should be disabled based on Statsig gate
+      // Check if YOLO mode should be disabled based on Statsig gate.
       // This runs in parallel to the code below, to avoid blocking the main loop.
-      if (toolPermissionContext.mode === 'bypassPermissions' || allowDangerouslySkipPermissions) {
+      if (toolPermissionContext.mode === 'bypassPermissions' || effectiveAllowDangerouslySkipPermissions) {
         void checkAndDisableBypassPermissions(toolPermissionContext);
       }
 
@@ -3960,7 +3999,7 @@ async function run(): Promise<CommanderCommand> {
     program.addOption(new Option('--advisor <model>', 'Enable the server-side advisor tool with the specified model (alias or full ID).').hideHelp());
   }
   if (feature('TRANSCRIPT_CLASSIFIER')) {
-    program.addOption(new Option('--enable-auto-mode', 'Opt in to auto mode').hideHelp());
+    program.addOption(new Option('--enable-auto-mode', 'Opt in to Approve for me').hideHelp());
   }
   if (feature('PROACTIVE') || feature('KAIROS')) {
     program.addOption(new Option('--proactive', 'Start in proactive autonomous mode'));
@@ -4172,7 +4211,7 @@ async function run(): Promise<CommanderCommand> {
   // this action it means the argv rewrite didn't fire (e.g. user ran
   // `mossen ssh` with no host) — just print usage.
   if (feature('SSH_REMOTE') && sshRemoteRuntimePresent) {
-    program.command('ssh <host> [dir]').description(`Run ${getProductDisplayName()} on a remote host over SSH. Deploys the binary and tunnels API auth back through your local machine — no remote setup needed.`).option('--permission-mode <mode>', 'Permission mode for the remote session').option('--dangerously-skip-permissions', 'Skip all permission prompts on the remote (dangerous)').option('--local', 'e2e test mode — spawn the child CLI locally (skip ssh/deploy). ' + 'Exercises the auth proxy and unix-socket plumbing without a remote host.').action(async () => {
+    program.command('ssh <host> [dir]').description(`Run ${getProductDisplayName()} on a remote host over SSH. Deploys the binary and tunnels API auth back through your local machine — no remote setup needed.`).option('--permission-mode <mode>', 'Permission mode for the remote session').option('--yolo', 'Enable YOLO mode for the remote session').addOption(new Option('--dangerously-skip-permissions', 'Deprecated alias for --yolo').hideHelp()).option('--local', 'e2e test mode — spawn the child CLI locally (skip ssh/deploy). ' + 'Exercises the auth proxy and unix-socket plumbing without a remote host.').action(async () => {
       // Argv rewriting in main() should have consumed `ssh <host>` before
       // commander runs. Reaching here means host was missing or the
       // rewrite predicate didn't match.
@@ -4413,41 +4452,140 @@ async function run(): Promise<CommanderCommand> {
   });
 
   // Agents command - list configured agents
-  program.command('agents').description('Open Agent View supervisor dashboard').option('--setting-sources <sources>', 'Comma-separated list of setting sources to load (user, project, local).').option('--cwd <path>', 'Open Agent View using a specific working directory.').option('--model <model>', 'Default model for jobs dispatched from Agent View.').addOption(new Option('--permission-mode <mode>', 'Default permission mode for jobs dispatched from Agent View.').argParser(String).choices(PERMISSION_MODES)).addOption(new Option('--effort <level>', 'Default effort level for jobs dispatched from Agent View (low, medium, high, max).').argParser((rawValue: string) => {
-    const value = rawValue.toLowerCase();
-    const allowed = ['low', 'medium', 'high', 'max'];
-    if (!allowed.includes(value)) {
-      throw new InvalidArgumentError(`It must be one of: ${allowed.join(', ')}`);
-    }
-    return value;
-})).option('--agent <agent>', 'Default agent for jobs dispatched from Agent View.').option('--settings <file-or-json>', 'Default settings file or JSON for jobs dispatched from Agent View.').option('--add-dir <directories...>', 'Additional directories to allow for jobs dispatched from Agent View.').option('--mcp-config <configs...>', 'MCP config files or JSON for jobs dispatched from Agent View.').option('--plugin-dir <path>', 'Plugin directory or .zip for jobs dispatched from Agent View (repeatable).', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--strict-mcp-config', 'Only use MCP servers from --mcp-config for jobs dispatched from Agent View.', () => true).option('--fallback-model <model>', 'Fallback model for jobs dispatched from Agent View.').option('--allow-dangerously-skip-permissions', 'Allow bypass permission mode for jobs dispatched from Agent View without enabling it by default.', () => true).option('--dangerously-skip-permissions', 'Bypass permission checks for jobs dispatched from Agent View. Use only in a sandbox.', () => true).option('--json', 'Print live sessions as a JSON array and exit without requiring a TTY.').option('--all', 'With --json, include Agent View jobs from every cwd instead of only the selected cwd.', () => true).option('--doctor', 'Show Agent View supervisor health and storage status.').option('--gc', 'Garbage-collect terminal Agent View supervisor jobs older than --before').option('--before <date>', 'Cutoff date for --gc (ISO date or timestamp)').option('--dry-run', 'Preview Agent View GC without deleting data').option('--confirm <8hex>', 'Confirm Agent View GC using the dry-run token').addHelpText('after', '\nAgent View keys: type a task + Enter to start; / opens task skills/templates; Space opens the preview card; r replies when input is needed; Enter/→ attaches to the live terminal; ← returns to the dashboard; /exit closes the dashboard.').action(async (options: {
-	  doctor?: boolean;
-	  gc?: boolean;
-	  json?: boolean;
-	  all?: boolean;
-	  before?: string;
-    dryRun?: boolean;
-    confirm?: string;
-    cwd?: string;
-    model?: string;
-    permissionMode?: string;
-    effort?: string;
-    agent?: string;
-    settings?: string;
-    addDir?: string[];
-    mcpConfig?: string[];
-    pluginDir?: string[];
-    strictMcpConfig?: boolean;
-    fallbackModel?: string;
-    allowDangerouslySkipPermissions?: boolean;
-    dangerouslySkipPermissions?: boolean;
-  }) => {
-    const {
-      agentsTuiOrPrinterHandler
-    } = await import('./cli/handlers/agentsTui.js');
-    await agentsTuiOrPrinterHandler(options);
-    process.exit(process.exitCode ?? 0);
-  });
+  program
+    .command('agents')
+    .description('Open Agent View supervisor dashboard')
+    .option(
+      '--setting-sources <sources>',
+      'Comma-separated list of setting sources to load (user, project, local).',
+    )
+    .option('--cwd <path>', 'Open Agent View using a specific working directory.')
+    .option('--model <model>', 'Default model for jobs dispatched from Agent View.')
+    .addOption(
+      new Option(
+        '--permission-mode <mode>',
+        `Default permission mode for jobs dispatched from Agent View. Valid values: ${PUBLIC_PERMISSION_MODE_HELP}`,
+      )
+        .argParser(parsePermissionModeCliInput),
+    )
+    .addOption(
+      new Option(
+        '--effort <level>',
+        'Default effort level for jobs dispatched from Agent View (low, medium, high, max).',
+      ).argParser((rawValue: string) => {
+        const value = rawValue.toLowerCase()
+        const allowed = ['low', 'medium', 'high', 'max']
+        if (!allowed.includes(value)) {
+          throw new InvalidArgumentError(
+            `It must be one of: ${allowed.join(', ')}`,
+          )
+        }
+        return value
+      }),
+    )
+    .option('--agent <agent>', 'Default agent for jobs dispatched from Agent View.')
+    .option(
+      '--settings <file-or-json>',
+      'Default settings file or JSON for jobs dispatched from Agent View.',
+    )
+    .option(
+      '--add-dir <directories...>',
+      'Additional directories to allow for jobs dispatched from Agent View.',
+    )
+    .option(
+      '--mcp-config <configs...>',
+      'MCP config files or JSON for jobs dispatched from Agent View.',
+    )
+    .option(
+      '--plugin-dir <path>',
+      'Plugin directory or .zip for jobs dispatched from Agent View (repeatable).',
+      (val: string, prev: string[]) => [...prev, val],
+      [] as string[],
+    )
+    .option(
+      '--strict-mcp-config',
+      'Only use MCP servers from --mcp-config for jobs dispatched from Agent View.',
+      () => true,
+    )
+    .option(
+      '--fallback-model <model>',
+      'Fallback model for jobs dispatched from Agent View.',
+    )
+    .option(
+      '--allow-yolo',
+      'Allow YOLO mode for jobs dispatched from Agent View without enabling it by default.',
+      () => true,
+    )
+    .option(
+      '--yolo',
+      'Enable YOLO mode for jobs dispatched from Agent View. Use only in a sandbox.',
+      () => true,
+    )
+    .addOption(
+      new Option(
+        '--allow-dangerously-skip-permissions',
+        'Deprecated alias for --allow-yolo',
+      ).hideHelp(),
+    )
+    .addOption(
+      new Option(
+        '--dangerously-skip-permissions',
+        'Deprecated alias for --yolo',
+      ).hideHelp(),
+    )
+    .option('--json', 'Print live sessions as a JSON array and exit without requiring a TTY.')
+    .option(
+      '--all',
+      'With --json, include Agent View jobs from every cwd instead of only the selected cwd.',
+      () => true,
+    )
+    .option('--doctor', 'Show Agent View supervisor health and storage status.')
+    .option('--gc', 'Garbage-collect terminal Agent View supervisor jobs older than --before')
+    .option('--before <date>', 'Cutoff date for --gc (ISO date or timestamp)')
+    .option('--dry-run', 'Preview Agent View GC without deleting data')
+    .option('--confirm <8hex>', 'Confirm Agent View GC using the dry-run token')
+    .addHelpText(
+      'after',
+      '\nAgent View keys: type a task + Enter to start; / opens task skills/templates; Space opens the preview card; r replies when input is needed; Enter/→ attaches to the live terminal; ← returns to the dashboard; /exit closes the dashboard.',
+    )
+    .action(async (options: {
+      doctor?: boolean
+      gc?: boolean
+      json?: boolean
+      all?: boolean
+      before?: string
+      dryRun?: boolean
+      confirm?: string
+      cwd?: string
+      model?: string
+      permissionMode?: string
+      effort?: string
+      agent?: string
+      settings?: string
+      addDir?: string[]
+      mcpConfig?: string[]
+      pluginDir?: string[]
+      strictMcpConfig?: boolean
+      fallbackModel?: string
+      allowYolo?: boolean
+      yolo?: boolean
+      allowDangerouslySkipPermissions?: boolean
+      dangerouslySkipPermissions?: boolean
+    }) => {
+      const { agentsTuiOrPrinterHandler } = await import(
+        './cli/handlers/agentsTui.js'
+      )
+      await agentsTuiOrPrinterHandler({
+        ...options,
+        allowDangerouslySkipPermissions:
+          options.allowYolo === true ||
+          options.allowDangerouslySkipPermissions === true,
+        dangerouslySkipPermissions:
+          options.yolo === true ||
+          options.dangerouslySkipPermissions === true,
+      })
+      process.exit(process.exitCode ?? 0)
+    });
   program.command('workflows').description('List workflow runs recorded for this session').option('--json', 'Print workflow runs as a JSON array.').option('--session-id <uuid>', 'Read workflow runs for a specific session ID.').action(async (options: {
     json?: boolean;
     sessionId?: string;
@@ -4536,7 +4674,7 @@ async function run(): Promise<CommanderCommand> {
     // Skip when mossen.ui.autoModeConfig.enabled === 'disabled' (circuit breaker).
     // Reads from disk cache because dynamic config is not initialized at registration time.
     if (getAutoModeEnabledStateIfCached() !== 'disabled') {
-      const autoModeCmd = program.command('auto-mode').description('Inspect auto mode classifier configuration');
+      const autoModeCmd = program.command('auto-mode').description('Inspect Approve for me classifier configuration');
       autoModeCmd.command('defaults').description('Print the default auto mode environment, allow, and deny rules as JSON').action(async () => {
         const {
           autoModeDefaultsHandler

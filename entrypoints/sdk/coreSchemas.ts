@@ -8,6 +8,10 @@
  */
 
 import { z } from 'zod/v4'
+import {
+  normalizePermissionModeInput,
+  PERMISSION_MODES,
+} from '../../types/permissions.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 
 // ============================================================================
@@ -347,14 +351,21 @@ export const PermissionResultSchema = lazySchema(() =>
 
 export const PermissionModeSchema = lazySchema(() =>
   z
-    .enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk'])
+    .preprocess(
+      value =>
+        typeof value === 'string'
+          ? (normalizePermissionModeInput(value) ?? value)
+          : value,
+      z.enum(PERMISSION_MODES),
+    )
     .describe(
       'Permission mode for controlling how tool executions are handled. ' +
-        "'default' - Standard behavior, prompts for dangerous operations. " +
-        "'acceptEdits' - Auto-accept file edit operations. " +
-        "'bypassPermissions' - Bypass all permission checks (requires allowDangerouslySkipPermissions). " +
+        "'askForApproval' - Standard behavior, prompts for dangerous operations. " +
+        "'autoEdit' - Auto-accept file edit operations. " +
+        "'yolo' - Bypass all permission checks (requires allowDangerouslySkipPermissions). " +
         "'plan' - Planning mode, no actual tool execution. " +
-        "'dontAsk' - Don't prompt for permissions, deny if not pre-approved.",
+        "'dontAsk' - Don't prompt for permissions, deny if not pre-approved. " +
+        'Legacy aliases default, acceptEdits, and bypassPermissions are accepted.',
     ),
 )
 

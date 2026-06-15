@@ -10,6 +10,7 @@ import { isInternalOperatorMode } from '../internalUserMode.js'
 import { lazySchema } from '../lazySchema.js'
 import {
   EXTERNAL_PERMISSION_MODES,
+  normalizePermissionModeInput,
   PERMISSION_MODES,
 } from '../permissions/PermissionMode.js'
 import { MarketplaceSourceSchema } from '../plugins/schemas.js'
@@ -68,10 +69,16 @@ export const PermissionsSchema = lazySchema(() =>
           'List of permission rules that should always prompt for confirmation',
         ),
       defaultMode: z
-        .enum(
-          feature('TRANSCRIPT_CLASSIFIER')
-            ? PERMISSION_MODES
-            : EXTERNAL_PERMISSION_MODES,
+        .preprocess(
+          value =>
+            typeof value === 'string'
+              ? (normalizePermissionModeInput(value) ?? value)
+              : value,
+          z.enum(
+            feature('TRANSCRIPT_CLASSIFIER')
+              ? PERMISSION_MODES
+              : EXTERNAL_PERMISSION_MODES,
+          ),
         )
         .optional()
         .describe(
@@ -1057,33 +1064,31 @@ export const SettingsSchema = lazySchema(() =>
       skipDangerousModePermissionPrompt: z
         .boolean()
         .optional()
-        .describe(
-          'Whether the user has accepted the bypass permissions mode dialog',
-        ),
+        .describe('Whether the user has accepted the YOLO mode dialog'),
       ...(feature('TRANSCRIPT_CLASSIFIER')
         ? {
             skipAutoPermissionPrompt: z
               .boolean()
               .optional()
               .describe(
-                'Whether the user has accepted the auto mode opt-in dialog',
+                'Whether the user has accepted the Approve for me opt-in dialog',
               ),
             useAutoModeDuringPlan: z
               .boolean()
               .optional()
               .describe(
-                'Whether plan mode uses auto mode semantics when auto mode is available (default: true)',
+                'Whether plan mode uses Approve for me semantics when available (default: true)',
               ),
             autoMode: z
               .object({
                 allow: z
                   .array(z.string())
                   .optional()
-                  .describe('Rules for the auto mode classifier allow section'),
+                  .describe('Rules for the Approve for me classifier allow section'),
                 soft_deny: z
                   .array(z.string())
                   .optional()
-                  .describe('Rules for the auto mode classifier deny section'),
+                  .describe('Rules for the Approve for me classifier deny section'),
                 ...(isInternalOperatorMode()
                   ? {
                       // Back-compat alias for internal operators; external users use soft_deny
@@ -1094,17 +1099,17 @@ export const SettingsSchema = lazySchema(() =>
                   .array(z.string())
                   .optional()
                   .describe(
-                    'Entries for the auto mode classifier environment section',
+                    'Entries for the Approve for me classifier environment section',
                   ),
               })
               .optional()
-              .describe('Auto mode classifier prompt customization'),
+              .describe('Approve for me classifier prompt customization'),
           }
         : {}),
       disableAutoMode: z
         .enum(['disable'])
         .optional()
-        .describe('Disable auto mode'),
+        .describe('Disable Approve for me'),
       sshConfigs: z
         .array(
           z.object({

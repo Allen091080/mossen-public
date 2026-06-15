@@ -102,8 +102,8 @@ export function UserToolSuccessMessage({
         {feature('TRANSCRIPT_CLASSIFIER') ? yoloReason && <MessageResponse height={1}>
                 <Text dimColor>
                   {getLocalizedText({
-                    en: 'Allowed by auto mode classifier',
-                    zh: '已被自动模式分类器放行',
+                    en: 'Allowed by Approve for me classifier',
+                    zh: '已被自动审批分类器放行',
                   })}
                 </Text>
               </MessageResponse> : null}

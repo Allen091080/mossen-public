@@ -222,7 +222,7 @@ export function ExitPlanModePermissionRequest({
     }
   }, [showSaveMessage]);
 
-  // Handle the chat external-editor shortcut for plan edits, Shift+Tab for auto-accept edits.
+  // Handle the chat external-editor shortcut for plan edits, Shift+Tab for Auto Edit.
   const handleKeyDown = (e: KeyboardEvent): void => {
     if (e.ctrl && e.key === 'g') {
       e.preventDefault();
@@ -262,7 +262,7 @@ export function ExitPlanModePermissionRequest({
       return;
     }
 
-    // Shift+Tab immediately selects "auto-accept edits"
+    // Shift+Tab immediately selects Auto Edit.
     if (e.shift && e.key === 'tab') {
       e.preventDefault();
       void handleResponse(showClearContext ? 'yes-accept-edits' : 'yes-accept-edits-keep-context');
@@ -664,55 +664,55 @@ export function buildPlanApprovalOptions({
   if (showClearContext) {
     if (feature('TRANSCRIPT_CLASSIFIER') && isAutoModeAvailable) {
       options.push({
-        label: `Yes, clear context${usedLabel} and use auto mode`,
+        label: `Yes, clear context${usedLabel} and use Approve for me`,
         value: 'yes-auto-clear-context'
       });
     } else if (isBypassPermissionsModeAvailable) {
       options.push({
-        label: `Yes, clear context${usedLabel} and bypass permissions`,
+        label: `Yes, clear context${usedLabel} and use YOLO mode`,
         value: 'yes-bypass-permissions'
       });
-    } else {
-      options.push({
-        label: `Yes, clear context${usedLabel} and auto-accept edits`,
-        value: 'yes-accept-edits'
-      });
-    }
+		} else {
+			options.push({
+				label: `Yes, clear context${usedLabel} and use Auto Edit`,
+				value: 'yes-accept-edits'
+			});
+		}
   }
 
   // Slot 2: keep-context with elevated mode (same priority: auto > bypass > edits).
   if (feature('TRANSCRIPT_CLASSIFIER') && isAutoModeAvailable) {
     options.push({
       label: getLocalizedText({
-        en: 'Yes, and use auto mode',
-        zh: '是，并使用自动模式',
+        en: 'Yes, and use Approve for me',
+        zh: '是，并使用自动审批',
       }),
       value: 'yes-resume-auto-mode'
     });
   } else if (isBypassPermissionsModeAvailable) {
     options.push({
       label: getLocalizedText({
-        en: 'Yes, and bypass permissions',
-        zh: '是，并绕过权限',
+        en: 'Yes, and use YOLO mode',
+        zh: '是，并使用 YOLO 模式',
       }),
       value: 'yes-accept-edits-keep-context'
     });
-  } else {
-    options.push({
-      label: getLocalizedText({
-        en: 'Yes, auto-accept edits',
-        zh: '是，自动接受编辑',
-      }),
-      value: 'yes-accept-edits-keep-context'
-    });
-  }
-  options.push({
-    label: getLocalizedText({
-      en: 'Yes, manually approve edits',
-      zh: '是，手动批准编辑',
-    }),
-    value: 'yes-default-keep-context'
-  });
+	} else {
+		options.push({
+			label: getLocalizedText({
+				en: 'Yes, use Auto Edit',
+				zh: '是，使用自动编辑',
+			}),
+			value: 'yes-accept-edits-keep-context'
+		});
+	}
+	options.push({
+		label: getLocalizedText({
+			en: 'Yes, ask for approval',
+			zh: '是，请求确认',
+		}),
+		value: 'yes-default-keep-context'
+	});
   options.push({
     type: 'input',
     label: getLocalizedText({

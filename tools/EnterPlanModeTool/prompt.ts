@@ -61,7 +61,7 @@ Only skip EnterPlanMode for simple tasks:
 - Adding a single function with clear requirements
 - Tasks where the user has given very specific, detailed instructions
 - Pure research/exploration tasks (use the Agent tool with explore agent instead)
-- When the user has enabled bypass permissions or explicitly told you to continue/implement, do not switch them into plan mode; start working and ask a targeted question only if truly blocked.
+- When the user has enabled YOLO mode or explicitly told you to continue/implement, do not switch them into plan mode; start working and ask a targeted question only if truly blocked.
 
 ${whatHappens}## Examples
 
@@ -94,7 +94,7 @@ User: "What files handle routing?"
 ## Important Notes
 
 - This tool REQUIRES user approval - they must consent to entering plan mode
-- Never use this tool to override bypass permissions mode. Bypass means the user wants implementation to continue without a planning gate.
+- Never use this tool to override YOLO mode. YOLO means the user wants implementation to continue without a planning gate.
 - If unsure whether to use it, err on the side of planning - it's better to get alignment upfront than to redo work
 - Users appreciate being consulted before significant changes are made to their codebase
 `
@@ -134,7 +134,7 @@ Skip plan mode when you can reasonably infer the right approach:
 - Bug fixes where the fix is clear once you understand the bug
 - Research/exploration tasks (use the Agent tool instead)
 - The user says something like "can we work on X" or "let's do X" — just get started
-- The user has enabled bypass permissions or explicitly told you to continue/implement — do not switch them into plan mode.
+- The user has enabled YOLO mode or explicitly told you to continue/implement — do not switch them into plan mode.
 
 When in doubt, prefer starting work and using ${ASK_USER_QUESTION_TOOL_NAME} for specific questions over entering a full planning phase.
 
@@ -163,7 +163,7 @@ User: "Fix the typo in the README"
 ## Important Notes
 
 - This tool REQUIRES user approval - they must consent to entering plan mode
-- Never use this tool to override bypass permissions mode. Bypass means the user wants implementation to continue without a planning gate.
+- Never use this tool to override YOLO mode. YOLO means the user wants implementation to continue without a planning gate.
 `
 }
 

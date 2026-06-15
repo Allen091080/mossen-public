@@ -53,6 +53,8 @@ export type AgentsHandlerOptions = {
   pluginDir?: string | string[]
   strictMcpConfig?: boolean
   fallbackModel?: string
+  allowYolo?: boolean
+  yolo?: boolean
   allowDangerouslySkipPermissions?: boolean
   dangerouslySkipPermissions?: boolean
 }
@@ -133,11 +135,11 @@ function formatDispatchDefaults(options: AgentsHandlerOptions): string | null {
   if (mcpCount > 0) parts.push(`mcp=${mcpCount}`)
   const pluginCount = optionCount(options.pluginDir)
   if (pluginCount > 0) parts.push(`plugins=${pluginCount}`)
-  if (options.dangerouslySkipPermissions) {
+  if (options.yolo || options.dangerouslySkipPermissions) {
     parts.push(
       getLocalizedText({
-        en: 'skip permissions',
-        zh: '跳过权限',
+        en: 'YOLO mode',
+        zh: 'YOLO 模式',
       }),
     )
   }
@@ -164,8 +166,10 @@ function getDispatchDefaults(
     strictMcpConfig: options.strictMcpConfig === true,
     fallbackModel: options.fallbackModel ?? null,
     allowDangerouslySkipPermissions:
+      options.allowYolo === true ||
       options.allowDangerouslySkipPermissions === true,
-    dangerouslySkipPermissions: options.dangerouslySkipPermissions === true,
+    dangerouslySkipPermissions:
+      options.yolo === true || options.dangerouslySkipPermissions === true,
   }
 }
 

@@ -322,7 +322,7 @@ export const STRINGS_EN = {
   'ui.agentView.inputPlaceholder': 'describe a task for a new session',
   'ui.agentView.rootBackHint': 'Already at the Agent View dashboard. Space opens the preview card, r replies when input is needed, Enter/→ attaches to the live terminal. Type /exit to close.',
   'ui.agentView.dispatchDefaults': 'dispatch defaults',
-  'ui.agentView.dispatchDefaultsSkipPermissions': 'skip permissions',
+  'ui.agentView.dispatchDefaultsSkipPermissions': 'YOLO mode',
   'ui.agentView.lastRefresh': 'last refresh',
   'ui.agentView.nextStep': 'next',
   'ui.agentView.nextEmpty': 'Type a task to start a background job; use /agents library for agent definitions.',

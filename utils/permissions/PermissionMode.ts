@@ -6,7 +6,11 @@ import { getUserType } from '../userType.js'
 // Types extracted to src/types/permissions.ts to break import cycles
 import {
   EXTERNAL_PERMISSION_MODES,
+  EXTERNAL_PERMISSION_MODE_INPUTS,
   type ExternalPermissionMode,
+  normalizeExternalPermissionModeInput,
+  normalizePermissionModeInput,
+  PERMISSION_MODE_INPUTS,
   PERMISSION_MODES,
   type PermissionMode,
 } from '../../types/permissions.js'
@@ -15,14 +19,32 @@ import { lazySchema } from '../lazySchema.js'
 // Re-export for backwards compatibility
 export {
   EXTERNAL_PERMISSION_MODES,
+  EXTERNAL_PERMISSION_MODE_INPUTS,
+  normalizeExternalPermissionModeInput,
+  normalizePermissionModeInput,
+  PERMISSION_MODE_INPUTS,
   PERMISSION_MODES,
   type ExternalPermissionMode,
   type PermissionMode,
 }
 
-export const permissionModeSchema = lazySchema(() => z.enum(PERMISSION_MODES))
+export const permissionModeSchema = lazySchema(() =>
+  z.preprocess(
+    value =>
+      typeof value === 'string'
+        ? (normalizePermissionModeInput(value) ?? value)
+        : value,
+    z.enum(PERMISSION_MODES),
+  ),
+)
 export const externalPermissionModeSchema = lazySchema(() =>
-  z.enum(EXTERNAL_PERMISSION_MODES),
+  z.preprocess(
+    value =>
+      typeof value === 'string'
+        ? (normalizeExternalPermissionModeInput(value) ?? value)
+        : value,
+    z.enum(EXTERNAL_PERMISSION_MODES),
+  ),
 )
 
 type ModeColorKey =
@@ -45,8 +67,8 @@ const PERMISSION_MODE_CONFIG: Partial<
   Record<PermissionMode, PermissionModeConfig>
 > = {
   default: {
-    title: 'Default',
-    shortTitle: 'Default',
+    title: 'Ask for approval',
+    shortTitle: 'Ask',
     symbol: '',
     color: 'text',
     external: 'default',
@@ -59,15 +81,15 @@ const PERMISSION_MODE_CONFIG: Partial<
     external: 'plan',
   },
   acceptEdits: {
-    title: 'Accept edits',
-    shortTitle: 'Accept',
+    title: 'Auto Edit',
+    shortTitle: 'Auto Edit',
     symbol: '⏵⏵',
     color: 'autoAccept',
     external: 'acceptEdits',
   },
   bypassPermissions: {
-    title: 'Bypass Permissions',
-    shortTitle: 'Bypass',
+    title: 'YOLO Mode',
+    shortTitle: 'YOLO',
     symbol: '⏵⏵',
     color: 'error',
     external: 'bypassPermissions',
@@ -82,8 +104,8 @@ const PERMISSION_MODE_CONFIG: Partial<
   ...(feature('TRANSCRIPT_CLASSIFIER')
     ? {
         auto: {
-          title: 'Auto mode',
-          shortTitle: 'Auto',
+          title: 'Approve for me',
+          shortTitle: 'Approve',
           symbol: '⏵⏵',
           color: 'warning' as ModeColorKey,
           external: 'default' as ExternalPermissionMode,
@@ -117,26 +139,41 @@ export function toExternalPermissionMode(
 }
 
 export function permissionModeFromString(str: string): PermissionMode {
-  return (PERMISSION_MODES as readonly string[]).includes(str)
-    ? (str as PermissionMode)
-    : 'default'
+  return normalizePermissionModeInput(str) ?? 'default'
+}
+
+export function permissionModeProtocolName(mode: PermissionMode): string {
+  switch (mode) {
+    case 'default':
+      return 'askForApproval'
+    case 'acceptEdits':
+      return 'autoEdit'
+    case 'bypassPermissions':
+      return 'yolo'
+    case 'auto':
+      return 'approveForMe'
+    case 'bubble':
+      return 'delegatePrompt'
+    default:
+      return mode
+  }
 }
 
 export function permissionModeTitle(mode: PermissionMode): string {
   const title = getModeConfig(mode).title
   switch (mode) {
     case 'default':
-      return getLocalizedText({ en: title, zh: '默认模式' })
+      return getLocalizedText({ en: title, zh: '请求确认' })
     case 'plan':
       return getLocalizedText({ en: title, zh: '规划模式' })
     case 'acceptEdits':
-      return getLocalizedText({ en: title, zh: '接受修改' })
+      return getLocalizedText({ en: title, zh: '自动编辑' })
     case 'bypassPermissions':
-      return getLocalizedText({ en: title, zh: '跳过权限' })
+      return getLocalizedText({ en: title, zh: 'YOLO 模式' })
     case 'dontAsk':
       return getLocalizedText({ en: title, zh: '不再询问' })
     case 'auto':
-      return getLocalizedText({ en: title, zh: '自动模式' })
+      return getLocalizedText({ en: title, zh: '自动审批' })
     default:
       return title
   }
@@ -150,17 +187,17 @@ export function permissionModeShortTitle(mode: PermissionMode): string {
   const shortTitle = getModeConfig(mode).shortTitle
   switch (mode) {
     case 'default':
-      return getLocalizedText({ en: shortTitle, zh: '默认' })
+      return getLocalizedText({ en: shortTitle, zh: '确认' })
     case 'plan':
       return getLocalizedText({ en: shortTitle, zh: '规划' })
     case 'acceptEdits':
-      return getLocalizedText({ en: shortTitle, zh: '接受' })
+      return getLocalizedText({ en: shortTitle, zh: '编辑' })
     case 'bypassPermissions':
-      return getLocalizedText({ en: shortTitle, zh: '跳过' })
+      return getLocalizedText({ en: shortTitle, zh: 'YOLO' })
     case 'dontAsk':
       return getLocalizedText({ en: shortTitle, zh: '免问' })
     case 'auto':
-      return getLocalizedText({ en: shortTitle, zh: '自动' })
+      return getLocalizedText({ en: shortTitle, zh: '审批' })
     default:
       return shortTitle
   }
@@ -177,12 +214,12 @@ export function getModeColor(mode: PermissionMode): ModeColorKey {
 /**
  * P1-6 — 权限模式 vs 执行模式语义分离的 UI 提示。
  *
- * 当前 schema 把"权限策略"和"执行策略"塞在同一个枚举里，导致用户报：
- * "明明是 bypass on，为什么自己进入 plan mode" — 实际是 mode 字段从
- * bypassPermissions 跳到 plan，但 UI 只显示"plan 已开启"看不出语义差。
+	 * 当前 schema 把"权限策略"和"执行策略"塞在同一个枚举里，导致用户报：
+	 * "明明是 YOLO on，为什么自己进入 plan mode" — 实际是 mode 字段从
+	 * YOLO 跳到 plan，但 UI 只显示"plan 已开启"看不出语义差。
  *
  * 这个 helper 给每个 mode 标注它属于哪类：
- * - **权限**: default / acceptEdits / bypassPermissions / dontAsk
+	 * - **权限**: askForApproval / autoEdit / yolo / dontAsk
  *   控制"工具调用前是否要用户确认"
  * - **执行**: plan
  *   控制"agent 是计划还是直接执行"

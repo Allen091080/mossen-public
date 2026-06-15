@@ -50,9 +50,9 @@ export function buildInheritedCliFlags(options?: {
     permissionMode === 'bypassPermissions' ||
     getSessionBypassPermissionsMode()
   ) {
-    flags.push('--dangerously-skip-permissions')
+    flags.push('--yolo')
   } else if (permissionMode === 'acceptEdits') {
-    flags.push('--permission-mode acceptEdits')
+    flags.push('--permission-mode autoEdit')
   }
 
   // Propagate --model if explicitly set via CLI

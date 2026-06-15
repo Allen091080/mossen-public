@@ -81,10 +81,10 @@ export const EnterPlanModeTool: Tool<InputSchema, Output> = buildTool({
       return {
         behavior: 'deny',
         message:
-          'The user has enabled bypass permissions, so do not enter plan mode. Continue implementing unless the user explicitly asks for plan mode.',
+          'The user has enabled YOLO mode, so do not enter plan mode. Continue implementing unless the user explicitly asks for plan mode.',
         decisionReason: {
           type: 'other',
-          reason: 'bypass permissions mode should not be downgraded by EnterPlanMode',
+          reason: 'YOLO mode should not be downgraded by EnterPlanMode',
         },
       }
     }
@@ -121,7 +121,7 @@ export const EnterPlanModeTool: Tool<InputSchema, Output> = buildTool({
       return {
         data: {
           message:
-            'Bypass permissions mode is active, so plan mode was not entered. Continue implementing unless the user explicitly asks for plan mode.',
+            'YOLO mode is active, so plan mode was not entered. Continue implementing unless the user explicitly asks for plan mode.',
         },
       }
     }

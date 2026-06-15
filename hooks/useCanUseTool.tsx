@@ -96,7 +96,7 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
                 toolUseContext.addNotification?.({
                   key: "auto-mode-denied",
                   priority: "immediate",
-                  jsx: <><Text color="error">{tool.userFacingName(input).toLowerCase()} denied by auto mode</Text><Text dimColor={true}> · /permissions</Text></>
+                  jsx: <><Text color="error">{tool.userFacingName(input).toLowerCase()} denied by Approve for me</Text><Text dimColor={true}> · /permissions</Text></>
                 });
               }
               resolve(result);

@@ -966,7 +966,7 @@ export function getAssistantMessageFromError(
     error.message.includes('mossen-beta')
   ) {
     return createAssistantAPIErrorMessage({
-      content: 'Auto mode is unavailable for your plan',
+      content: 'Approve for me is unavailable for your plan',
       error: 'invalid_request',
     })
   }

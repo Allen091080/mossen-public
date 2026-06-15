@@ -96,8 +96,10 @@ function normalizeAgentViewDispatchDefaults(
     strictMcpConfig: options.strictMcpConfig === true,
     fallbackModel: options.fallbackModel ?? null,
     allowDangerouslySkipPermissions:
+      options.allowYolo === true ||
       options.allowDangerouslySkipPermissions === true,
-    dangerouslySkipPermissions: options.dangerouslySkipPermissions === true,
+    dangerouslySkipPermissions:
+      options.yolo === true || options.dangerouslySkipPermissions === true,
   }
 }
 

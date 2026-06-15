@@ -541,12 +541,12 @@ const externalTips: Tip[] = [
     content: async () =>
       isInternalOperatorMode()
         ? getLocalizedText({
-            en: `Hit ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} to cycle between default mode and auto mode`,
-            zh: `按 ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} 可在默认模式和自动模式之间切换`,
+            en: `Hit ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} to cycle between Ask for approval and Approve for me`,
+            zh: `按 ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} 可在请求确认和自动审批之间切换`,
           })
         : getLocalizedText({
-            en: `Hit ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} to cycle between default mode, auto-accept edit mode, and plan mode`,
-            zh: `按 ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} 可在默认模式、自动接受编辑模式和计划模式之间切换`,
+            en: `Hit ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} to cycle between Ask for approval, Auto Edit, and Plan Mode`,
+            zh: `按 ${getShortcutDisplay('chat:cycleMode', 'Chat', 'shift+tab')} 可在请求确认、自动编辑和规划模式之间切换`,
           }),
     cooldownSessions: 10,
     isRelevant: async () => true,

@@ -333,7 +333,7 @@ export async function setup(
   // session-file-access analytics + team memory watcher. These are background
   // bookkeeping for commit attribution + usage metrics — scripted calls don't
   // commit code, and the 49ms attribution hook stat check (measured) is pure
-  // overhead. NOT an early-return: the --dangerously-skip-permissions safety
+  // overhead. NOT an early-return: the --yolo safety
   // gate, startup beacon, and apiKeyHelper prefetch below must still run.
   if (!isBareMode()) {
     if (isInternalOperatorMode()) {
@@ -410,7 +410,7 @@ export async function setup(
     ) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.error(
-        `--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons`,
+        `--yolo cannot be used with root/sudo privileges for security reasons`,
       )
       process.exit(1)
     }
@@ -436,7 +436,7 @@ export async function setup(
       if (!isSandboxed || hasInternet) {
         // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.error(
-          `--dangerously-skip-permissions can only be used in Docker/sandbox containers with no internet access but got Docker: ${isDocker}, Bubblewrap: ${isBubblewrap}, IS_SANDBOX: ${isSandbox}, hasInternet: ${hasInternet}`,
+          `--yolo can only be used in Docker/sandbox containers with no internet access but got Docker: ${isDocker}, Bubblewrap: ${isBubblewrap}, IS_SANDBOX: ${isSandbox}, hasInternet: ${hasInternet}`,
         )
         process.exit(1)
       }

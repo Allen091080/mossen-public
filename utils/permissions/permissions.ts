@@ -674,7 +674,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         clearClassifierChecking(toolUseID)
       }
 
-      // Notify ants when classifier error dumped prompts (will be in /share)
+      // Notify internal operators when classifier error dumped prompts (will be in /share)
       if (
         isInternalOperatorMode() &&
         classifierResult.errorDumpPath &&
@@ -682,7 +682,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
       ) {
         context.addNotification({
           key: 'auto-mode-error-dump',
-          text: `Auto mode classifier error — prompts dumped to ${classifierResult.errorDumpPath} (included in /share)`,
+          text: `Approve for me classifier error — prompts dumped to ${classifierResult.errorDumpPath} (included in /share)`,
           priority: 'immediate',
           color: 'error',
         })
@@ -797,11 +797,11 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
             // Permanent condition (transcript only grows) — deny-retry-deny
             // wastes tokens without ever hitting the denial-limit abort.
             throw new AbortError(
-              'Agent aborted: auto mode classifier transcript exceeded context window in headless mode',
+              'Agent aborted: Approve for me classifier transcript exceeded context window in headless mode',
             )
           }
           logForDebugging(
-            'Auto mode classifier transcript too long, falling back to normal permission handling',
+            'Approve for me classifier transcript too long, falling back to normal permission handling',
             { level: 'warn' },
           )
           return {
@@ -809,7 +809,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
             decisionReason: {
               type: 'other',
               reason:
-                'Auto mode classifier transcript exceeded context window — falling back to manual approval',
+                'Approve for me classifier transcript exceeded context window — falling back to manual approval',
             },
           }
         }
@@ -824,7 +824,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
             )
           ) {
             logForDebugging(
-              'Auto mode classifier unavailable, denying with retry guidance (fail closed)',
+              'Approve for me classifier unavailable, denying with retry guidance (fail closed)',
               { level: 'warn' },
             )
             return {
@@ -842,7 +842,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
           }
           // Fail open: fall back to normal permission handling
           logForDebugging(
-            'Auto mode classifier unavailable, falling back to normal permission handling (fail open)',
+            'Approve for me classifier unavailable, falling back to normal permission handling (fail open)',
             { level: 'warn' },
           )
           return result
@@ -853,7 +853,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         persistDenialState(context, newDenialState)
 
         logForDebugging(
-          `Auto mode classifier blocked action: ${classifierResult.reason}`,
+          `Approve for me classifier blocked action: ${classifierResult.reason}`,
           { level: 'warn' },
         )
 

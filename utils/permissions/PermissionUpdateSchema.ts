@@ -39,8 +39,9 @@ export const permissionUpdateDestinationSchema = lazySchema(() =>
   ]),
 )
 
-export const permissionUpdateSchema = lazySchema(() =>
-  z.discriminatedUnion('type', [
+export const permissionUpdateSchema = lazySchema(
+  (): z.ZodType<PermissionUpdate> =>
+    z.discriminatedUnion('type', [
     z.object({
       type: z.literal('addRules'),
       rules: z.array(permissionRuleValueSchema()),
@@ -74,5 +75,5 @@ export const permissionUpdateSchema = lazySchema(() =>
       directories: z.array(z.string()),
       destination: permissionUpdateDestinationSchema(),
     }),
-  ]),
+    ]) as z.ZodType<PermissionUpdate>,
 )

@@ -38,7 +38,7 @@ import {
 } from './uiLanguage.js';
 import { getCurrentWorktreeObservabilitySnapshot, type WorktreeObservabilitySnapshot } from './worktree.js';
 import type { PermissionMode } from './permissions/PermissionMode.js';
-import { permissionModeTitle } from './permissions/PermissionMode.js';
+import { permissionModeProtocolName, permissionModeTitle } from './permissions/PermissionMode.js';
 import type { ThemeName } from './theme.js';
 import { tokenCountWithEstimation } from './tokens.js';
 export type Property = {
@@ -130,7 +130,7 @@ export function buildCurrentPermissionModeProperties(
   return [
     {
       label: 'Current permission mode',
-      value: `${permissionMode} · ${permissionModeTitle(permissionMode)}`,
+      value: `${permissionModeProtocolName(permissionMode)} · ${permissionModeTitle(permissionMode)}`,
     },
   ];
 }

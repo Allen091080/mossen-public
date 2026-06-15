@@ -36,10 +36,10 @@ export function getNextPermissionMode(
   toolPermissionContext: ToolPermissionContext,
   _teamContext?: { leadAgentId: string },
 ): PermissionMode {
-  switch (toolPermissionContext.mode) {
-    case 'default':
-      // Ants skip acceptEdits and plan — auto mode replaces them
-      if (getUserType() === 'internal') {
+	switch (toolPermissionContext.mode) {
+		case 'default':
+			// Internal operators skip Auto Edit and plan when Approve for me is available.
+			if (getUserType() === 'internal') {
         if (toolPermissionContext.isBypassPermissionsModeAvailable) {
           return 'bypassPermissions'
         }

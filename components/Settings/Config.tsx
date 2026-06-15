@@ -593,7 +593,7 @@ function ConfigImpl({
     }
   }, ...(feature('TRANSCRIPT_CLASSIFIER') && showAutoInDefaultModePicker ? [{
     id: 'useAutoModeDuringPlan',
-    label: getLocalizedText({ en: 'Use auto mode during plan', zh: '计划期间使用自动模式' }),
+    label: getLocalizedText({ en: 'Use Approve for me during plan', zh: '规划期间使用自动审批' }),
     value: (settingsData as {
       useAutoModeDuringPlan?: boolean;
     } | undefined)?.useAutoModeDuringPlan ?? true,
@@ -619,7 +619,7 @@ function ConfigImpl({
       });
       setChanges(prev_16 => ({
         ...prev_16,
-        'Use auto mode during plan': useAutoModeDuringPlan
+        'Use Approve for me during plan': useAutoModeDuringPlan
       }));
     }
   }] : []), {

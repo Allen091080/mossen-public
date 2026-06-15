@@ -17,7 +17,7 @@ import { Box, Text, useTerminalFocus } from '../../../ink.js';
 import { useKeybinding } from '../../../keybindings/useKeybinding.js';
 import { type AutoModeDenial, getAutoModeDenials } from '../../../utils/autoModeDenials.js';
 import { getLocalizedText } from '../../../utils/uiLanguage.js';
-import { permissionModeTitle } from '../../../utils/permissions/PermissionMode.js';
+import { permissionModeProtocolName, permissionModeTitle } from '../../../utils/permissions/PermissionMode.js';
 import type { PermissionBehavior, PermissionRule, PermissionRuleValue } from '../../../utils/permissions/PermissionRule.js';
 import { permissionRuleValueToString } from '../../../utils/permissions/permissionRuleParser.js';
 import { deletePermissionRule, getAllowRules, getAskRules, getDenyRules, permissionRuleSourceDisplayString } from '../../../utils/permissions/permissions.js';
@@ -1121,10 +1121,10 @@ export function PermissionRuleList(t0) {
   } else {
     t27 = $[88];
   }
-  const t28 = <Text>{getLocalizedText({
-      en: `${getProductAssistantName()} can read files in the workspace, and make edits when auto-accept edits is on.`,
-      zh: `${getProductAssistantName()} 可以读取工作区中的文件，并在自动接受编辑开启时进行修改。`,
-    })}</Text>;
+	const t28 = <Text>{getLocalizedText({
+			en: `${getProductAssistantName()} can read files in the workspace, and make edits when Auto Edit is on.`,
+			zh: `${getProductAssistantName()} 可以读取工作区中的文件，并在自动编辑开启时进行修改。`,
+		})}</Text>;
   let t29;
   if ($[90] !== onExit || $[91] !== toolPermissionContext) {
     t29 = <Tab id="workspace" title={getLocalizedText({
@@ -1199,7 +1199,7 @@ export function PermissionRuleList(t0) {
         {getLocalizedText({
           en: 'Current permission mode:',
           zh: '当前权限模式：',
-        })} {toolPermissionContext.mode} · {permissionModeTitle(toolPermissionContext.mode)}
+        })} {permissionModeProtocolName(toolPermissionContext.mode)} · {permissionModeTitle(toolPermissionContext.mode)}
       </Text>
       <Text dimColor={true}>
         {getLocalizedText({
