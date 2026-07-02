@@ -44,7 +44,10 @@ import {
   saveRunLog,
 } from './engine/journalStore.js'
 import { createWorkflowRuntime } from './engine/runtime.js'
-import { createWorkflowAgentRunner } from './engine/agentRunner.js'
+import {
+  createWorkflowAgentRunner,
+  DEFAULT_LOCAL_AGENT_STALL_TIMEOUT_MS,
+} from './engine/agentRunner.js'
 import {
   checkWorkflowScriptDeterminism,
   checkWorkflowScriptSyntax,
@@ -84,6 +87,9 @@ import {
 
 /** Default wall-clock ceiling for a whole workflow run (30 minutes). */
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
+const WORKFLOW_AGENT_STALL_TIMEOUT_ENV =
+  'MOSSEN_CODE_WORKFLOW_AGENT_STALL_TIMEOUT_MS'
+const MAX_WORKFLOW_AGENT_STALL_TIMEOUT_MS = 5 * 60 * 1000
 const MAX_NESTED_WORKFLOW_DEPTH = 1
 export const MAX_WORKFLOW_RESULT_LOG_LINES = 1000
 const MAX_WORKFLOW_NOTIFICATION_RESULT_CHARS = 20_000
@@ -206,6 +212,19 @@ type WorkflowAgentRunnerFactory = typeof createWorkflowAgentRunner
 
 let workflowAgentRunnerFactory: WorkflowAgentRunnerFactory =
   createWorkflowAgentRunner
+
+export function getWorkflowAgentStallTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env[WORKFLOW_AGENT_STALL_TIMEOUT_ENV]
+  if (!raw) return DEFAULT_LOCAL_AGENT_STALL_TIMEOUT_MS
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) return DEFAULT_LOCAL_AGENT_STALL_TIMEOUT_MS
+  return Math.min(
+    MAX_WORKFLOW_AGENT_STALL_TIMEOUT_MS,
+    Math.max(1, Math.floor(parsed)),
+  )
+}
 
 export function setWorkflowAgentRunnerFactoryForTests(
   factory: WorkflowAgentRunnerFactory | null,
@@ -448,8 +467,11 @@ function formatEvent(e: WorkflowProgressEvent): string | null {
       return `  … #${e.agentNumber} ${e.label}${e.phase ? ` [${e.phase}]` : ''} queued`
     case 'agent_start':
       return `  ↳ #${e.agentNumber} ${e.label}${e.phase ? ` [${e.phase}]` : ''} …`
-    case 'agent_end':
-      return `  ✓ #${e.agentNumber} ${e.label} (${e.status ?? (e.ok ? 'ok' : 'failed')}, ~${e.tokens} tok)`
+    case 'agent_end': {
+      const status = e.status ?? (e.ok ? 'ok' : 'failed')
+      const error = status === 'failed' && e.error ? `: ${e.error}` : ''
+      return `  ✓ #${e.agentNumber} ${e.label} (${status}, ~${e.tokens} tok)${error}`
+    }
     default:
       return null
   }
@@ -910,6 +932,7 @@ export const WorkflowTool = buildTool({
       transcriptDir,
       parentGoalId,
       abortController: runAbort,
+      localAgentStallTimeoutMs: getWorkflowAgentStallTimeoutMs(),
       registerAgentController: (
         agentNumber: number,
         controller: AbortController,
@@ -1084,6 +1107,7 @@ export const WorkflowTool = buildTool({
           tokensSpent: budget.spent(),
           failures: failures(),
           durationMs: durationMs(),
+          error: (err as Error).message,
         })
         const patch = {
           agentCount: agentCount(),

@@ -12,7 +12,10 @@ import {
 } from '../../services/config/facade.js'
 import {
   evaluateActiveSessionGoalAfterTurn,
+  getSessionGoalEvaluatorTimeoutMs,
+  hasCompletedWorkflowGoalEvidence,
   isGoalEvaluatorBackendUnavailableError,
+  runSessionGoalEvaluatorWithTimeout,
 } from '../sessionGoalEvaluator.js'
 
 const BACKEND_ENV_KEYS = [
@@ -54,6 +57,42 @@ async function withNoBackendConfigured(
 }
 
 describe('evaluateActiveSessionGoalAfterTurn', () => {
+  test('detects completed workflow evidence without failed workflow evidence', () => {
+    expect(
+      hasCompletedWorkflowGoalEvidence({
+        id: 'goal_1',
+        text: 'verify workflow completion',
+        recentEvidence: ['Workflow audit (wf_1) completed; result: passed'],
+        negativeEvidence: [],
+        blockerHistory: [],
+        createdAt: '2026-07-01T00:00:00.000Z',
+        updatedAt: '2026-07-01T00:00:00.000Z',
+        evaluatorModel: 'haiku',
+        turnBudget: 4,
+        turnCount: 1,
+        evaluationFailureCount: 0,
+        status: 'active',
+      }),
+    ).toBe(true)
+
+    expect(
+      hasCompletedWorkflowGoalEvidence({
+        id: 'goal_1',
+        text: 'verify workflow completion',
+        recentEvidence: ['Workflow audit (wf_1) completed; result: passed'],
+        negativeEvidence: ['Workflow audit (wf_2) ended failed: validator failed'],
+        blockerHistory: [],
+        createdAt: '2026-07-01T00:00:00.000Z',
+        updatedAt: '2026-07-01T00:00:00.000Z',
+        evaluatorModel: 'haiku',
+        turnBudget: 4,
+        turnCount: 1,
+        evaluationFailureCount: 0,
+        status: 'active',
+      }),
+    ).toBe(false)
+  })
+
   test('budget-limits before evaluator when the time budget is already exhausted', async () => {
     setSessionGoalState('stop before evaluator when time budget is exhausted', undefined, {
       maxDurationSec: 0,
@@ -174,5 +213,27 @@ describe('evaluateActiveSessionGoalAfterTurn', () => {
       ),
     ).toBe(true)
     expect(isGoalEvaluatorBackendUnavailableError(new Error('invalid JSON'))).toBe(false)
+  })
+
+  test('bounds evaluator calls with a wall-clock timeout', async () => {
+    await expect(
+      runSessionGoalEvaluatorWithTimeout(
+        () => new Promise(() => undefined),
+        new AbortController().signal,
+        { timeoutMs: 10 },
+      ),
+    ).rejects.toThrow('Goal evaluator timed out after 10ms.')
+  })
+
+  test('parses evaluator timeout overrides within the safety bounds', () => {
+    expect(getSessionGoalEvaluatorTimeoutMs({
+      MOSSEN_CODE_GOAL_EVALUATOR_TIMEOUT_MS: '25',
+    })).toBe(25)
+    expect(getSessionGoalEvaluatorTimeoutMs({
+      MOSSEN_CODE_GOAL_EVALUATOR_TIMEOUT_MS: '0',
+    })).toBe(1)
+    expect(getSessionGoalEvaluatorTimeoutMs({
+      MOSSEN_CODE_GOAL_EVALUATOR_TIMEOUT_MS: '999999999',
+    })).toBe(300000)
   })
 })

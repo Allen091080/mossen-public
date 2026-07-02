@@ -229,7 +229,8 @@ function progressLine(event: WorkflowProgressEvent): string | null {
     case 'agent_end': {
       const status =
         event.status ?? (event.ok ? 'completed' : 'failed')
-      return `agent #${event.agentNumber} ${status}: ${event.label} (${event.tokens} tokens)`
+      const error = status === 'failed' && event.error ? `: ${event.error}` : ''
+      return `agent #${event.agentNumber} ${status}: ${event.label} (${event.tokens} tokens)${error}`
     }
   }
 }

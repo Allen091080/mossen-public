@@ -24,13 +24,13 @@ import {
   snapshotOutputTokensForTurn,
 } from '../../../bootstrap/state.js'
 import type { AppState } from '../../../state/AppState.js'
-import type { PromptCommand } from '../../../types/command.js'
 import {
   getEmptyToolPermissionContext,
   type ToolUseContext,
 } from '../../../Tool.js'
 import {
   appendWorkflowResultLogLine,
+  getWorkflowAgentStallTimeoutMs,
   MAX_WORKFLOW_RESULT_LOG_LINES,
   setWorkflowAgentRunnerFactoryForTests,
   WorkflowTool,
@@ -51,6 +51,7 @@ import {
   getProjectWorkflowsDir,
   getUserWorkflowsDir,
   loadWorkflowCommandsFrom,
+  savedWorkflowToolInputForArgs,
   WORKFLOW_HOME_ENV,
 } from '../savedWorkflows.js'
 import { saveRun } from '../../../commands/workflows/saveWorkflow.js'
@@ -106,6 +107,27 @@ function toolUseContextWithWorkflowRules({
     }),
   } as unknown as ToolUseContext
 }
+
+describe('getWorkflowAgentStallTimeoutMs', () => {
+  it('uses the default, clamps invalid lows, and caps high env overrides', () => {
+    expect(getWorkflowAgentStallTimeoutMs({})).toBe(60_000)
+    expect(
+      getWorkflowAgentStallTimeoutMs({
+        MOSSEN_CODE_WORKFLOW_AGENT_STALL_TIMEOUT_MS: '0',
+      }),
+    ).toBe(1)
+    expect(
+      getWorkflowAgentStallTimeoutMs({
+        MOSSEN_CODE_WORKFLOW_AGENT_STALL_TIMEOUT_MS: '999999999',
+      }),
+    ).toBe(300_000)
+    expect(
+      getWorkflowAgentStallTimeoutMs({
+        MOSSEN_CODE_WORKFLOW_AGENT_STALL_TIMEOUT_MS: 'abc',
+      }),
+    ).toBe(60_000)
+  })
+})
 
 function workflowValidationContext(
   tasks: Record<string, unknown> = {},
@@ -2126,18 +2148,23 @@ return {
       const command = loadWorkflowCommandsFrom(root).find(
         current => current.name === 'Saved-command-chain',
       )
-      expect(command?.type).toBe('prompt')
-      const promptCommand = command as PromptCommand
+      expect(command?.type).toBe('local')
       expect(command?.kind).toBe('workflow')
-      expect(promptCommand.allowedTools).toEqual([WORKFLOW_TOOL_NAME])
-      const prompt = await promptCommand.getPromptForCommand(
-        '{"issues":[1024,1025],"urgent":true}',
-        toolUseContextWithWorkflowRules(),
-      )
-      const promptText = prompt.map(block => block.text).join('\n')
-      expect(promptText).toContain('"name": "Saved-command-chain"')
-      expect(promptText).toContain('"issues": [')
-      expect(promptText).toContain('"urgent": true')
+      expect((command as { supportsNonInteractive?: boolean }).supportsNonInteractive).toBe(true)
+      expect(
+        savedWorkflowToolInputForArgs(
+          {
+            name: 'Saved-command-chain',
+            commandName: 'Saved-command-chain',
+            description: 'Saved command chain',
+            scope: 'project',
+          },
+          '{"issues":[1024,1025],"urgent":true}',
+        ),
+      ).toEqual({
+        name: 'Saved-command-chain',
+        args: { issues: [1024, 1025], urgent: true },
+      })
 
       const result = await WorkflowTool.call!(
         {

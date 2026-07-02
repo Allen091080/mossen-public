@@ -64,6 +64,7 @@ export type WorkflowRunMeta = {
   failures?: string[]
   durationMs?: number
   result?: string
+  error?: string
 }
 
 /**

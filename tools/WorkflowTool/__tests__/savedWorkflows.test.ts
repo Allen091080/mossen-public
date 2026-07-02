@@ -17,6 +17,7 @@ import {
   loadWorkflowCommandsFromSources,
   resolveWorkflowFromSources,
   resolveSavedWorkflow,
+  savedWorkflowToolInputForArgs,
   getWorkflowCommands,
   getUserWorkflowsDir,
   inferWorkflowArgsValue,
@@ -34,7 +35,6 @@ import {
   createWorkflowRuntime,
   type RunOneAgent,
 } from '../engine/runtime.js'
-import { WORKFLOW_TOOL_NAME } from '../constants.js'
 import type { WorkflowProgressEvent } from '../engine/types.js'
 import { WORKFLOW_DISABLE_ENV } from '../../../utils/workflowAvailability.js'
 
@@ -144,15 +144,16 @@ describe('savedWorkflows loader (S3)', () => {
     ).toBe(true)
   })
 
-  test('a valid .js workflow becomes a prompt command named by its meta', () => {
+  test('a valid .js workflow becomes a direct local command named by its meta', () => {
     writeFileSync(join(wfDir, 'review.js'), META('review-pr', 'Review the PR'))
     const cmds = loadWorkflowCommandsFrom(root)
     const cmd = cmds.find(c => c.name === 'review-pr')
     expect(cmd).toBeDefined()
-    expect(cmd!.type).toBe('prompt')
+    expect(cmd!.type).toBe('local')
     expect(cmd!.description).toBe('Review the PR')
     expect((cmd as { loadedFrom?: string }).loadedFrom).toBe('managed')
     expect((cmd as { kind?: string }).kind).toBe('workflow')
+    expect((cmd as { supportsNonInteractive?: boolean }).supportsNonInteractive).toBe(true)
   })
 
   test('resolveSavedWorkflow finds a saved workflow by meta name', () => {
@@ -162,28 +163,19 @@ describe('savedWorkflows loader (S3)', () => {
     expect(resolved?.scriptPath).toBe(join(wfDir, 'child.js'))
   })
 
-  test('getPromptForCommand builds exact Workflow input by name with structured args', async () => {
+  test('saved workflow direct command builds exact Workflow input with structured args', () => {
     writeFileSync(join(wfDir, 'audit.js'), META('audit', 'Audit code'))
-    const cmds = loadWorkflowCommandsFrom(root)
-    const cmd = cmds.find(c => c.name === 'audit')
-    expect(cmd?.type).toBe('prompt')
-    expect((cmd as { allowedTools?: string[] }).allowedTools).toEqual([
-      WORKFLOW_TOOL_NAME,
-    ])
-    const getPrompt = (cmd as unknown as {
-      getPromptForCommand: (a: string) => Promise<Array<{ type: string; text: string }>>
-    }).getPromptForCommand
-    const blocks = await getPrompt('issues 1024, 1025, and 1030')
-    const text = blocks.map(b => b.text).join('')
-    expect(text).toContain('Workflow tool exactly once')
-    expect(text).toContain('"name": "audit"')
-    expect(text).toContain('"args": [\n    1024,\n    1025,\n    1030\n  ]')
-    expect(text).toContain('Inferred structured Workflow.args literal:')
-    expect(text).toContain('[1024,1025,1030]')
-    expect(text).toContain('real arrays, objects, numbers, booleans, or null')
-    expect(text).toContain('do not JSON-encode')
-    expect(text).toContain('issues 1024, 1025, and 1030')
-    expect(text).not.toContain('scriptPath=')
+    const workflow = getAllWorkflows(root).find(wf => wf.name === 'audit')
+    expect(workflow).toBeDefined()
+    expect(
+      savedWorkflowToolInputForArgs(
+        workflow!,
+        'issues 1024, 1025, and 1030',
+      ),
+    ).toEqual({
+      name: 'audit',
+      args: [1024, 1025, 1030],
+    })
   })
 
   test('inferWorkflowArgsValue preserves common structured saved-workflow inputs', () => {
@@ -211,20 +203,13 @@ describe('savedWorkflows loader (S3)', () => {
     expect(inferWorkflowArgsValue('   ')).toBeUndefined()
   })
 
-  test('getPromptForCommand omits args when caller provided no input', async () => {
+  test('saved workflow direct command omits args when caller provided no input', () => {
     writeFileSync(join(wfDir, 'noargs.js'), META('noargs', 'No args flow'))
-    const cmd = loadWorkflowCommandsFrom(root).find(c => c.name === 'noargs')
-    expect(cmd?.type).toBe('prompt')
-    const getPrompt = (cmd as unknown as {
-      getPromptForCommand: (a: string) => Promise<Array<{ type: string; text: string }>>
-    }).getPromptForCommand
-    const text = (await getPrompt('   ')).map(b => b.text).join('')
-
-    expect(text).toContain('"name": "noargs"')
-    expect(text).not.toContain('"args"')
-    expect(text).toContain('omit the args field')
-    expect(text).toContain('args as undefined')
-    expect(text).not.toContain('Caller arguments:')
+    const workflow = getAllWorkflows(root).find(wf => wf.name === 'noargs')
+    expect(workflow).toBeDefined()
+    expect(savedWorkflowToolInputForArgs(workflow!, '   ')).toEqual({
+      name: 'noargs',
+    })
   })
 
   test('a malformed workflow file is skipped, not fatal', () => {
@@ -310,9 +295,8 @@ describe('savedWorkflows loader (S3)', () => {
       c => c.name === 'shared-flow',
     )
     expect(commands).toHaveLength(1)
-    expect((commands[0] as { source?: string }).source).toBe(
-      'projectSettings',
-    )
+    expect((commands[0] as { loadedFrom?: string }).loadedFrom).toBe('managed')
+    expect((commands[0] as { kind?: string }).kind).toBe('workflow')
 
     expect(resolveWorkflowFromSources(root, 'shared-flow')?.scriptPath).toBe(
       projectPath,
@@ -404,19 +388,21 @@ describe('savedWorkflows loader (S3)', () => {
     const deepResearchCommand = loadWorkflowCommandsFromSources(root).find(
       c => c.name === 'deep-research',
     )
-    expect(deepResearchCommand?.type).toBe('prompt')
+    expect(deepResearchCommand?.type).toBe('local')
     expect((deepResearchCommand as { loadedFrom?: string }).loadedFrom).toBe(
       'bundled',
     )
-    expect((deepResearchCommand as { source?: string }).source).toBe('bundled')
+    expect((deepResearchCommand as { kind?: string }).kind).toBe('workflow')
     expect(isCommandEnabled(deepResearchCommand!)).toBe(true)
-    const getPrompt = (deepResearchCommand as unknown as {
-      getPromptForCommand: (a: string) => Promise<Array<{ type: string; text: string }>>
-    }).getPromptForCommand
-    const text = (await getPrompt('Node.js permissions')).map(b => b.text).join('')
-    expect(text).toContain('"name": "deep-research"')
-    expect(text).toContain('"args": "Node.js permissions"')
-    expect(text).toContain('Node.js permissions')
+    expect(
+      savedWorkflowToolInputForArgs(
+        resolveWorkflowFromSources(root, 'deep-research')!,
+        'Node.js permissions',
+      ),
+    ).toEqual({
+      name: 'deep-research',
+      args: 'Node.js permissions',
+    })
   })
 
   test('bundled deep-research executes claim voting and filters weak claims', async () => {
@@ -580,7 +566,8 @@ describe('savedWorkflows loader (S3)', () => {
       c => c.name === 'deep-research',
     )
     expect(commands).toHaveLength(1)
-    expect((commands[0] as { source?: string }).source).toBe('projectSettings')
+    expect((commands[0] as { loadedFrom?: string }).loadedFrom).toBe('managed')
+    expect((commands[0] as { kind?: string }).kind).toBe('workflow')
 
     expect(resolveWorkflowFromSources(root, 'deep-research')?.scriptPath).toBe(
       projectPath,

@@ -18,6 +18,7 @@ import {
   evaluateSessionGoalRuntimeAfterTurn,
   getSessionGoalPendingWorkReason,
   getSessionGoalTaskBudgetForRequest,
+  getSessionGoalTerminalNotificationEvidence,
   getSessionGoalTerminalWorkEvidence,
   getSessionGoalTerminalWorkNegativeEvidence,
 } from '../sessionGoalRuntime.js'
@@ -275,6 +276,35 @@ describe('getSessionGoalPendingWorkReason', () => {
     expect(getSessionGoalTerminalWorkEvidence({ workflow_1: workflow })).toEqual([
       'Workflow goal-verification (workflow_run_1) completed, 3 agent(s), 9 tool call(s), 1234 token(s); result: verification passed; report written to workflow report.md; artifact: /repo/.mossen/workflows/wf_goal/script.js',
     ])
+  })
+
+  test('summarizes completed workflow task notifications for goal evidence', () => {
+    const result = getSessionGoalTerminalNotificationEvidence([
+      {
+        type: 'user',
+        origin: { kind: 'task-notification' },
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: `<task-notification>
+<task-id>wf_1</task-id>
+<task-type>local_workflow</task-type>
+<output-file>/tmp/wf_1.output</output-file>
+<status>completed</status>
+<summary>Workflow "goal evidence" completed</summary>
+<result>{"summary":"checks passed"}</result>
+</task-notification>`,
+            },
+          ],
+        },
+      },
+    ])
+
+    expect(result.positive).toEqual([
+      'Workflow "goal evidence" completed; result: {"summary":"checks passed"}; artifact: /tmp/wf_1.output',
+    ])
+    expect(result.negative).toEqual([])
   })
 
   test('does not treat completed workflows with failures as positive evidence', () => {

@@ -57,6 +57,9 @@ const SUPERVISOR_INPUT_POLL_MS = 400
 // the mossen TUI finish its first render so the prompt characters land in
 // the input box (not in any pre-render trust dialog).
 const SUPERVISOR_INITIAL_PROMPT_DELAY_MS = 1500
+const DEFAULT_UNATTENDED_SUPERVISOR_MAX_RUNTIME_MS = 6 * 60 * 60_000
+const MAX_AGENT_SUPERVISOR_RUNTIME_MS = 7 * 24 * 60 * 60_000
+const SUPERVISOR_RUNTIME_KILL_GRACE_MS = 5_000
 
 // node-pty's onexit callback passes a POSIX signal integer (0 = clean exit).
 // The job state schema stores `signal` as a nullable display string. Map the
@@ -141,6 +144,55 @@ function createJobId(): AgentSupervisorJobId {
 function previewPrompt(prompt: string): string {
   const collapsed = prompt.replace(/\s+/g, ' ').trim()
   return collapsed.length <= 180 ? collapsed : `${collapsed.slice(0, 177)}...`
+}
+
+function parseSupervisorRuntimeMs(
+  value: string | undefined,
+  fallback: number,
+): number {
+  if (value === undefined) return fallback
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(
+    MAX_AGENT_SUPERVISOR_RUNTIME_MS,
+    Math.max(0, Math.floor(parsed)),
+  )
+}
+
+export function isAgentSupervisorRuntimeBounded(
+  state: Pick<
+    AgentSupervisorJobState,
+    | 'parentWorkflowId'
+    | 'parentGoalId'
+    | 'allowDangerouslySkipPermissions'
+    | 'dangerouslySkipPermissions'
+  >,
+): boolean {
+  return Boolean(
+    state.parentWorkflowId ||
+      state.parentGoalId ||
+      state.allowDangerouslySkipPermissions ||
+      state.dangerouslySkipPermissions,
+  )
+}
+
+export function getAgentSupervisorMaxRuntimeMs(
+  state: Pick<
+    AgentSupervisorJobState,
+    | 'parentWorkflowId'
+    | 'parentGoalId'
+    | 'allowDangerouslySkipPermissions'
+    | 'dangerouslySkipPermissions'
+  >,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const fallback = isAgentSupervisorRuntimeBounded(state)
+    ? DEFAULT_UNATTENDED_SUPERVISOR_MAX_RUNTIME_MS
+    : 0
+  return parseSupervisorRuntimeMs(
+    env.MOSSEN_CODE_AGENT_SUPERVISOR_MAX_RUNTIME_MS,
+    fallback,
+  )
 }
 
 function getFsErrorCode(error: unknown): string | null {
@@ -948,9 +1000,70 @@ async function runAgentSupervisorPtyWorker(
     // the attached PTY directly.
   }
 
+  let cleanupResolved = false
+  let runtimeLimitExceeded = false
+  let runtimeTimeoutTimer: ReturnType<typeof setTimeout> | null = null
+  let runtimeKillTimer: ReturnType<typeof setTimeout> | null = null
+  const clearRuntimeTimers = (): void => {
+    if (runtimeTimeoutTimer) clearTimeout(runtimeTimeoutTimer)
+    if (runtimeKillTimer) clearTimeout(runtimeKillTimer)
+    runtimeTimeoutTimer = null
+    runtimeKillTimer = null
+  }
+  const maxRuntimeMs = getAgentSupervisorMaxRuntimeMs(initialState)
+  if (maxRuntimeMs > 0) {
+    runtimeTimeoutTimer = setTimeout(() => {
+      void (async () => {
+        if (cleanupResolved || !pty.isAlive()) return
+        runtimeLimitExceeded = true
+        const ts = new Date().toISOString()
+        const detail = `Agent View supervisor exceeded maximum runtime (${maxRuntimeMs}ms); stopping job.`
+        try {
+          const seq = await getNextSupervisorJsonlSeq(paths.events)
+          await appendSupervisorJsonlLine(paths.events, {
+            ...buildSupervisorJsonlEnvelope({
+              seq,
+              kind: 'activity',
+              source: 'supervisor',
+              ts,
+            }),
+            detail,
+          })
+          await updateJob(jobId, current => ({
+            ...current,
+            updatedAt: ts,
+            summary: current.summary ?? detail,
+            counters: {
+              ...current.counters,
+              eventSeqHigh: Math.max(current.counters.eventSeqHigh, seq),
+            },
+            errors: [
+              ...current.errors,
+              {
+                ts,
+                source: 'runtime_limit',
+                message: detail,
+              },
+            ],
+          }))
+        } catch {
+          // Timeout enforcement must still kill the PTY even if diagnostics fail.
+        }
+        pty.kill('SIGHUP')
+        runtimeKillTimer = setTimeout(() => {
+          if (cleanupResolved || !pty.isAlive()) return
+          try {
+            pty.kill('SIGKILL')
+          } catch {
+            // PTY already gone.
+          }
+        }, SUPERVISOR_RUNTIME_KILL_GRACE_MS)
+      })()
+    }, maxRuntimeMs)
+  }
+
   // Poll input.jsonl + control.jsonl. New input.jsonl entries are typed
   // into the PTY; control.jsonl stop/shutdown kills it.
-  let cleanupResolved = false
   const pollTimer: ReturnType<typeof setInterval> = setInterval(() => {
     void (async () => {
       if (cleanupResolved) return
@@ -999,6 +1112,7 @@ async function runAgentSupervisorPtyWorker(
         if (cleanupResolved) return
         cleanupResolved = true
         clearInterval(pollTimer)
+        clearRuntimeTimers()
         process.off('SIGTERM', sigHandler)
         process.off('SIGINT', sigHandler)
         const exitedAt = new Date().toISOString()
@@ -1007,22 +1121,29 @@ async function runAgentSupervisorPtyWorker(
         const signalName = ptyExitSignalName(info.signal)
         const stopRequested = await readSupervisorStopRequest(paths).catch(() => false)
         const success = info.exitCode === 0 && signalName === null
-        const status: AgentSupervisorJobState['status'] = stopRequested
-          ? 'stopped'
-          : success
-            ? 'completed'
-            : 'failed'
+        const status: AgentSupervisorJobState['status'] = runtimeLimitExceeded
+          ? 'failed'
+          : stopRequested
+            ? 'stopped'
+            : success
+              ? 'completed'
+              : 'failed'
         const finalSummary =
           (await deriveAgentSupervisorRowSummary(jobId).catch(() => ({ summary: null }))).summary ??
-          (success
+          (runtimeLimitExceeded
             ? getLocalizedText({
-                en: 'Agent View session ended.',
-                zh: 'Agent View 会话结束。',
+                en: `Agent View session exceeded maximum runtime (${maxRuntimeMs}ms).`,
+                zh: `Agent View 会话超过最大运行时长 (${maxRuntimeMs}ms)。`,
               })
-            : getLocalizedText({
-                en: `Agent View session exited (code=${info.exitCode}, signal=${signalName ?? 'none'}).`,
-                zh: `Agent View 会话退出 (code=${info.exitCode}, signal=${signalName ?? '无'})。`,
-              }))
+            : success
+              ? getLocalizedText({
+                  en: 'Agent View session ended.',
+                  zh: 'Agent View 会话结束。',
+                })
+              : getLocalizedText({
+                  en: `Agent View session exited (code=${info.exitCode}, signal=${signalName ?? 'none'}).`,
+                  zh: `Agent View 会话退出 (code=${info.exitCode}, signal=${signalName ?? '无'})。`,
+                }))
         try {
           const exitedSeq = await getNextSupervisorJsonlSeq(paths.events)
           await appendSupervisorJsonlLine(paths.events, {

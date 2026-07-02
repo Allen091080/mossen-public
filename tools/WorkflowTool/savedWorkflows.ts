@@ -8,11 +8,10 @@
  * `/<name>` runs that workflow through the Workflow tool. This mirrors how
  * skills under `.mossen/skills` become commands.
  *
- * The command is a `prompt`-type command whose getPromptForCommand returns an
- * instruction telling the model to invoke the Workflow tool with the saved
- * script (passed by path so the engine reads + snapshots it). The model still
- * drives the actual tool call — this keeps saved workflows on the same
- * permission + opt-in path as any other Workflow invocation.
+ * Saved workflow commands are direct local commands: typing `/<name>` launches
+ * the workflow runtime itself instead of sending the model a prompt that asks
+ * it to call the Workflow tool. Permissions are still checked explicitly
+ * before launch.
  */
 
 import {
@@ -24,16 +23,22 @@ import {
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { feature } from 'bun:bundle'
-import type { Command } from '../../commands.js'
+import type {
+  Command,
+  LocalCommandResult,
+  LocalJSXCommandContext,
+} from '../../commands.js'
 import { getInlinePlugins } from '../../bootstrap/state.js'
 import type { LoadedPlugin, PluginManifest } from '../../types/plugin.js'
+import { createAssistantMessage } from '../../utils/messages.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isBareMode } from '../../utils/envUtils.js'
+import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
 import { loadAllPluginsCacheOnly } from '../../utils/plugins/pluginLoader.js'
 import { isWorkflowRuntimeEnabled } from '../../utils/workflowAvailability.js'
 import { loadBundledWorkflows } from './bundled/index.js'
-import { WORKFLOW_TOOL_NAME } from './constants.js'
+import { loadRunMeta, type WorkflowRunMeta } from './engine/journalStore.js'
 import { extractMeta } from './engine/meta.js'
 import { readWorkflowScriptFile } from './scriptFile.js'
 
@@ -45,6 +50,16 @@ const NUMBER_TOKEN_RE = /(?:^|[^\w.-])#?(\d+)(?=$|[^\w.-])/g
 const LIST_MARKER_RE =
   /\b(?:issues?|tickets?|prs?|pull requests?|items?|ids?|numbers?)\b/i
 export const WORKFLOW_HOME_ENV = 'MOSSEN_CODE_WORKFLOW_HOME'
+const DIRECT_COMMAND_WAIT_ENV = 'MOSSEN_CODE_WORKFLOW_DIRECT_COMMAND_WAIT_MS'
+const DIRECT_COMMAND_POLL_MS = 50
+const DIRECT_COMMAND_DEFAULT_WAIT_MS = 30 * 60 * 1000
+const DIRECT_COMMAND_MAX_WAIT_MS = 30 * 60 * 1000
+const TERMINAL_WORKFLOW_STATUSES = new Set([
+  'paused',
+  'completed',
+  'failed',
+  'killed',
+])
 
 function workflowHomeDir(): string {
   const configured = process.env[WORKFLOW_HOME_ENV]?.trim()
@@ -305,30 +320,178 @@ export function inferWorkflowArgsValue(args: string): unknown | undefined {
   )
 }
 
-function workflowArgsLiteral(value: unknown): string {
-  return JSON.stringify(value)
+type SavedWorkflowToolInput = {
+  name: string
+  args?: unknown
 }
 
-function workflowToolInputLiteral(wf: SavedWorkflow, args: unknown): string {
-  return JSON.stringify(
-    {
-      name: wf.commandName,
-      ...(args !== undefined ? { args } : {}),
-    },
-    null,
-    2,
+export function savedWorkflowToolInputForArgs(
+  wf: SavedWorkflowRef,
+  args: string,
+): SavedWorkflowToolInput {
+  const inferredArgs = inferWorkflowArgsValue(args.trim())
+  return {
+    name: wf.commandName,
+    ...(inferredArgs !== undefined ? { args: inferredArgs } : {}),
+  }
+}
+
+function directCommandWaitMs(input: { timeoutMs?: unknown }): number {
+  const configured = Number(process.env[DIRECT_COMMAND_WAIT_ENV])
+  if (Number.isFinite(configured) && configured >= 0) {
+    return Math.min(configured, DIRECT_COMMAND_MAX_WAIT_MS)
+  }
+  const workflowTimeout = Number(input.timeoutMs)
+  if (Number.isFinite(workflowTimeout) && workflowTimeout >= 0) {
+    return Math.min(workflowTimeout + 5000, DIRECT_COMMAND_MAX_WAIT_MS)
+  }
+  return DIRECT_COMMAND_DEFAULT_WAIT_MS
+}
+
+async function waitForWorkflowTerminal(
+  runId: string,
+  timeoutMs: number,
+): Promise<{ meta: WorkflowRunMeta | null; timedOut: boolean }> {
+  const deadline = Date.now() + timeoutMs
+  let meta = loadRunMeta(runId)
+  while (
+    meta &&
+    !TERMINAL_WORKFLOW_STATUSES.has(meta.status) &&
+    Date.now() < deadline
+  ) {
+    await new Promise(resolve => setTimeout(resolve, DIRECT_COMMAND_POLL_MS))
+    meta = loadRunMeta(runId)
+  }
+  return {
+    meta,
+    timedOut: Boolean(meta && !TERMINAL_WORKFLOW_STATUSES.has(meta.status)),
+  }
+}
+
+function formatDirectWorkflowLaunch(data: {
+  error?: string
+  runId?: string
+  scriptPath?: string
+  summary?: string
+  taskId?: string
+  transcriptDir?: string
+}): string {
+  if (data.error) {
+    return `Workflow script has a syntax error and was not launched:\n${data.error}`
+  }
+  return (
+    `Workflow launched in background. Task ID: ${data.taskId ?? 'unknown'}` +
+    `\nSummary: ${data.summary ?? ''}` +
+    `${data.transcriptDir ? `\nTranscript dir: ${data.transcriptDir}` : ''}` +
+    `${data.scriptPath ? `\nScript file: ${data.scriptPath}` : ''}` +
+    `${data.runId ? `\nRun ID: ${data.runId}` : ''}` +
+    '\nUse /workflows to watch live progress.'
   )
 }
 
+function formatDirectWorkflowTerminal(
+  meta: WorkflowRunMeta | null,
+  timedOut: boolean,
+): string {
+  if (!meta) return 'Workflow run artifact was not found.'
+  if (timedOut) {
+    return `Workflow is still running after the direct-command wait window. Run ID: ${meta.runId}`
+  }
+  const result = meta.result ? `\nResult: ${meta.result}` : ''
+  const failures =
+    meta.failures && meta.failures.length > 0
+      ? `\nFailures: ${meta.failures.join('; ')}`
+      : ''
+  return (
+    `Workflow ${meta.status}. Run ID: ${meta.runId}` +
+    `\nWorkflow: ${meta.workflowName}` +
+    result +
+    failures
+  )
+}
+
+async function runSavedWorkflowCommand(
+  wf: SavedWorkflow,
+  args: string,
+  context: LocalJSXCommandContext,
+): Promise<LocalCommandResult> {
+  const { WorkflowTool } = await import('./WorkflowTool.js')
+  const input = savedWorkflowToolInputForArgs(wf, args)
+  const parsed = WorkflowTool.inputSchema.safeParse(input)
+  if (!parsed.success) {
+    return {
+      type: 'text',
+      value: `Workflow input is invalid: ${parsed.error.message}`,
+    }
+  }
+  const validation = await WorkflowTool.validateInput?.(parsed.data, context)
+  if (validation?.result === false) {
+    return {
+      type: 'text',
+      value: `Workflow input is invalid: ${validation.message}`,
+    }
+  }
+
+  const canUseTool = context.canUseTool ?? hasPermissionsToUseTool
+  const toolUseID = `workflow-command-${wf.commandName}`
+  const assistantMessage = createAssistantMessage({
+    content: `Direct workflow command /${wf.commandName}`,
+  })
+  const permission = await canUseTool(
+    WorkflowTool,
+    parsed.data,
+    context,
+    assistantMessage,
+    toolUseID,
+  )
+  if (permission.behavior !== 'allow') {
+    return {
+      type: 'text',
+      value: `Workflow launch denied: ${permission.message ?? permission.behavior}`,
+    }
+  }
+
+  const allowedInput = permission.updatedInput ?? parsed.data
+  const result = await WorkflowTool.call(
+    allowedInput,
+    context,
+    canUseTool,
+  )
+  const output = result.data as {
+    error?: string
+    runId?: string
+    scriptPath?: string
+    summary?: string
+    taskId?: string
+    transcriptDir?: string
+  }
+  const launchText = formatDirectWorkflowLaunch(output)
+  if (!context.options.isNonInteractiveSession || !output.runId || output.error) {
+    return { type: 'text', value: launchText }
+  }
+
+  const terminal = await waitForWorkflowTerminal(
+    output.runId,
+    directCommandWaitMs(allowedInput),
+  )
+  return {
+    type: 'text',
+    value: `${launchText}\n\n${formatDirectWorkflowTerminal(
+      terminal.meta,
+      terminal.timedOut,
+    )}`,
+  }
+}
+
 /**
- * Build the saved-workflow `prompt` command for a parsed entry. Running
- * `/<name>` instructs the model to execute the workflow by name through the
- * Workflow tool. Name resolution stays inside WorkflowTool so project scope
- * keeps winning over user/plugin/bundled scope at execution time.
+ * Build the saved-workflow command for a parsed entry. Running `/<name>`
+ * directly calls the Workflow tool implementation by name. Name resolution
+ * stays inside WorkflowTool so project scope keeps winning over user/plugin/
+ * bundled scope at execution time.
  */
 function toCommand(wf: SavedWorkflow): Command {
   return {
-    type: 'prompt',
+    type: 'local',
     name: wf.commandName,
     description: wf.description,
     hasUserSpecifiedDescription: true,
@@ -342,44 +505,11 @@ function toCommand(wf: SavedWorkflow): Command {
           : 'managed',
     kind: 'workflow',
     ...(wf.isEnabled ? { isEnabled: wf.isEnabled } : {}),
-    // Map the saved scope onto the command settings-source enum so listing /
-    // dedupe treat project-scoped workflows like other project-sourced commands.
-    source:
-      wf.scope === 'plugin'
-        ? 'plugin'
-        : wf.scope === 'bundled'
-          ? 'bundled'
-        : wf.scope === 'project'
-          ? 'projectSettings'
-          : 'userSettings',
-    ...(wf.plugin
-      ? {
-          pluginInfo: {
-            pluginManifest: wf.plugin.manifest,
-            repository: wf.plugin.repository,
-          },
-        }
-      : {}),
-    allowedTools: [WORKFLOW_TOOL_NAME],
-    progressMessage: 'running workflow',
-    contentLength: 0,
-    async getPromptForCommand(args: string) {
-      const trimmedArgs = args.trim()
-      const inferredArgs = inferWorkflowArgsValue(trimmedArgs)
-      const toolInput = workflowToolInputLiteral(wf, inferredArgs)
-      const argLine = trimmedArgs
-        ? `\n\nCaller arguments:\n${trimmedArgs}\n\nInferred structured Workflow.args literal:\n${workflowArgsLiteral(inferredArgs)}`
-        : `\n\nNo caller arguments were provided; omit the args field so the workflow script sees args as undefined.`
-      return [
-        {
-          type: 'text' as const,
-          text:
-            `Run the saved workflow "${wf.commandName}" by invoking the ${WORKFLOW_TOOL_NAME} tool exactly once with this input:\n\n` +
-            `\`\`\`json\n${toolInput}\n\`\`\`` +
-            argLine +
-            `\n\nUse the JSON value above as the actual tool input. If args is present, pass it as real structured data: use real arrays, objects, numbers, booleans, or null as shown; do not JSON-encode it into a string.`,
-        },
-      ]
+    supportsNonInteractive: true,
+    load: async () => {
+      return {
+        call: (args, context) => runSavedWorkflowCommand(wf, args, context),
+      }
     },
   } satisfies Command
 }

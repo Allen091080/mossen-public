@@ -26,6 +26,7 @@ import {
 } from './sessionGoalMetrics.js'
 import { t } from './i18n/index.js'
 import { logForDebugging } from './debug.js'
+import { extractTextContent } from './messages.js'
 
 export type SessionGoalRuntimeResult = {
   action: SessionGoalPostTurnAction
@@ -69,6 +70,83 @@ function compactTaskEvidence(value: unknown, maxLength = 240): string | null {
   const text = String(value).replace(/\s+/g, ' ').trim()
   if (!text) return null
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text
+}
+
+function extractXmlTag(text: string, tag: string): string | null {
+  const match = text.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`))
+  return match?.[1]?.trim() || null
+}
+
+function isTaskNotificationMessage(message: Message): boolean {
+  const origin = message.origin
+  if (origin && typeof origin === 'object' && origin.kind === 'task-notification') {
+    return true
+  }
+  return taskNotificationText(message).includes('<task-notification>')
+}
+
+function taskNotificationText(message: Message): string {
+  const content = message?.message?.content ?? message?.content
+  return extractTextContent(content, '\n').trim()
+}
+
+function workflowNotificationLabel(
+  rawSummary: string | null,
+  runId: string | null,
+): string {
+  const label = compactTaskEvidence(rawSummary ?? runId ?? 'local workflow', 120) ??
+    'local workflow'
+  const withoutPrefix = label.startsWith('Workflow ')
+    ? label.slice('Workflow '.length).trim()
+    : label
+  return withoutPrefix.endsWith(' completed')
+    ? withoutPrefix.slice(0, -' completed'.length).trim() || withoutPrefix
+    : withoutPrefix
+}
+
+export function getSessionGoalTerminalNotificationEvidence(
+  messages: Message[],
+): {
+  positive: string[]
+  negative: string[]
+} {
+  const positive: string[] = []
+  const negative: string[] = []
+  for (const message of messages) {
+    if (!isTaskNotificationMessage(message)) continue
+    const text = taskNotificationText(message)
+    if (
+      !text.includes('<task-notification>') ||
+      extractXmlTag(text, 'task-type') !== 'local_workflow'
+    ) {
+      continue
+    }
+    const status = extractXmlTag(text, 'status')
+    if (status !== 'completed' && status !== 'failed' && status !== 'killed') {
+      continue
+    }
+    const label = workflowNotificationLabel(
+      extractXmlTag(text, 'summary'),
+      extractXmlTag(text, 'task-id'),
+    )
+    const result = compactTaskEvidence(extractXmlTag(text, 'result'), 180)
+    const artifact = compactTaskEvidence(extractXmlTag(text, 'output-file'), 120)
+    if (status === 'completed') {
+      positive.push(
+        [
+          `Workflow ${label} completed`,
+          result ? `result: ${result}` : null,
+          artifact ? `artifact: ${artifact}` : null,
+        ].filter((part): part is string => part !== null).join('; '),
+      )
+      continue
+    }
+    const reason = compactTaskEvidence(extractXmlTag(text, 'reason'), 160) ??
+      result ??
+      'no failure detail captured'
+    negative.push(`Workflow ${label} ended ${status}: ${reason}`)
+  }
+  return { positive, negative }
 }
 
 export function getSessionGoalTerminalWorkNegativeEvidence(
@@ -206,6 +284,15 @@ export async function evaluateSessionGoalRuntimeAfterTurn(options: {
       recordSessionGoalEvidence(evidence)
     }
     for (const evidence of getSessionGoalTerminalWorkNegativeEvidence(options.tasks)) {
+      recordSessionGoalNegativeEvidence(evidence)
+    }
+    const notificationEvidence = getSessionGoalTerminalNotificationEvidence(
+      options.messages,
+    )
+    for (const evidence of notificationEvidence.positive) {
+      recordSessionGoalEvidence(evidence)
+    }
+    for (const evidence of notificationEvidence.negative) {
       recordSessionGoalNegativeEvidence(evidence)
     }
   }

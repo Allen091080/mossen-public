@@ -2,6 +2,7 @@ import { queryHaiku, queryWithModel } from '../services/api/mossen.js'
 import type { Message } from '../types/message.js'
 import {
   budgetLimitSessionGoalState,
+  completeSessionGoalState,
   deferSessionGoalEvaluation,
   estimateSessionGoalTokens,
   failSessionGoalState,
@@ -25,6 +26,7 @@ import {
 } from './sessionGoalEvents.js'
 import {
   GOAL_BUDGET_LIMITED_METRIC,
+  GOAL_COMPLETED_METRIC,
   GOAL_CONTINUED_METRIC,
   GOAL_DEFERRED_METRIC,
   GOAL_EVALUATOR_ATTEMPT_METRIC,
@@ -44,6 +46,8 @@ const DEFAULT_GOAL_MAX_TURNS = 20
 const MAX_REASON_CHARS = 500
 const MAX_EVALUATOR_ATTEMPTS = 3
 const MAX_EVALUATION_FAILURES_BEFORE_FAILED = 3
+const DEFAULT_GOAL_EVALUATOR_TIMEOUT_MS = 60_000
+const MAX_GOAL_EVALUATOR_TIMEOUT_MS = 5 * 60_000
 const GOAL_EVALUATOR_SYSTEM_PROMPT = [
   'You are a strict completion evaluator for a Mossen session goal.',
   'Return only JSON matching {"ok": boolean, "reason": string}.',
@@ -138,6 +142,65 @@ function parseBoundedInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
   return Math.min(500, Math.max(1, Math.floor(parsed)))
+}
+
+function parseBoundedDurationMs(
+  value: string | undefined,
+  fallback: number,
+  options: { min: number; max: number },
+): number {
+  if (!value) return fallback
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(options.max, Math.max(options.min, Math.floor(parsed)))
+}
+
+export function getSessionGoalEvaluatorTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  return parseBoundedDurationMs(
+    env.MOSSEN_CODE_GOAL_EVALUATOR_TIMEOUT_MS,
+    DEFAULT_GOAL_EVALUATOR_TIMEOUT_MS,
+    { min: 1, max: MAX_GOAL_EVALUATOR_TIMEOUT_MS },
+  )
+}
+
+export async function runSessionGoalEvaluatorWithTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  parentSignal: AbortSignal,
+  options: { timeoutMs?: number } = {},
+): Promise<T> {
+  if (parentSignal.aborted) {
+    throw new Error('Goal evaluator aborted before it started.')
+  }
+  const timeoutMs = options.timeoutMs ?? getSessionGoalEvaluatorTimeoutMs()
+  const controller = new AbortController()
+  const onParentAbort = (): void => {
+    controller.abort(parentSignal.reason)
+  }
+  parentSignal.addEventListener('abort', onParentAbort, { once: true })
+
+  let timeoutId: ReturnType<typeof setTimeout> | null = null
+  let timedOut = false
+  const operationPromise = Promise.resolve().then(() => operation(controller.signal))
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      timedOut = true
+      const error = new Error(`Goal evaluator timed out after ${timeoutMs}ms.`)
+      controller.abort(error)
+      reject(error)
+    }, timeoutMs)
+  })
+
+  try {
+    return await Promise.race([operationPromise, timeoutPromise])
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
+    parentSignal.removeEventListener('abort', onParentAbort)
+    if (timedOut) {
+      void operationPromise.catch(() => undefined)
+    }
+  }
 }
 
 function redactGoalEvaluatorText(text: string): string {
@@ -360,6 +423,16 @@ function buildGoalEvalEvent(
   }
 }
 
+export function hasCompletedWorkflowGoalEvidence(goal: MossenGoalState): boolean {
+  const hasCompletedWorkflow = goal.recentEvidence.some(evidence =>
+    /^Workflow\b[\s\S]*\bcompleted\b/i.test(evidence),
+  )
+  if (!hasCompletedWorkflow) return false
+  return !goal.negativeEvidence.some(evidence =>
+    /^Workflow\b[\s\S]*\bended (failed|killed)\b/i.test(evidence),
+  )
+}
+
 export function deferActiveSessionGoalAfterTurn(
   reason: string,
 ): SessionGoalPostTurnAction {
@@ -544,34 +617,37 @@ async function queryGoalEvaluator(
       const query = evaluatorModel && evaluatorModel !== 'haiku'
         ? queryWithModel
         : queryHaiku
-      const response = await query({
-        systemPrompt: asSystemPrompt(GOAL_EVALUATOR_SYSTEM_PROMPT),
-        userPrompt: buildGoalEvaluatorUserPrompt(goal, transcript),
-        outputFormat: {
-          type: 'json_schema',
-          schema: {
-            type: 'object',
-            properties: {
-              ok: { type: 'boolean' },
-              reason: { type: 'string' },
+      const response = await runSessionGoalEvaluatorWithTimeout(
+        querySignal => query({
+          systemPrompt: asSystemPrompt(GOAL_EVALUATOR_SYSTEM_PROMPT),
+          userPrompt: buildGoalEvaluatorUserPrompt(goal, transcript),
+          outputFormat: {
+            type: 'json_schema',
+            schema: {
+              type: 'object',
+              properties: {
+                ok: { type: 'boolean' },
+                reason: { type: 'string' },
+              },
+              required: ['ok', 'reason'],
+              additionalProperties: false,
             },
-            required: ['ok', 'reason'],
-            additionalProperties: false,
           },
-        },
+          signal: querySignal,
+          options: {
+            isNonInteractiveSession: true,
+            agents: [],
+            hasAppendSystemPrompt: false,
+            mcpTools: [],
+            querySource: 'goal_evaluator',
+            enablePromptCaching: false,
+            ...(evaluatorModel && evaluatorModel !== 'haiku'
+              ? { model: evaluatorModel }
+              : {}),
+          },
+        }),
         signal,
-        options: {
-          isNonInteractiveSession: true,
-          agents: [],
-          hasAppendSystemPrompt: false,
-          mcpTools: [],
-          querySource: 'goal_evaluator',
-          enablePromptCaching: false,
-          ...(evaluatorModel && evaluatorModel !== 'haiku'
-            ? { model: evaluatorModel }
-            : {}),
-        },
-      })
+      )
 
       const text = extractTextContent(response.message.content, '\n').trim()
       if (isGoalEvaluatorBackendUnavailableError(text)) {
@@ -676,6 +752,25 @@ export async function evaluateActiveSessionGoalAfterTurn(
     }
 
     if (parsed.ok) {
+      if (hasCompletedWorkflowGoalEvidence(goal)) {
+        const evaluated = recordSessionGoalEvaluation(
+          'met',
+          reason,
+          tokenSnapshot ?? undefined,
+        ) ?? goal
+        const completed = completeSessionGoalState(
+          reason,
+          { evidence: evaluated.recentEvidence },
+        ) ?? evaluated
+        const evalEvent = buildGoalEvalEvent(completed, 'yes', reason)
+        observeSessionGoalMetric(GOAL_COMPLETED_METRIC)
+        return {
+          type: 'completed',
+          reason,
+          event: evalEvent,
+          events: [evalEvent],
+        }
+      }
       const advisoryReason = truncate(
         `Evaluator saw possible completion, but completion still requires explicit update_goal evidence: ${reason}`,
         MAX_REASON_CHARS,

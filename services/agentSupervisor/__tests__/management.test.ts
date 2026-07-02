@@ -7,6 +7,10 @@ import {
   formatAgentSupervisorLogs,
   stopAgentSupervisorJob,
 } from '../management.js'
+import {
+  getAgentSupervisorMaxRuntimeMs,
+  isAgentSupervisorRuntimeBounded,
+} from '../launch.js'
 import { readAgentSupervisorRoster, upsertAgentSupervisorRosterJob } from '../roster.js'
 import { createInitialAgentSupervisorJobState } from '../schema.js'
 import {
@@ -111,5 +115,57 @@ describe('agent supervisor terminal job management', () => {
       expect(message).toContain('mossen logs')
       expect(message).toContain('mossen respawn')
     })
+  })
+})
+
+describe('agent supervisor runtime limits', () => {
+  test('bounds unattended and dangerous supervisor jobs by default', () => {
+    const interactive = createInitialAgentSupervisorJobState({
+      id: 'jruntime001',
+      title: 'interactive',
+      cwd: '/tmp',
+      promptPreview: 'interactive',
+    })
+    const goalJob = createInitialAgentSupervisorJobState({
+      id: 'jruntime002',
+      title: 'goal',
+      cwd: '/tmp',
+      promptPreview: 'goal',
+      parentGoalId: 'goal-1',
+    })
+    const yoloJob = createInitialAgentSupervisorJobState({
+      id: 'jruntime003',
+      title: 'dangerous',
+      cwd: '/tmp',
+      promptPreview: 'dangerous',
+      dangerouslySkipPermissions: true,
+    })
+
+    expect(isAgentSupervisorRuntimeBounded(interactive)).toBe(false)
+    expect(getAgentSupervisorMaxRuntimeMs(interactive, {})).toBe(0)
+    expect(isAgentSupervisorRuntimeBounded(goalJob)).toBe(true)
+    expect(getAgentSupervisorMaxRuntimeMs(goalJob, {})).toBe(21600000)
+    expect(isAgentSupervisorRuntimeBounded(yoloJob)).toBe(true)
+    expect(getAgentSupervisorMaxRuntimeMs(yoloJob, {})).toBe(21600000)
+  })
+
+  test('allows explicit supervisor runtime override and disable', () => {
+    const state = createInitialAgentSupervisorJobState({
+      id: 'jruntime004',
+      title: 'goal',
+      cwd: '/tmp',
+      promptPreview: 'goal',
+      parentWorkflowId: 'workflow-1',
+    })
+
+    expect(getAgentSupervisorMaxRuntimeMs(state, {
+      MOSSEN_CODE_AGENT_SUPERVISOR_MAX_RUNTIME_MS: '250',
+    })).toBe(250)
+    expect(getAgentSupervisorMaxRuntimeMs(state, {
+      MOSSEN_CODE_AGENT_SUPERVISOR_MAX_RUNTIME_MS: '0',
+    })).toBe(0)
+    expect(getAgentSupervisorMaxRuntimeMs(state, {
+      MOSSEN_CODE_AGENT_SUPERVISOR_MAX_RUNTIME_MS: '9999999999',
+    })).toBe(604800000)
   })
 })
