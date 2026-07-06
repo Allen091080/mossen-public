@@ -14,6 +14,34 @@ export type WorkflowPhaseMeta = {
   model?: string
 }
 
+export type WorkflowBudgetMeta = {
+  timeoutMs?: number
+  phaseTimeoutMs?: number
+  maxAgents?: number
+  maxParallel?: number
+  maxNestedWorkflows?: number
+}
+
+export type WorkflowEvidenceMeta = {
+  finalReport?: boolean
+  citations?: boolean
+  realProvider?: boolean
+  processClean?: boolean
+  validationCommands?: string[]
+  artifacts?: string[]
+}
+
+export type WorkflowLifecycleStatus = 'draft' | 'tested' | 'deprecated'
+
+export type WorkflowLifecycleMeta = {
+  version?: string
+  owner?: string
+  status?: WorkflowLifecycleStatus
+  lastTestedAt?: string
+  lastTestArtifact?: string
+  compatibility?: string
+}
+
 export type WorkflowPhaseInput = string | WorkflowPhaseMeta
 
 export type WorkflowRecentToolCall = {
@@ -27,6 +55,14 @@ export type WorkflowMeta = {
   description: string
   title?: string
   whenToUse?: string
+  argsSchema?: Record<string, unknown>
+  budgets?: WorkflowBudgetMeta
+  allowedTools?: string[]
+  allowedRoots?: string[]
+  allowedHosts?: string[]
+  effort?: string
+  evidence?: WorkflowEvidenceMeta
+  lifecycle?: WorkflowLifecycleMeta
   phases?: WorkflowPhaseMeta[]
   model?: string
 }

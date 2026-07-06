@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import {
   getEmptyToolPermissionContext,
   type Tools,
@@ -11,10 +14,17 @@ import {
   assertWorkflowAgentSchema,
   buildRemoteWorkflowAgentPrompt,
   coerceRemoteWorkflowAgentResult,
+  createWorkflowHostGuardedCanUseTool,
+  createWorkflowRootGuardedCanUseTool,
   createWorkflowAgentRunner,
   extractStructuredOutputFromMessages,
+  filterWorkflowAllowedTools,
   filterWorkflowAgentTools,
+  filterWorkflowHostConstrainedTools,
+  filterWorkflowRootConstrainedTools,
   formatMissingStructuredOutputAfterNudges,
+  isWorkflowHostAllowed,
+  isWorkflowPathAllowed,
   runHostedRemoteWorkflowAgent,
   withStructuredOutputAllowed,
   withStructuredOutputTool,
@@ -183,6 +193,28 @@ describe('workflow agent structured output helpers', () => {
     )
   })
 
+  test('filters workflow agent tools through a workflow allowlist', () => {
+    const tools = [
+      { name: 'Read' },
+      { name: 'WebFetch' },
+      { name: 'WebSearch' },
+      { name: 'mcp__demo__aliased', aliases: ['AliasTool'] },
+    ] as unknown as Tools
+
+    expect(filterWorkflowAllowedTools(tools).map(tool => tool.name)).toEqual([
+      'Read',
+      'WebFetch',
+      'WebSearch',
+      'mcp__demo__aliased',
+    ])
+    expect(
+      filterWorkflowAllowedTools(tools, ['WebFetch', 'AliasTool']).map(
+        tool => tool.name,
+      ),
+    ).toEqual(['WebFetch', 'mcp__demo__aliased'])
+    expect(filterWorkflowAllowedTools(tools, ['*'])).toBe(tools)
+  })
+
   test('extracts the latest structured output attachment from agent messages', () => {
     const messages = [
       { type: 'assistant', message: { content: [] } },
@@ -327,6 +359,471 @@ describe('workflow local agent resolution', () => {
       },
     ])
   })
+
+  test('applies workflow meta.allowedTools to local subagent tool pools', async () => {
+    const observed: string[][] = []
+    const runAgentImpl: NonNullable<
+      WorkflowAgentRunnerDeps['runAgentImpl']
+    > = async function* ({ availableTools }) {
+      observed.push(availableTools.map(tool => tool.name))
+      yield {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'ok' }],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      } as never
+    }
+    const runner = createWorkflowAgentRunner({
+      toolUseContext: workflowRunnerContext({
+        agents: [testAgent('general-purpose')],
+        mcpTools: [
+          {
+            name: 'mcp__demo__aliased',
+            aliases: ['AliasTool'],
+          },
+        ] as unknown as Tools,
+      }),
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      runId: 'wf-test',
+      workflowAllowedTools: ['WebFetch', 'AliasTool'],
+      runAgentImpl,
+    })
+
+    await expect(
+      runner('inspect the repo', {}, {
+        agentNumber: 1,
+        phase: null,
+        label: 'inspect',
+      }),
+    ).resolves.toMatchObject({ value: 'ok', ok: true })
+
+    expect(observed).toEqual([
+      expect.arrayContaining(['WebFetch', 'mcp__demo__aliased']),
+    ])
+    expect(observed[0]).not.toContain('Bash')
+    expect(observed[0]).not.toContain('Read')
+    expect(observed[0]).not.toContain('WebSearch')
+  })
+
+  test('matches workflow allowedHosts patterns conservatively', () => {
+    expect(
+      isWorkflowHostAllowed('docs.example.test', ['*.example.test']),
+    ).toBe(true)
+    expect(isWorkflowHostAllowed('example.test', ['*.example.test'])).toBe(
+      false,
+    )
+    expect(isWorkflowHostAllowed('badexample.test', ['*.example.test'])).toBe(
+      false,
+    )
+    expect(
+      isWorkflowHostAllowed('example.test', ['https://example.test/path']),
+    ).toBe(true)
+    expect(isWorkflowHostAllowed('other.test', ['example.test'])).toBe(false)
+  })
+
+  test('hides WebSearch when workflow meta.allowedHosts is active', async () => {
+    expect(
+      filterWorkflowHostConstrainedTools(
+        [
+          { name: 'WebFetch' },
+          { name: 'WebSearch' },
+          { name: 'Read' },
+        ] as unknown as Tools,
+        ['docs.example.test'],
+      ).map(tool => tool.name),
+    ).toEqual(['WebFetch', 'Read'])
+  })
+
+  test('enforces workflow meta.allowedHosts through WebFetch permission guard', async () => {
+    const decisions: string[] = []
+    let baseCalls = 0
+    const guarded = createWorkflowHostGuardedCanUseTool(
+      async (_tool, input) => {
+        baseCalls++
+        return { behavior: 'allow', updatedInput: input }
+      },
+      ['allowed.example.test'],
+    )
+
+    decisions.push(
+      (
+        await guarded(
+          { name: 'WebFetch' } as never,
+          { url: 'https://blocked.example.test/page', prompt: 'read' },
+          {} as never,
+          {} as never,
+          'toolu_blocked',
+        )
+      ).behavior,
+    )
+    decisions.push(
+      (
+        await guarded(
+          { name: 'WebFetch' } as never,
+          { url: 'https://allowed.example.test/page', prompt: 'read' },
+          {} as never,
+          {} as never,
+          'toolu_allowed',
+        )
+      ).behavior,
+    )
+
+    expect(decisions).toEqual(['deny', 'allow'])
+    expect(baseCalls).toBe(1)
+  })
+
+  test('applies workflow meta.allowedHosts to local subagent WebFetch boundaries', async () => {
+    const observedTools: string[][] = []
+    const decisions: string[] = []
+    const runAgentImpl: NonNullable<
+      WorkflowAgentRunnerDeps['runAgentImpl']
+    > = async function* ({ availableTools, canUseTool, toolUseContext }) {
+      observedTools.push(availableTools.map(tool => tool.name))
+      const webFetch = availableTools.find(tool => tool.name === 'WebFetch')
+      if (!webFetch) throw new Error('missing WebFetch')
+      decisions.push(
+        (
+          await canUseTool(
+            webFetch,
+            { url: 'https://blocked.example.test/page', prompt: 'read' },
+            toolUseContext,
+            {} as never,
+            'toolu_blocked',
+          )
+        ).behavior,
+      )
+      decisions.push(
+        (
+          await canUseTool(
+            webFetch,
+            { url: 'https://allowed.example.test/page', prompt: 'read' },
+            toolUseContext,
+            {} as never,
+            'toolu_allowed',
+          )
+        ).behavior,
+      )
+      yield {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'ok' }],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      } as never
+    }
+    const runner = createWorkflowAgentRunner({
+      toolUseContext: workflowRunnerContext({
+        agents: [testAgent('general-purpose')],
+      }),
+      canUseTool: async (_tool, input) => ({
+        behavior: 'allow',
+        updatedInput: input,
+      }),
+      runId: 'wf-test',
+      workflowAllowedTools: ['WebFetch', 'WebSearch'],
+      workflowAllowedHosts: ['allowed.example.test'],
+      runAgentImpl,
+    })
+
+    await expect(
+      runner('fetch docs', {}, {
+        agentNumber: 1,
+        phase: null,
+        label: 'fetch',
+      }),
+    ).resolves.toMatchObject({ value: 'ok', ok: true })
+
+    expect(observedTools).toEqual([['WebFetch']])
+    expect(decisions).toEqual(['deny', 'allow'])
+  })
+
+  test('matches workflow allowedRoots conservatively', () => {
+    expect(isWorkflowPathAllowed('/tmp/project/src/file.ts', ['/tmp/project/src']))
+      .toBe(true)
+    expect(isWorkflowPathAllowed('/tmp/project/other/file.ts', ['/tmp/project/src']))
+      .toBe(false)
+    expect(isWorkflowPathAllowed('/tmp/project/src', ['/tmp/project/src'])).toBe(
+      true,
+    )
+  })
+
+  test('denies workflow allowedRoots paths that resolve through symlinks outside the root', () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'workflow-roots-'))
+    try {
+      const allowedRoot = join(tempRoot, 'allowed')
+      const outsideRoot = join(tempRoot, 'outside')
+      mkdirSync(allowedRoot)
+      mkdirSync(outsideRoot)
+      const outsideFile = join(outsideRoot, 'secret.txt')
+      writeFileSync(outsideFile, 'secret')
+      symlinkSync(outsideRoot, join(allowedRoot, 'linked-outside'))
+
+      expect(
+        isWorkflowPathAllowed(
+          join(allowedRoot, 'linked-outside', 'secret.txt'),
+          [allowedRoot],
+        ),
+      ).toBe(false)
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  test('hides Bash when workflow meta.allowedRoots is active', () => {
+    expect(
+      filterWorkflowRootConstrainedTools(
+        [
+          { name: 'Read', getPath: () => '/tmp/project/src/file.ts' },
+          { name: 'Bash' },
+          { name: 'Grep', getPath: () => '/tmp/project/src' },
+        ] as unknown as Tools,
+        ['/tmp/project/src'],
+      ).map(tool => tool.name),
+    ).toEqual(['Read', 'Grep'])
+  })
+
+  test('enforces workflow meta.allowedRoots through file tool permission guard', async () => {
+    const decisions: string[] = []
+    let baseCalls = 0
+    const guarded = createWorkflowRootGuardedCanUseTool(
+      async (_tool, input) => {
+        baseCalls++
+        return { behavior: 'allow', updatedInput: input }
+      },
+      ['/tmp/project/src'],
+    )
+    const readTool = {
+      name: 'Read',
+      getPath: (input: { file_path?: string }) => input.file_path ?? '',
+    }
+
+    decisions.push(
+      (
+        await guarded(
+          readTool as never,
+          { file_path: '/tmp/project/other/file.ts' },
+          {} as never,
+          {} as never,
+          'toolu_blocked',
+        )
+      ).behavior,
+    )
+    decisions.push(
+      (
+        await guarded(
+          readTool as never,
+          { file_path: '/tmp/project/src/file.ts' },
+          {} as never,
+          {} as never,
+          'toolu_allowed',
+        )
+      ).behavior,
+    )
+
+    expect(decisions).toEqual(['deny', 'allow'])
+    expect(baseCalls).toBe(1)
+  })
+
+  test('applies workflow meta.allowedRoots to local subagent file boundaries', async () => {
+    const observedTools: string[][] = []
+    const decisions: string[] = []
+    const runAgentImpl: NonNullable<
+      WorkflowAgentRunnerDeps['runAgentImpl']
+    > = async function* ({ availableTools, canUseTool, toolUseContext }) {
+      observedTools.push(availableTools.map(tool => tool.name))
+      const readTool = availableTools.find(tool => tool.name === 'Read')
+      if (!readTool) throw new Error('missing Read')
+      decisions.push(
+        (
+          await canUseTool(
+            readTool,
+            { file_path: '/tmp/workflow-roots/outside/file.ts' },
+            toolUseContext,
+            {} as never,
+            'toolu_blocked',
+          )
+        ).behavior,
+      )
+      decisions.push(
+        (
+          await canUseTool(
+            readTool,
+            { file_path: '/tmp/workflow-roots/src/file.ts' },
+            toolUseContext,
+            {} as never,
+            'toolu_allowed',
+          )
+        ).behavior,
+      )
+      yield {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'ok' }],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      } as never
+    }
+    const runner = createWorkflowAgentRunner({
+      toolUseContext: workflowRunnerContext({
+        agents: [testAgent('general-purpose')],
+      }),
+      canUseTool: async (_tool, input) => ({
+        behavior: 'allow',
+        updatedInput: input,
+      }),
+      runId: 'wf-test',
+      workflowAllowedTools: ['Read', 'Bash'],
+      workflowAllowedRoots: ['/tmp/workflow-roots/src'],
+      runAgentImpl,
+    })
+
+    await expect(
+      runner('read scoped files', {}, {
+        agentNumber: 1,
+        phase: null,
+        label: 'read',
+      }),
+    ).resolves.toMatchObject({ value: 'ok', ok: true })
+
+    expect(observedTools).toEqual([['Read']])
+    expect(decisions).toEqual(['deny', 'allow'])
+  })
+
+  test('keeps StructuredOutput available for schema agents after workflow tool filtering', async () => {
+    const observed: string[][] = []
+    const runAgentImpl: NonNullable<
+      WorkflowAgentRunnerDeps['runAgentImpl']
+    > = async function* ({ availableTools }) {
+      observed.push(availableTools.map(tool => tool.name))
+      yield {
+        type: 'attachment',
+        attachment: { type: 'structured_output', data: { ok: true } },
+      } as never
+      yield {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'ok' }],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      } as never
+    }
+    const runner = createWorkflowAgentRunner({
+      toolUseContext: workflowRunnerContext({
+        agents: [testAgent('general-purpose')],
+      }),
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      runId: 'wf-test',
+      workflowAllowedTools: ['WebFetch'],
+      runAgentImpl,
+    })
+
+    await expect(
+      runner('return json', { schema: OBJECT_SCHEMA }, {
+        agentNumber: 1,
+        phase: null,
+        label: 'schema',
+      }),
+    ).resolves.toMatchObject({ value: { ok: true }, ok: true })
+
+    expect(observed[0]).toContain('WebFetch')
+    expect(observed[0]).toContain(SYNTHETIC_OUTPUT_TOOL_NAME)
+    expect(observed[0]).not.toContain('Bash')
+    expect(observed[0]).not.toContain('WebSearch')
+  })
+
+  test('rejects remote workflow agents when meta.allowedTools must be enforced locally', async () => {
+    const runner = createWorkflowAgentRunner({
+      toolUseContext: workflowRunnerContext({
+        agents: [testAgent('general-purpose')],
+      }),
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      runId: 'wf-test',
+      workflowAllowedTools: ['WebFetch'],
+      remoteAgentRunner: async () => {
+        throw new Error('should not launch')
+      },
+    })
+
+    await expect(
+      runner('remote work', { isolation: 'remote' }, {
+        agentNumber: 1,
+        phase: null,
+        label: 'remote',
+      }),
+    ).rejects.toThrow(
+      "agent({isolation:'remote'}) cannot run when workflow meta.allowedTools is set",
+    )
+  })
+
+  test('rejects remote workflow agents when meta.allowedHosts must be enforced locally', async () => {
+    const runner = createWorkflowAgentRunner({
+      toolUseContext: workflowRunnerContext({
+        agents: [testAgent('general-purpose')],
+      }),
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      runId: 'wf-test',
+      workflowAllowedHosts: ['docs.example.test'],
+      remoteAgentRunner: async () => {
+        throw new Error('should not launch')
+      },
+    })
+
+    await expect(
+      runner('remote work', { isolation: 'remote' }, {
+        agentNumber: 1,
+        phase: null,
+        label: 'remote',
+      }),
+    ).rejects.toThrow(
+      "agent({isolation:'remote'}) cannot run when workflow meta.allowedHosts is set",
+    )
+  })
+
+  test('rejects remote workflow agents when meta.allowedRoots must be enforced locally', async () => {
+    const runner = createWorkflowAgentRunner({
+      toolUseContext: workflowRunnerContext({
+        agents: [testAgent('general-purpose')],
+      }),
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      runId: 'wf-test',
+      workflowAllowedRoots: ['src'],
+      remoteAgentRunner: async () => {
+        throw new Error('should not launch')
+      },
+    })
+
+    await expect(
+      runner('remote work', { isolation: 'remote' }, {
+        agentNumber: 1,
+        phase: null,
+        label: 'remote',
+      }),
+    ).rejects.toThrow(
+      "agent({isolation:'remote'}) cannot run when workflow meta.allowedRoots is set",
+    )
+  })
+
 
   test('preserves workflow script model routing over agent frontmatter defaults', async () => {
     const observed: Array<{ agentModel?: string; runAgentModel?: string }> = []

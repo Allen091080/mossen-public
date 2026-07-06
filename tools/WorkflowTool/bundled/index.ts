@@ -11,6 +11,30 @@ const DEEP_RESEARCH_SOURCE = `export const meta = {
   name: 'deep-research',
   description: 'Investigate a question across multiple search angles, cross-check claims, and return a cited report.',
   whenToUse: 'Use for research questions that need broad web coverage, source reading, and claim verification before synthesis.',
+  argsSchema: { type: 'string', minLength: 1 },
+  budgets: {
+    timeoutMs: 1800000,
+    phaseTimeoutMs: 300000,
+    // Worst case: 1 plan + 4 search + 6 read + 8 claims * 3 voters
+    // + conflict scan + final report = 37 agent() calls.
+    maxAgents: 40,
+    maxParallel: 8,
+    maxNestedWorkflows: 0,
+  },
+  allowedTools: ['WebSearch', 'WebFetch'],
+  allowedRoots: [],
+  allowedHosts: [],
+  effort: 'high',
+  evidence: {
+    finalReport: true,
+    citations: true,
+    realProvider: true,
+    processClean: true,
+    validationCommands: [
+      'python3 scripts/wave_w472_workflow_real_provider_deep_research_smoke.py',
+    ],
+    artifacts: ['final-report.json', 'assertions.json'],
+  },
 	  phases: [
 	    { title: 'Plan searches', detail: 'Break the question into distinct search angles and source types.' },
 	    { title: 'Search web', detail: 'Run independent web searches across the planned angles.' },
@@ -31,6 +55,11 @@ if (!question.trim()) {
   throw new Error('deep-research requires a research question in args.')
 }
 
+const MAX_SEARCH_ANGLES = 4
+const MAX_SOURCES_TO_READ = 6
+const MAX_CLAIMS_TO_VERIFY = 8
+const CLAIM_VOTERS = 3
+
 const SEARCH_PLAN_SCHEMA = {
   type: 'object',
   required: ['angles'],
@@ -39,7 +68,7 @@ const SEARCH_PLAN_SCHEMA = {
     angles: {
       type: 'array',
       minItems: 3,
-      maxItems: 8,
+      maxItems: MAX_SEARCH_ANGLES,
       items: {
         type: 'object',
         required: ['name', 'query', 'purpose'],
@@ -136,7 +165,7 @@ const plan = await agent(
   { label: 'Plan research angles', schema: SEARCH_PLAN_SCHEMA },
 )
 
-const angles = (plan && Array.isArray(plan.angles) ? plan.angles : []).slice(0, 8)
+const angles = (plan && Array.isArray(plan.angles) ? plan.angles : []).slice(0, MAX_SEARCH_ANGLES)
 if (angles.length === 0) {
   throw new Error('deep-research could not produce a search plan.')
 }
@@ -167,7 +196,7 @@ for (const batch of searchBatches) {
   }
 }
 
-const selected = candidates.slice(0, 12)
+const selected = candidates.slice(0, MAX_SOURCES_TO_READ)
 if (selected.length === 0) {
   throw new Error('deep-research found no sources to read.')
 }
@@ -211,7 +240,7 @@ const sources = sourceNotes.flatMap(note => note?.sources ?? [])
 	  }
 	}
 
-	const candidateClaims = claimItems.slice(0, 30)
+	const candidateClaims = claimItems.slice(0, MAX_CLAIMS_TO_VERIFY)
 	if (candidateClaims.length === 0) {
 	  throw new Error('deep-research could not extract candidate claims to verify.')
 	}
@@ -220,7 +249,7 @@ const sources = sourceNotes.flatMap(note => note?.sources ?? [])
 	const claimVotes = await parallel(
 	  candidateClaims.map((item, index) => async () => {
 	    const votes = await parallel(
-	      [0, 1, 2].map(voter => () =>
+	      Array.from({ length: CLAIM_VOTERS }, (_, voter) => () =>
 	        agent(
 	          'Vote independently on whether this claim is directly supported by the source notes for the research question. Default to supported=false if the source notes are ambiguous or only indirectly related. Question: ' +
 	            question +

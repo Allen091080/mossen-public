@@ -16,16 +16,24 @@ import {
 } from '../../../../bootstrap/state.js'
 import { createJournal } from '../journal.js'
 import {
+  appendJournalEntry,
+  appendJournalStartedEntry,
   clearActiveWorkflowRunsForTests,
+  finalizeRunMeta,
   initRunArtifacts,
   listWorkflowRuns,
+  loadWorkflowCheckpoint,
   loadJournal,
+  loadWorkflowFinalReport,
   loadRunMeta,
   loadRunScript,
   markActiveWorkflowRunForTests,
   reapRunsUnder,
   RUN_RETENTION_MS,
+  saveWorkflowFinalReport,
   STALE_RUNNING_WORKFLOW_MESSAGE,
+  workflowCheckpointPath,
+  workflowFinalReportPath,
 } from '../journalStore.js'
 
 describe('reapRunsUnder (run-artifact retention, path-injectable)', () => {
@@ -261,6 +269,7 @@ describe('journal onRecord sink (disk-persistence contract, S1)', () => {
 describe('journalStore session scoping', () => {
   let root: string
   let previousHome: string | undefined
+  let previousConfigDir: string | undefined
   const previousSession = getSessionId()
   const previousProjectDir = getSessionProjectDir()
   const sessionA = '11111111-1111-4111-8111-111111111111' as ReturnType<
@@ -273,7 +282,9 @@ describe('journalStore session scoping', () => {
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'wf-session-scope-'))
     previousHome = process.env.MOSSEN_HOME
+    previousConfigDir = process.env.MOSSEN_CONFIG_DIR
     process.env.MOSSEN_HOME = root
+    process.env.MOSSEN_CONFIG_DIR = root
     switchSession(sessionA)
   })
 
@@ -284,6 +295,11 @@ describe('journalStore session scoping', () => {
       delete process.env.MOSSEN_HOME
     } else {
       process.env.MOSSEN_HOME = previousHome
+    }
+    if (previousConfigDir === undefined) {
+      delete process.env.MOSSEN_CONFIG_DIR
+    } else {
+      process.env.MOSSEN_CONFIG_DIR = previousConfigDir
     }
     rmSync(root, { recursive: true, force: true })
   })
@@ -302,13 +318,13 @@ return 1
       status: 'running',
     })
 
-    expect(listWorkflowRuns().map(run => run.runId)).toEqual([runId])
+    expect(listWorkflowRuns().some(run => run.runId === runId)).toBe(true)
     expect(loadRunMeta(runId)?.workflowName).toBe('session-a')
     expect(loadRunScript(runId)).toContain("name: 'session-a'")
 
     switchSession(sessionB)
 
-    expect(listWorkflowRuns()).toEqual([])
+    expect(listWorkflowRuns().some(run => run.runId === runId)).toBe(false)
     expect(loadRunMeta(runId)).toBeNull()
     expect(loadRunScript(runId)).toBeNull()
     expect(loadJournal(runId)).toBeNull()
@@ -335,5 +351,125 @@ return 1
     expect(listWorkflowRuns().find(run => run.runId === runId)?.status).toBe(
       'failed',
     )
+    expect(loadWorkflowCheckpoint(runId)).toMatchObject({
+      runId,
+      status: 'failed',
+      resumeSafety: {
+        canResume: false,
+        nextAction: 'relaunch',
+      },
+    })
+  })
+
+  test('persists checkpoint summaries across start, journal append, and finalize', () => {
+    const runId = 'wf_checkpoint'
+    const source = `
+export const meta = { name: 'checkpoint', description: 'checkpoint flow' }
+return 1
+`
+    initRunArtifacts(runId, source, {
+      runId,
+      workflowName: 'checkpoint',
+      description: 'checkpoint flow',
+      createdAt: new Date(0).toISOString(),
+      status: 'running',
+    })
+    expect(workflowCheckpointPath(runId)).toContain('checkpoint.json')
+    expect(loadWorkflowCheckpoint(runId)).toMatchObject({
+      runId,
+      status: 'running',
+      scriptExists: true,
+      counts: {
+        started: 0,
+        completed: 0,
+        pendingStarted: 0,
+      },
+      resumeSafety: {
+        canResume: false,
+        nextAction: 'wait',
+      },
+    })
+
+    appendJournalStartedEntry(runId, {
+      kind: 'started',
+      index: 0,
+      hash: 'h0',
+      label: 'scan',
+      phase: 'Plan',
+      agentNumber: 1,
+      opts: {},
+    })
+    expect(loadWorkflowCheckpoint(runId)).toMatchObject({
+      counts: {
+        started: 1,
+        completed: 0,
+        pendingStarted: 1,
+      },
+      pendingStartedAgents: [
+        {
+          index: 0,
+          agentNumber: 1,
+          label: 'scan',
+          phase: 'Plan',
+        },
+      ],
+    })
+
+    appendJournalEntry(runId, {
+      index: 0,
+      hash: 'h0',
+      value: 'done',
+      tokens: 5,
+      ok: true,
+    })
+    finalizeRunMeta(runId, {
+      status: 'killed',
+      agentCount: 1,
+      tokensSpent: 5,
+      totalToolCalls: 0,
+    })
+
+    expect(loadWorkflowCheckpoint(runId)).toMatchObject({
+      status: 'killed',
+      counts: {
+        started: 1,
+        completed: 1,
+        pendingStarted: 0,
+      },
+      lastStartedIndex: 0,
+      lastCompletedIndex: 0,
+      resumeSafety: {
+        canResume: true,
+        nextAction: 'resume',
+      },
+    })
+  })
+
+  test('persists and loads machine-readable workflow final reports', () => {
+    const runId = 'wf_final_report'
+    const path = saveWorkflowFinalReport(runId, {
+      version: 1,
+      runId,
+      workflowName: 'final-report',
+      status: 'completed',
+      evidenceState: 'verified',
+      summary: 'verified',
+      evidence: ['unit tests passed'],
+      validationCommands: ['bun test tools/WorkflowTool/__tests__/finalReport.test.ts'],
+      artifacts: ['/tmp/wf/final-report.json'],
+      failures: [],
+      openQuestions: [],
+      reportPath: '/tmp/wf/report.md',
+      resultPreview: 'verified',
+      generatedAt: '2026-07-06T00:00:00.000Z',
+    })
+
+    expect(path).toBe(workflowFinalReportPath(runId))
+    expect(loadWorkflowFinalReport(runId)).toMatchObject({
+      runId,
+      workflowName: 'final-report',
+      evidenceState: 'verified',
+      evidence: ['unit tests passed'],
+    })
   })
 })

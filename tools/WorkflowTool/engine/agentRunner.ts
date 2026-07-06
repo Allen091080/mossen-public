@@ -15,7 +15,11 @@
 
 import { join } from 'node:path'
 import type { CanUseToolFn } from '../../../hooks/useCanUseTool.js'
-import type { ToolUseContext, Tools } from '../../../Tool.js'
+import {
+  toolMatchesName,
+  type ToolUseContext,
+  type Tools,
+} from '../../../Tool.js'
 import type { Message } from '../../../types/message.js'
 import { createChildAbortController } from '../../../utils/abortController.js'
 import type { ModelAlias } from '../../../utils/model/aliases.js'
@@ -23,8 +27,14 @@ import { assembleToolPool } from '../../../tools.js'
 import { createUserMessage, extractTextContent } from '../../../utils/messages.js'
 import { createAgentId } from '../../../utils/uuid.js'
 import { getQuerySourceForAgent } from '../../../utils/promptCategory.js'
-import { runWithCwdOverride } from '../../../utils/cwd.js'
+import { getCwd, runWithCwdOverride } from '../../../utils/cwd.js'
 import { logForDebugging } from '../../../utils/debug.js'
+import {
+  getFsImplementation,
+  getPathsForPermissionCheck,
+} from '../../../utils/fsOperations.js'
+import { expandPath } from '../../../utils/path.js'
+import { pathInWorkingPath } from '../../../utils/permissions/filesystem.js'
 import { getRemoteSessionUrl } from '../../../constants/product.js'
 import {
   createAgentWorktree,
@@ -34,6 +44,9 @@ import {
 import { runAgent } from '../../AgentTool/runAgent.js'
 import { AGENT_TOOL_NAME } from '../../AgentTool/constants.js'
 import { finalizeAgentTool } from '../../AgentTool/agentToolUtils.js'
+import { BASH_TOOL_NAME } from '../../BashTool/toolName.js'
+import { WEB_FETCH_TOOL_NAME } from '../../WebFetchTool/prompt.js'
+import { WEB_SEARCH_TOOL_NAME } from '../../WebSearchTool/prompt.js'
 import {
   isBuiltInAgent,
   resolveAgentTypeFlexible,
@@ -162,6 +175,9 @@ export type WorkflowAgentRunnerDeps = {
   remoteAgentRunner?: WorkflowRemoteAgentRunner
   runAgentImpl?: typeof runAgent
   localAgentStallTimeoutMs?: number | null
+  workflowAllowedTools?: readonly string[]
+  workflowAllowedHosts?: readonly string[]
+  workflowAllowedRoots?: readonly string[]
 }
 
 type WorkflowAgentStallWatch = {
@@ -895,6 +911,326 @@ export function filterWorkflowAgentTools(availableTools: Tools): Tools {
   )
 }
 
+function normalizeWorkflowAllowedTools(
+  allowedTools?: readonly string[],
+): string[] {
+  if (!allowedTools?.length) return []
+  const normalized: string[] = []
+  for (const item of allowedTools) {
+    const value = item.trim()
+    if (!value || normalized.includes(value)) continue
+    normalized.push(value)
+  }
+  return normalized
+}
+
+function hasWorkflowAllowedTools(allowedTools?: readonly string[]): boolean {
+  if (allowedTools === undefined) return false
+  const normalized = normalizeWorkflowAllowedTools(allowedTools)
+  return !normalized.includes('*')
+}
+
+function normalizeWorkflowAllowedHosts(
+  allowedHosts?: readonly string[],
+): string[] {
+  if (!allowedHosts?.length) return []
+  const normalized: string[] = []
+  for (const item of allowedHosts) {
+    const value = normalizeWorkflowHostPattern(item)
+    if (!value || normalized.includes(value)) continue
+    normalized.push(value)
+  }
+  return normalized
+}
+
+function normalizeWorkflowHostPattern(item: string): string | null {
+  const raw = item.trim().toLowerCase()
+  if (!raw) return null
+  if (raw === '*') return '*'
+
+  const wildcardPrefix = raw.startsWith('*.') || raw.startsWith('.')
+  if (wildcardPrefix) {
+    const host = raw.replace(/^\*\./, '').replace(/^\./, '')
+    const normalized = normalizeWorkflowHost(host)
+    return normalized ? `*.${normalized}` : null
+  }
+
+  try {
+    const parsed = new URL(raw.includes('://') ? raw : `https://${raw}`)
+    return normalizeWorkflowHost(parsed.hostname)
+  } catch {
+    const fallback = raw.split('/')[0]?.split(':')[0] ?? ''
+    return normalizeWorkflowHost(fallback)
+  }
+}
+
+function normalizeWorkflowHost(hostname: string): string | null {
+  const normalized = hostname.trim().toLowerCase().replace(/\.$/, '')
+  if (!normalized || normalized.includes('/') || normalized.includes(':')) {
+    return null
+  }
+  return normalized
+}
+
+export function hasWorkflowAllowedHosts(
+  allowedHosts?: readonly string[],
+): boolean {
+  if (allowedHosts === undefined) return false
+  const normalized = normalizeWorkflowAllowedHosts(allowedHosts)
+  return !normalized.includes('*')
+}
+
+function isWorkflowHostAllowedByPatterns(
+  hostname: string,
+  allowedHosts: readonly string[],
+): boolean {
+  const normalizedHost = normalizeWorkflowHost(hostname)
+  if (!normalizedHost) return false
+  return allowedHosts.some(pattern => {
+    if (pattern === '*') return true
+    if (pattern.startsWith('*.')) {
+      const suffix = pattern.slice(2)
+      return normalizedHost.endsWith(`.${suffix}`)
+    }
+    return normalizedHost === pattern
+  })
+}
+
+export function isWorkflowHostAllowed(
+  hostname: string,
+  allowedHosts?: readonly string[],
+): boolean {
+  if (allowedHosts === undefined) return true
+  const normalized = normalizeWorkflowAllowedHosts(allowedHosts)
+  if (normalized.includes('*')) return true
+  return isWorkflowHostAllowedByPatterns(hostname, normalized)
+}
+
+export function filterWorkflowAllowedTools(
+  availableTools: Tools,
+  allowedTools?: readonly string[],
+): Tools {
+  if (allowedTools === undefined) return availableTools
+  const normalized = normalizeWorkflowAllowedTools(allowedTools)
+  if (normalized.includes('*')) return availableTools
+  if (!normalized.length) return []
+  return availableTools.filter(tool =>
+    normalized.some(name => toolMatchesName(tool, name)),
+  )
+}
+
+export function filterWorkflowHostConstrainedTools(
+  availableTools: Tools,
+  allowedHosts?: readonly string[],
+): Tools {
+  if (!hasWorkflowAllowedHosts(allowedHosts)) return availableTools
+  return availableTools.filter(tool => !toolMatchesName(tool, WEB_SEARCH_TOOL_NAME))
+}
+
+function normalizeWorkflowAllowedRoots(
+  allowedRoots?: readonly string[],
+  baseDir: string = getCwd(),
+): string[] {
+  if (!allowedRoots?.length) return []
+  const normalized: string[] = []
+  for (const item of allowedRoots) {
+    const raw = item.trim()
+    if (!raw) continue
+    if (raw === '*') {
+      if (!normalized.includes('*')) normalized.push('*')
+      continue
+    }
+    let value: string
+    try {
+      value = expandPath(raw, baseDir)
+    } catch {
+      continue
+    }
+    if (!normalized.includes(value)) normalized.push(value)
+  }
+  return normalized
+}
+
+export function hasWorkflowAllowedRoots(
+  allowedRoots?: readonly string[],
+): boolean {
+  if (allowedRoots === undefined) return false
+  const normalized = normalizeWorkflowAllowedRoots(allowedRoots)
+  return !normalized.includes('*')
+}
+
+function isWorkflowPathAllowedByRoots(
+  path: string,
+  allowedRoots: readonly string[],
+): boolean {
+  const pathsToCheck = new Set(getPathsForPermissionCheck(path))
+  try {
+    pathsToCheck.add(getFsImplementation().realpathSync(path))
+  } catch {
+    // Non-existent paths are still covered by getPathsForPermissionCheck(),
+    // which resolves the deepest existing ancestor.
+  }
+  return Array.from(pathsToCheck).every(pathToCheck =>
+    allowedRoots.some(root => pathInWorkingPath(pathToCheck, root)),
+  )
+}
+
+export function isWorkflowPathAllowed(
+  path: string,
+  allowedRoots?: readonly string[],
+): boolean {
+  if (allowedRoots === undefined) return true
+  const normalized = normalizeWorkflowAllowedRoots(allowedRoots)
+  if (normalized.includes('*')) return true
+  if (!normalized.length) return false
+  return isWorkflowPathAllowedByRoots(path, normalized)
+}
+
+export function filterWorkflowRootConstrainedTools(
+  availableTools: Tools,
+  allowedRoots?: readonly string[],
+): Tools {
+  if (!hasWorkflowAllowedRoots(allowedRoots)) return availableTools
+  return availableTools.filter(tool => !toolMatchesName(tool, BASH_TOOL_NAME))
+}
+
+export function createWorkflowRootGuardedCanUseTool(
+  baseCanUseTool: CanUseToolFn,
+  allowedRoots?: readonly string[],
+): CanUseToolFn {
+  if (allowedRoots === undefined) return baseCanUseTool
+
+  return async (
+    tool,
+    input,
+    toolUseContext,
+    assistantMessage,
+    toolUseID,
+    forceDecision,
+  ) => {
+    const normalizedAllowedRoots = normalizeWorkflowAllowedRoots(allowedRoots)
+    if (normalizedAllowedRoots.includes('*')) {
+      return baseCanUseTool(
+        tool,
+        input,
+        toolUseContext,
+        assistantMessage,
+        toolUseID,
+        forceDecision,
+      )
+    }
+
+    const getPath = tool.getPath
+    if (typeof getPath === 'function') {
+      let path: string
+      try {
+        path = expandPath(getPath(input))
+      } catch {
+        return {
+          behavior: 'deny',
+          message:
+            `Workflow meta.allowedRoots denied ${tool.name} because its path could not be resolved.`,
+          decisionReason: {
+            type: 'other',
+            reason: 'workflow meta.allowedRoots',
+          },
+        }
+      }
+      if (
+        !normalizedAllowedRoots.length ||
+        !isWorkflowPathAllowedByRoots(path, normalizedAllowedRoots)
+      ) {
+        return {
+          behavior: 'deny',
+          message:
+            `Workflow meta.allowedRoots denied ${tool.name} access to ${path}.`,
+          decisionReason: {
+            type: 'other',
+            reason: 'workflow meta.allowedRoots',
+          },
+        }
+      }
+    }
+
+    return baseCanUseTool(
+      tool,
+      input,
+      toolUseContext,
+      assistantMessage,
+      toolUseID,
+      forceDecision,
+    )
+  }
+}
+
+export function createWorkflowHostGuardedCanUseTool(
+  baseCanUseTool: CanUseToolFn,
+  allowedHosts?: readonly string[],
+): CanUseToolFn {
+  if (allowedHosts === undefined) return baseCanUseTool
+  const normalizedAllowedHosts = normalizeWorkflowAllowedHosts(allowedHosts)
+  if (normalizedAllowedHosts.includes('*')) {
+    return baseCanUseTool
+  }
+
+  return async (
+    tool,
+    input,
+    toolUseContext,
+    assistantMessage,
+    toolUseID,
+    forceDecision,
+  ) => {
+    if (toolMatchesName(tool, WEB_FETCH_TOOL_NAME)) {
+      const url = input.url
+      if (typeof url !== 'string') {
+        return {
+          behavior: 'deny',
+          message:
+            'Workflow meta.allowedHosts denied WebFetch because the request did not include a URL.',
+          decisionReason: {
+            type: 'other',
+            reason: 'workflow meta.allowedHosts',
+          },
+        }
+      }
+      let hostname: string
+      try {
+        hostname = new URL(url).hostname
+      } catch {
+        return {
+          behavior: 'deny',
+          message:
+            'Workflow meta.allowedHosts denied WebFetch because the URL is invalid.',
+          decisionReason: {
+            type: 'other',
+            reason: 'workflow meta.allowedHosts',
+          },
+        }
+      }
+      if (!isWorkflowHostAllowedByPatterns(hostname, normalizedAllowedHosts)) {
+        return {
+          behavior: 'deny',
+          message: `Workflow meta.allowedHosts denied WebFetch access to ${hostname}.`,
+          decisionReason: {
+            type: 'other',
+            reason: 'workflow meta.allowedHosts',
+          },
+        }
+      }
+    }
+
+    return baseCanUseTool(
+      tool,
+      input,
+      toolUseContext,
+      assistantMessage,
+      toolUseID,
+      forceDecision,
+    )
+  }
+}
+
 export const WORKFLOW_AGENT_DIRECT_USER_TOOLS = new Set([
   ASK_USER_QUESTION_TOOL_NAME,
   BRIEF_TOOL_NAME,
@@ -988,7 +1324,14 @@ export function createWorkflowAgentRunner(
     remoteAgentRunner = runHostedRemoteWorkflowAgent,
     runAgentImpl = runAgent,
     localAgentStallTimeoutMs = DEFAULT_LOCAL_AGENT_STALL_TIMEOUT_MS,
+    workflowAllowedTools,
+    workflowAllowedHosts,
+    workflowAllowedRoots,
   } = deps
+  const guardedCanUseTool = createWorkflowHostGuardedCanUseTool(
+    createWorkflowRootGuardedCanUseTool(canUseTool, workflowAllowedRoots),
+    workflowAllowedHosts,
+  )
 
   function createStallWatch(
     agentAbortController: AbortController | undefined,
@@ -1064,7 +1407,7 @@ export function createWorkflowAgentRunner(
         agentDefinition,
         promptMessages,
         toolUseContext: workerToolUseContext,
-        canUseTool,
+        canUseTool: guardedCanUseTool,
         isAsync: false,
         availableTools,
         querySource: getQuerySourceForAgent(
@@ -1135,6 +1478,21 @@ export function createWorkflowAgentRunner(
       ? registerAgentController?.(meta.agentNumber, agentAbortController)
       : undefined
     if (opts.isolation === 'remote') {
+      if (hasWorkflowAllowedTools(workflowAllowedTools)) {
+        throw new Error(
+          "agent({isolation:'remote'}) cannot run when workflow meta.allowedTools is set because the local runner cannot enforce that tool allowlist remotely.",
+        )
+      }
+      if (hasWorkflowAllowedHosts(workflowAllowedHosts)) {
+        throw new Error(
+          "agent({isolation:'remote'}) cannot run when workflow meta.allowedHosts is set because the local runner cannot enforce that host allowlist remotely.",
+        )
+      }
+      if (hasWorkflowAllowedRoots(workflowAllowedRoots)) {
+        throw new Error(
+          "agent({isolation:'remote'}) cannot run when workflow meta.allowedRoots is set because the local runner cannot enforce that filesystem root allowlist remotely.",
+        )
+      }
       try {
         return await remoteAgentRunner(
           prompt,
@@ -1207,6 +1565,18 @@ export function createWorkflowAgentRunner(
     const baseAvailableTools = filterWorkflowAgentTools(
       assembleToolPool(workerPermissionContext, appState.mcp.tools),
     )
+    const workflowAvailableTools = filterWorkflowAllowedTools(
+      baseAvailableTools,
+      workflowAllowedTools,
+    )
+    const hostConstrainedTools = filterWorkflowHostConstrainedTools(
+      workflowAvailableTools,
+      workflowAllowedHosts,
+    )
+    const rootConstrainedTools = filterWorkflowRootConstrainedTools(
+      hostConstrainedTools,
+      workflowAllowedRoots,
+    )
     const model = opts.model as ModelAlias | undefined
 
     try {
@@ -1214,7 +1584,7 @@ export function createWorkflowAgentRunner(
       if (!opts.schema) {
         const { text, tokens, toolCalls, agentId, transcriptPath } = await runOnce(
           agentDefinition,
-          baseAvailableTools,
+          rootConstrainedTools,
           workerToolUseContext,
           prompt,
           model,
@@ -1239,7 +1609,7 @@ export function createWorkflowAgentRunner(
       // feedback) — runOnce must receive promptText, not the bare prompt.
       const schemaAgentDefinition = withStructuredOutputAllowed(agentDefinition)
       const schemaTools = withStructuredOutputTool(
-        baseAvailableTools,
+        rootConstrainedTools,
         opts.schema,
       )
       let promptText = prompt + buildSchemaInstruction(opts.schema)

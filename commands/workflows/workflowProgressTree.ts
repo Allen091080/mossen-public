@@ -4,6 +4,7 @@ import type {
 } from '../../tools/WorkflowTool/engine/journal.js'
 import {
   loadJournal,
+  workflowCheckpointPath,
   workflowReportPath,
   type WorkflowRunMeta,
 } from '../../tools/WorkflowTool/engine/journalStore.js'
@@ -291,13 +292,6 @@ function maybeParseJsonText(value: string): unknown {
   }
 }
 
-function asEvidenceText(value: unknown): string | null {
-  if (value == null) return null
-  if (typeof value === 'string') return collapseWorkflowResultSummary(value, 240)
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  return collapseWorkflowResultSummary(value, 240)
-}
-
 function looksLikeValidationCommand(value: string): boolean {
   const trimmed = value.trim()
   if (/^\.\/\S+\.(?:md|json|txt|log|html|png|jpg|jpeg|webp|csv)$/i.test(trimmed)) {
@@ -387,6 +381,7 @@ export function buildWorkflowVerificationSummary(options: {
   result?: unknown
   failures?: readonly string[]
   reportPath?: string | null
+  finalReportPath?: string | null
 }): WorkflowVerificationSummary {
   const failures = uniqueBounded([...(options.failures ?? [])], 20)
   const facts = {
@@ -398,15 +393,10 @@ export function buildWorkflowVerificationSummary(options: {
     ? maybeParseJsonText(options.result)
     : options.result
   collectWorkflowVerificationFacts(parsedResult, '', facts)
-  const fallbackEvidence = facts.evidence.length === 0
-    ? asEvidenceText(options.result)
-    : null
-  const evidence = uniqueBounded([
-    ...facts.evidence,
-    ...(fallbackEvidence ? [fallbackEvidence] : []),
-  ])
+  const evidence = uniqueBounded(facts.evidence)
   const commands = uniqueBounded(facts.commands)
   const artifacts = uniqueBounded([
+    ...(options.finalReportPath ? [options.finalReportPath] : []),
     ...(options.reportPath ? [options.reportPath] : []),
     ...facts.artifacts,
   ])
@@ -797,6 +787,7 @@ export function buildWorkflowTree(meta: WorkflowRunMeta): WorkflowJsonTreeNode {
       result: meta.result,
       failures: meta.failures,
       reportPath: workflowReportPath(meta.runId),
+      finalReportPath: meta.finalReportPath,
     }),
     tokensSpent: meta.tokensSpent,
     totalToolCalls: meta.totalToolCalls,
@@ -814,6 +805,7 @@ export function workflowRunToJson(meta: WorkflowRunMeta): WorkflowJsonRun {
     result: meta.result,
     failures: meta.failures,
     reportPath,
+    finalReportPath: meta.finalReportPath,
   })
   return {
     id: meta.runId,
@@ -843,7 +835,9 @@ export function workflowRunToJson(meta: WorkflowRunMeta): WorkflowJsonRun {
     phases: (meta.phases ?? []).map(phase => workflowPhaseToJson(phase, state)),
     failures: meta.failures ?? [],
     verification,
-    artifacts: verification.artifacts,
+    artifacts: Array.from(
+      new Set([...verification.artifacts, workflowCheckpointPath(meta.runId)]),
+    ),
     result: meta.result ?? null,
     resultSummary,
     tree: buildWorkflowTree(meta),

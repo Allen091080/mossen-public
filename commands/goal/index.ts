@@ -5,7 +5,7 @@ const goal = {
   type: 'local-jsx',
   name: 'goal',
   description: t('cmd.goal.description'),
-  argumentHint: '[set <goal>|status|clear|pause|resume|done]',
+  argumentHint: '[set <goal>|status|board [--json]|clear|pause|resume|done]',
   load: () => import('./goal.js'),
 } satisfies Command
 

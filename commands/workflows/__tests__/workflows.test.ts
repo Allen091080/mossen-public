@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { isValidElement } from 'react'
@@ -12,7 +19,23 @@ import {
 } from '../../../bootstrap/state.js'
 import { getTaskOutputPath } from '../../../utils/task/diskOutput.js'
 import { buildWorkflowResumeNextInput, call } from '../workflows.js'
+import {
+  buildWorkflowTemplate,
+  createWorkflowCommand,
+} from '../createWorkflow.js'
+import {
+  buildWorkflowDraft,
+  draftWorkflowCommand,
+} from '../draftWorkflow.js'
+import { explainWorkflowCommand } from '../explainWorkflow.js'
+import { registryWorkflowCommand } from '../registryWorkflow.js'
+import { testWorkflowCommand } from '../testWorkflow.js'
 import { deriveWorkflowSaveName, saveRun } from '../saveWorkflow.js'
+import {
+  validateWorkflowTargetsForCommand,
+  validateWorkflowsCommand,
+} from '../validateWorkflow.js'
+import { validateWorkflowAssetSource } from '../../../tools/WorkflowTool/workflowAsset.js'
 import {
   canRestartWorkflowAgentStatus,
   canStopWorkflowAgentStatus,
@@ -35,6 +58,7 @@ import {
   clearActiveWorkflowRunsForTests,
   initRunArtifacts,
   loadRunMeta,
+  runScriptPath,
   STALE_RUNNING_WORKFLOW_MESSAGE,
   workflowReportPath,
 } from '../../../tools/WorkflowTool/engine/journalStore.js'
@@ -317,6 +341,682 @@ return 'ok'
     }
   })
 
+  test('validate reports strict contract failures for a workflow script path', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wf-validate-path-'))
+    try {
+      const scriptPath = join(root, 'legacy.js')
+      writeFileSync(
+        scriptPath,
+        "export const meta = { name: 'legacy-flow', description: 'Legacy flow' }\nreturn 1\n",
+        'utf8',
+      )
+
+      const message = await validateWorkflowsCommand([scriptPath, '--strict'])
+
+      expect(message).toContain('Workflow validation failed: 1 checked')
+      expect(message).toContain('[FAIL] legacy-flow')
+      expect(message).toContain('missing-phases')
+      expect(message).toContain('missing-bounded-budgets')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('validate scans project workflow files including malformed assets', () => {
+    const priorRoot = getProjectRoot()
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    const root = mkdtempSync(join(tmpdir(), 'wf-validate-project-'))
+    try {
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+      setProjectRoot(root)
+      const workflowsDir = getProjectWorkflowsDir(root)
+      mkdirSync(workflowsDir, { recursive: true })
+      writeFileSync(
+        join(workflowsDir, 'bounded.js'),
+        `export const meta = {
+          name: 'bounded-flow',
+          description: 'Bounded flow',
+          budgets: {
+            timeoutMs: 1000,
+            phaseTimeoutMs: 500,
+            maxAgents: 1,
+            maxParallel: 1,
+            maxNestedWorkflows: 0,
+          },
+          phases: [{ title: 'Check' }],
+        }
+        return 1
+        `,
+        'utf8',
+      )
+      writeFileSync(
+        join(workflowsDir, 'broken.js'),
+        "const meta = { name: 'broken-flow', description: 'Broken flow' }\nreturn 1\n",
+        'utf8',
+      )
+
+      const results = validateWorkflowTargetsForCommand(['project', '--strict'])
+      const message = results.length
+        ? results.map(result => result.issues.map(issue => issue.code).join(',')).join('\n')
+        : ''
+
+      expect(results).toHaveLength(2)
+      expect(results.some(result => result.ok)).toBe(true)
+      expect(results.some(result => !result.ok)).toBe(true)
+      expect(message).toContain('invalid-meta')
+    } finally {
+      setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('/workflows validate routes through the command entry', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wf-validate-command-'))
+    try {
+      const scriptPath = join(root, 'simple.js')
+      writeFileSync(
+        scriptPath,
+        "export const meta = { name: 'simple-flow', description: 'Simple flow' }\nreturn 1\n",
+        'utf8',
+      )
+      let message = ''
+
+      await call(
+        nextMessage => {
+          message = nextMessage
+        },
+        workflowCommandContext({ tasks: {} }) as never,
+        `validate ${scriptPath}`,
+      )
+
+      expect(message).toContain('Workflow validation passed: 1 checked')
+      expect(message).toContain('[WARN] simple-flow')
+      expect(message).toContain('legacy-missing-phases')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('create builds a strict workflow asset template', () => {
+    const source = buildWorkflowTemplate('created-flow')
+    const validation = validateWorkflowAssetSource(source, {
+      scope: 'project',
+      requireBoundedBudgets: true,
+      requirePhases: true,
+    })
+
+    expect(validation.ok).toBe(true)
+    expect(validation.asset).toMatchObject({
+      name: 'created-flow',
+      budgets: {
+        timeoutMs: 600000,
+        phaseTimeoutMs: 120000,
+        maxAgents: 3,
+        maxParallel: 2,
+        maxNestedWorkflows: 0,
+      },
+      allowedTools: ['Read', 'Grep', 'Glob'],
+      allowedRoots: ['.'],
+      evidence: {
+        finalReport: true,
+        processClean: true,
+      },
+      lifecycle: {
+        version: '0.1.0',
+        owner: 'project',
+        status: 'draft',
+      },
+    })
+    expect(source).toContain('evaluationPrompt')
+    expect(source).toContain('workflow-template-completed')
+  })
+
+  test('create writes a project workflow and refuses accidental overwrite', () => {
+    const priorRoot = getProjectRoot()
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    const root = mkdtempSync(join(tmpdir(), 'wf-create-project-'))
+    try {
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+      setProjectRoot(root)
+
+      const created = createWorkflowCommand(['Release checklist'])
+      const duplicate = createWorkflowCommand(['Release-checklist'])
+      const forced = createWorkflowCommand(['Release-checklist', '--force'])
+      const savedPath = join(
+        getProjectWorkflowsDir(root),
+        'Release-checklist.js',
+      )
+
+      expect(created.ok).toBe(true)
+      expect(created.name).toBe('Release-checklist')
+      expect(created.path).toBe(savedPath)
+      expect(readFileSync(savedPath, 'utf8')).toContain(
+        'name: "Release-checklist"',
+      )
+      expect(duplicate.ok).toBe(false)
+      expect(duplicate.message).toContain('already exists')
+      expect(forced.ok).toBe(true)
+      expect(
+        validateWorkflowTargetsForCommand(['Release-checklist', '--strict']),
+      ).toHaveLength(1)
+      expect(
+        validateWorkflowTargetsForCommand(['Release-checklist', '--strict'])[0]?.ok,
+      ).toBe(true)
+    } finally {
+      setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('/workflows create routes through the command entry', async () => {
+    const priorRoot = getProjectRoot()
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    const root = mkdtempSync(join(tmpdir(), 'wf-create-command-'))
+    try {
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+      setProjectRoot(root)
+      let message = ''
+
+      await call(
+        nextMessage => {
+          message = nextMessage
+        },
+        workflowCommandContext({ tasks: {} }) as never,
+        'create route created flow',
+      )
+
+      expect(message).toContain('Created workflow "route-created-flow"')
+      expect(message).toContain('/route-created-flow task=...')
+      expect(
+        readFileSync(
+          join(getProjectWorkflowsDir(root), 'route-created-flow.js'),
+          'utf8',
+        ),
+      ).toContain('workflow-template-completed')
+    } finally {
+      setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('draft previews a strict goal workflow without writing it', () => {
+    const priorRoot = getProjectRoot()
+    const root = mkdtempSync(join(tmpdir(), 'wf-draft-preview-'))
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    try {
+      setProjectRoot(root)
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+
+      const result = draftWorkflowCommand([
+        'Audit',
+        'release',
+        'readiness',
+        '--name',
+        'release-readiness-draft',
+      ])
+
+      expect(result.ok).toBe(true)
+      expect(result.written).toBe(false)
+      expect(result.name).toBe('release-readiness-draft')
+      expect(result.path).toBe(
+        join(getProjectWorkflowsDir(root), 'release-readiness-draft.js'),
+      )
+      expect(result.source).toContain('const PLAN_SCHEMA')
+      expect(result.message).toContain('Workflow draft ready for review')
+      expect(result.message).toContain('no file was written and no run was queued')
+      expect(result.message).toContain('/workflows validate release-readiness-draft --strict')
+      expect(existsSync(result.path!)).toBe(false)
+
+      const validation = validateWorkflowAssetSource(result.source!, {
+        scope: 'project',
+        requireBoundedBudgets: true,
+        requirePhases: true,
+      })
+      expect(validation.ok).toBe(true)
+      expect(validation.asset?.lifecycle?.status).toBe('draft')
+    } finally {
+      setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('draft writes only after explicit review approval', () => {
+    const priorRoot = getProjectRoot()
+    const root = mkdtempSync(join(tmpdir(), 'wf-draft-write-'))
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    try {
+      setProjectRoot(root)
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+
+      const preview = draftWorkflowCommand([
+        'Prepare',
+        'migration',
+        'plan',
+        '--name',
+        'migration-plan-draft',
+      ])
+      const written = draftWorkflowCommand([
+        'Prepare',
+        'migration',
+        'plan',
+        '--name',
+        'migration-plan-draft',
+        '--write',
+      ])
+      const duplicate = draftWorkflowCommand([
+        'Prepare',
+        'migration',
+        'plan',
+        '--name',
+        'migration-plan-draft',
+        '--write',
+      ])
+
+      expect(preview.written).toBe(false)
+      expect(written.ok).toBe(true)
+      expect(written.written).toBe(true)
+      expect(written.path).toBe(
+        join(getProjectWorkflowsDir(root), 'migration-plan-draft.js'),
+      )
+      const writtenSource = readFileSync(written.path!, 'utf8')
+      expect(writtenSource).toContain('"name": "migration-plan-draft"')
+      expect(writtenSource).toContain('/workflows validate migration-plan-draft --strict')
+      expect(written.message).toContain('No run was queued by draft generation')
+      expect(duplicate.ok).toBe(false)
+      expect(duplicate.message).toContain('Use --force to overwrite')
+
+      const results = validateWorkflowTargetsForCommand([
+        'migration-plan-draft',
+        '--strict',
+      ])
+      expect(results).toHaveLength(1)
+      expect(results[0]?.ok).toBe(true)
+      expect(testWorkflowCommand(['migration-plan-draft']).ok).toBe(true)
+    } finally {
+      setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('draft blocks invalid generated workflow before write or run', () => {
+    const priorRoot = getProjectRoot()
+    const root = mkdtempSync(join(tmpdir(), 'wf-draft-invalid-'))
+    try {
+      setProjectRoot(root)
+      const result = buildWorkflowDraft(
+        ['Invalid', 'goal', '--name', 'invalid-draft', '--write'],
+        {
+          buildScript: () =>
+            "export const meta = { name: 'invalid-draft', description: 'Invalid draft' }\nreturn 1\n",
+        },
+      )
+
+      expect(result.ok).toBe(false)
+      expect(result.message).toContain('Workflow draft blocked before write')
+      expect(result.message).toContain('missing-phases')
+      expect(result.message).toContain('No file was written and no run was queued')
+      expect(
+        existsSync(join(getProjectWorkflowsDir(root), 'invalid-draft.js')),
+      ).toBe(false)
+    } finally {
+      setProjectRoot(priorRoot)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('/workflows draft routes through the command entry', async () => {
+    const priorRoot = getProjectRoot()
+    const root = mkdtempSync(join(tmpdir(), 'wf-draft-route-'))
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    try {
+      setProjectRoot(root)
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+      const done: Array<{ message: string; options?: unknown }> = []
+      const node = await call(
+        (message, options) => done.push({ message, options }),
+        workflowCommandContext({ tasks: {} }) as never,
+        'draft Verify release evidence --name route-draft --write',
+      )
+
+      expect(node).toBeNull()
+      expect(done[0]?.message).toContain('Workflow draft written: route-draft')
+      expect(done[0]?.message).not.toContain('queuing')
+      expect(done[0]?.options).toEqual({ display: 'system' })
+      expect(
+        existsSync(join(getProjectWorkflowsDir(root), 'route-draft.js')),
+      ).toBe(true)
+    } finally {
+      setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('explain renders asset contract summary for a generated workflow', () => {
+    const priorRoot = getProjectRoot()
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    const root = mkdtempSync(join(tmpdir(), 'wf-explain-created-'))
+    try {
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+      setProjectRoot(root)
+      createWorkflowCommand(['explain-created-flow'])
+
+      const message = explainWorkflowCommand(['explain-created-flow', '--strict'])
+
+      expect(message).toContain('Workflow: explain-created-flow')
+      expect(message).toContain('Arguments:')
+      expect(message).toContain('Budgets:')
+      expect(message).toContain('allowedTools: Read, Grep, Glob')
+      expect(message).toContain('Lifecycle:')
+      expect(message).toContain('status: draft')
+      expect(message).toContain('Phases:')
+      expect(message).toContain('Evidence expectations:')
+      expect(message).toContain('Validation: PASS')
+      expect(message).toContain('Run: /explain-created-flow task=...')
+    } finally {
+      setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('explain surfaces strict validation issues for legacy assets', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wf-explain-legacy-'))
+    try {
+      const scriptPath = join(root, 'legacy.js')
+      writeFileSync(
+        scriptPath,
+        "export const meta = { name: 'legacy-explain', description: 'Legacy explain' }\nreturn 1\n",
+        'utf8',
+      )
+
+      const message = explainWorkflowCommand([scriptPath, '--strict'])
+
+      expect(message).toContain('Workflow: legacy-explain')
+      expect(message).toContain('Validation: FAIL')
+      expect(message).toContain('missing-phases')
+      expect(message).toContain('missing-bounded-budgets')
+      expect(message).toContain(`Source: scriptPath ${scriptPath}`)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('/workflows explain routes through the command entry', async () => {
+    const priorRoot = getProjectRoot()
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    const root = mkdtempSync(join(tmpdir(), 'wf-explain-command-'))
+    try {
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+      setProjectRoot(root)
+      createWorkflowCommand(['route-explain-flow'])
+      let message = ''
+
+      await call(
+        nextMessage => {
+          message = nextMessage
+        },
+        workflowCommandContext({ tasks: {} }) as never,
+        'explain route-explain-flow --strict',
+      )
+
+      expect(message).toContain('Workflow: route-explain-flow')
+      expect(message).toContain('Validate: /workflows validate route-explain-flow --strict')
+    } finally {
+      setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('registry lists lifecycle state for project workflow assets', () => {
+    const priorRoot = getProjectRoot()
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    const root = mkdtempSync(join(tmpdir(), 'wf-registry-command-'))
+    try {
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+      setProjectRoot(root)
+      createWorkflowCommand(['registry-draft-flow'])
+      const workflowsDir = getProjectWorkflowsDir(root)
+      writeFileSync(
+        join(workflowsDir, 'registry-tested-flow.js'),
+        `export const meta = {
+          name: 'registry-tested-flow',
+          description: 'Registry tested flow',
+          budgets: {
+            timeoutMs: 1000,
+            phaseTimeoutMs: 500,
+            maxAgents: 1,
+            maxParallel: 1,
+            maxNestedWorkflows: 0,
+          },
+          lifecycle: {
+            version: '1.0.0',
+            owner: 'qa',
+            status: 'tested',
+            lastTestedAt: '2026-07-06T00:00:00.000Z',
+            lastTestArtifact: '/tmp/mossen-harness/registry/artifacts/assertions.json',
+          },
+          phases: [{ title: 'Check' }],
+        }
+        return 1
+        `,
+        'utf8',
+      )
+
+      const message = registryWorkflowCommand(['--strict'])
+
+      expect(message).toContain('Workflow registry:')
+      expect(message).toContain('[PASS] registry-draft-flow')
+      expect(message).toContain('status=draft')
+      expect(message).toContain('[PASS] registry-tested-flow')
+      expect(message).toContain('status=tested')
+      expect(message).toContain(
+        'lastTestArtifact=/tmp/mossen-harness/registry/artifacts/assertions.json',
+      )
+    } finally {
+      setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('/workflows registry routes through the command entry', async () => {
+    const priorRoot = getProjectRoot()
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    const root = mkdtempSync(join(tmpdir(), 'wf-registry-route-'))
+    try {
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+      setProjectRoot(root)
+      createWorkflowCommand(['route-registry-flow'])
+      let message = ''
+
+      await call(
+        nextMessage => {
+          message = nextMessage
+        },
+        workflowCommandContext({ tasks: {} }) as never,
+        'registry --strict',
+      )
+
+      expect(message).toContain('Workflow registry:')
+      expect(message).toContain('route-registry-flow')
+      expect(message).toContain('status=draft')
+    } finally {
+      setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('test validates a generated workflow and prints a runnable dry-run command', () => {
+    const priorRoot = getProjectRoot()
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    const root = mkdtempSync(join(tmpdir(), 'wf-test-created-'))
+    try {
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+      setProjectRoot(root)
+      createWorkflowCommand(['test-created-flow'])
+
+      const result = testWorkflowCommand(['test-created-flow', 'task=check'])
+
+      expect(result.ok).toBe(true)
+      expect(result.nextInput).toBeUndefined()
+      expect(result.message).toContain('Workflow test ready: test-created-flow')
+      expect(result.message).toContain('Validation: PASS (strict')
+      expect(result.message).toContain(
+        '/test-created-flow {"task":"check"}',
+      )
+      expect(result.message).toContain('Mode: dry-run')
+    } finally {
+      setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('test blocks strict legacy assets instead of queueing placebo runs', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wf-test-legacy-'))
+    try {
+      const scriptPath = join(root, 'legacy.js')
+      writeFileSync(
+        scriptPath,
+        "export const meta = { name: 'legacy-test', description: 'Legacy test' }\nreturn 1\n",
+        'utf8',
+      )
+
+      const result = testWorkflowCommand([scriptPath, '--run'])
+
+      expect(result.ok).toBe(false)
+      expect(result.nextInput).toBeUndefined()
+      expect(result.message).toContain('Workflow test blocked: legacy-test')
+      expect(result.message).toContain('Validation: FAIL (strict')
+      expect(result.message).toContain('missing-phases')
+      expect(result.message).toContain('No test command was queued')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('test can queue a scriptPath workflow in legacy-compatible mode', () => {
+    const priorRoot = getProjectRoot()
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    const root = mkdtempSync(join(tmpdir(), 'wf-test-script-path-'))
+    try {
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+      setProjectRoot(root)
+      const created = createWorkflowCommand(['script-path-test-flow'])
+      expect(created.path).toBeTruthy()
+
+      const result = testWorkflowCommand([
+        created.path!,
+        'ticket=42',
+        '--legacy-compatible',
+        '--run',
+      ])
+
+      expect(result.ok).toBe(true)
+      expect(result.submitNextInput).toBe(true)
+      expect(result.nextInput).toContain('Workflow({scriptPath:')
+      expect(result.nextInput).toContain(created.path)
+      expect(result.nextInput).toContain('args: {"ticket":42}')
+      expect(result.message).toContain('Validation: PASS (legacy-compatible')
+    } finally {
+      setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('/workflows test --run routes and queues the generated direct command', async () => {
+    const priorRoot = getProjectRoot()
+    const priorWorkflowHome = process.env[WORKFLOW_HOME_ENV]
+    const root = mkdtempSync(join(tmpdir(), 'wf-test-command-'))
+    try {
+      process.env[WORKFLOW_HOME_ENV] = join(root, 'workflow-home')
+      setProjectRoot(root)
+      createWorkflowCommand(['route-test-flow'])
+      let message = ''
+      let nextInput = ''
+      let submitNextInput = false
+
+      await call(
+        (nextMessage, options) => {
+          message = nextMessage
+          nextInput = options?.nextInput ?? ''
+          submitNextInput = options?.submitNextInput ?? false
+        },
+        workflowCommandContext({ tasks: {} }) as never,
+        'test route-test-flow task=route --run',
+      )
+
+      expect(message).toContain('Workflow test ready: route-test-flow')
+      expect(nextInput).toBe('/route-test-flow {"task":"route"}')
+      expect(submitNextInput).toBe(true)
+    } finally {
+      setProjectRoot(priorRoot)
+      if (priorWorkflowHome === undefined) {
+        delete process.env[WORKFLOW_HOME_ENV]
+      } else {
+        process.env[WORKFLOW_HOME_ENV] = priorWorkflowHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('export writes a Markdown workflow report for a recorded run', async () => {
     const priorRoot = getProjectRoot()
     const priorSession = getSessionId()
@@ -370,9 +1070,10 @@ return 'ok'
       expect(report).toContain('- Parent goal: goal_export_report')
       expect(report).toContain('## Progress Tree')
       expect(report).toContain('- [completed] phase: Verify')
-      expect(report).toContain('- [completed] verification: Verification evidence')
+      expect(report).toContain('- [ready] verification: Verification evidence')
       expect(report).toContain('## Verification Evidence')
-      expect(report).toContain('- State: completed')
+      expect(report).toContain('- State: ready')
+      expect(report).toContain('No explicit verification evidence captured')
       expect(report).toContain('All checks passed.')
     } finally {
       switchSession(priorSession, priorProjectDir)
@@ -645,6 +1346,8 @@ return 'ok'
       )
 
       expect(stoppedMessage).toContain('wf_stopped-resume')
+      expect(stoppedMessage).toContain('checkpoint:')
+      expect(stoppedMessage).toContain('completed=0')
       expect(stoppedNextInput).toContain(
         "Workflow({scriptPath: '",
       )
@@ -843,7 +1546,8 @@ return 'ok'
       )
 
       expect(message).toContain(`history-flow (${runId})`)
-      expect(message).toContain('verification: completed')
+      expect(message).toContain('verification: ready')
+      expect(message).toContain('No explicit verification evidence captured')
       expect(message).toContain(`report: ${workflowReportPath(runId)}`)
       expect(message).toContain('Scan · 1 agent(s) · 1 completed · 25 tok · 1 tools')
       expect(message).toContain('Review · 1 agent(s) · 1 completed · 30 tok · 2 tools')
@@ -913,7 +1617,7 @@ return 'ok'
       )
 
       expect(message).toContain(`result-only-flow (${runId})`)
-      expect(message).toContain('verification: completed')
+      expect(message).toContain('verification: ready')
       expect(message).toContain(`report: ${workflowReportPath(runId)}`)
       expect(message).toMatch(/(?:Result|结果):/)
       expect(message).toContain('Top-level report')
@@ -1218,8 +1922,73 @@ return 'ok'
   })
 
   test('resume-task queues Workflow input with the workflow run id, not the task id', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
     const taskId = 'wtaskcmd2'
     const runId = 'wf_cmd_resume'
+    const root = mkdtempSync(join(tmpdir(), 'wf-cmd-resume-checkpoint-'))
+    let nextInput = ''
+    let message = ''
+
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      setProjectRoot(root)
+      switchSession(
+        '88888888-8888-4888-8888-888888888888' as ReturnType<typeof getSessionId>,
+      )
+      initRunArtifacts(runId, 'return "resume"', {
+        runId,
+        workflowName: 'resume-task-flow',
+        description: 'Resume task flow',
+        createdAt: new Date(0).toISOString(),
+        status: 'paused',
+        args: { ticket: 42 },
+      })
+      const state = {
+        tasks: {
+          [taskId]: {
+            id: taskId,
+            type: 'local_workflow',
+            status: 'paused',
+            runId,
+            workflowRunId: runId,
+            scriptPath: runScriptPath(runId),
+            args: { ticket: 42 },
+          },
+        },
+      }
+
+      await call(
+        (nextMessage, options) => {
+          message = nextMessage
+          nextInput = options?.nextInput ?? ''
+        },
+        workflowCommandContext(state) as never,
+        `resume-task ${runId}`,
+      )
+
+      expect(message).toContain('checkpoint:')
+      expect(nextInput).toContain("Workflow({scriptPath: '")
+      expect(nextInput).toContain("resumeFromRunId: 'wf_cmd_resume'")
+      expect(nextInput).toContain('args: {"ticket":42}')
+      expect(nextInput).not.toContain(taskId)
+    } finally {
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('resume-task blocks compatibility fallback when checkpoint is missing', async () => {
+    const taskId = 'wtaskcmd_missing_checkpoint'
+    const runId = 'wf_cmd_missing_checkpoint'
     const state = {
       tasks: {
         [taskId]: {
@@ -1228,56 +1997,84 @@ return 'ok'
           status: 'paused',
           runId,
           workflowRunId: runId,
-          scriptPath: '/tmp/workflows/wf_cmd_resume/script.js',
-          args: { ticket: 42 },
+          scriptPath: '/tmp/workflows/wf_cmd_missing_checkpoint/script.js',
         },
       },
     }
+    let message = ''
     let nextInput = ''
 
     await call(
-      (_message, options) => {
+      (nextMessage, options) => {
+        message = nextMessage
         nextInput = options?.nextInput ?? ''
       },
       workflowCommandContext(state) as never,
       `resume-task ${runId}`,
     )
 
-    expect(nextInput).toContain(
-      "Workflow({scriptPath: '/tmp/workflows/wf_cmd_resume/script.js'",
-    )
-    expect(nextInput).toContain("resumeFromRunId: 'wf_cmd_resume'")
-    expect(nextInput).toContain('args: {"ticket":42}')
-    expect(nextInput).not.toContain(taskId)
+    expect(message).toContain('has no recovery checkpoint')
+    expect(nextInput).toBe('')
   })
 
   test('resume-task queues stopped workflow runs like the interactive view', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
     const taskId = 'wtaskcmd_stopped_resume'
     const runId = 'wf_cmd_stopped_resume'
-    const state = {
-      tasks: {
-        [taskId]: {
-          ...runningWorkflowTask({ taskId, runId }),
-          status: 'killed',
-          abortController: undefined,
-          endTime: Date.now(),
-        },
-      },
-    }
+    const root = mkdtempSync(join(tmpdir(), 'wf-cmd-stopped-checkpoint-'))
     let nextInput = ''
+    let message = ''
 
-    await call(
-      (_message, options) => {
-        nextInput = options?.nextInput ?? ''
-      },
-      workflowCommandContext(state) as never,
-      `resume-task ${runId}`,
-    )
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      setProjectRoot(root)
+      switchSession(
+        '99999999-9999-4999-8999-999999999999' as ReturnType<typeof getSessionId>,
+      )
+      initRunArtifacts(runId, 'return "stopped"', {
+        runId,
+        workflowName: 'stopped-resume-flow',
+        description: 'Stopped resume flow',
+        createdAt: new Date(0).toISOString(),
+        status: 'killed',
+      })
+      const state = {
+        tasks: {
+          [taskId]: {
+            ...runningWorkflowTask({ taskId, runId }),
+            status: 'killed',
+            scriptPath: runScriptPath(runId),
+            abortController: undefined,
+            endTime: Date.now(),
+          },
+        },
+      }
 
-    expect(nextInput).toContain(
-      "Workflow({scriptPath: '/tmp/workflows/wf_cmd_stopped_resume/script.js'",
-    )
-    expect(nextInput).toContain("resumeFromRunId: 'wf_cmd_stopped_resume'")
-    expect(nextInput).not.toContain(taskId)
+      await call(
+        (nextMessage, options) => {
+          message = nextMessage
+          nextInput = options?.nextInput ?? ''
+        },
+        workflowCommandContext(state) as never,
+        `resume-task ${runId}`,
+      )
+
+      expect(message).toContain('checkpoint:')
+      expect(nextInput).toContain("Workflow({scriptPath: '")
+      expect(nextInput).toContain("resumeFromRunId: 'wf_cmd_stopped_resume'")
+      expect(nextInput).not.toContain(taskId)
+    } finally {
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

@@ -4,6 +4,7 @@ import {
   budgetLimitSessionGoalState,
   completeSessionGoalState,
   deferSessionGoalEvaluation,
+  editSessionGoalState,
   estimateSessionGoalTokens,
   failSessionGoalState,
   getSessionGoalActualTokenUsage,
@@ -38,6 +39,7 @@ import {
   observeSessionGoalMetric,
 } from './sessionGoalMetrics.js'
 import { asSystemPrompt } from './systemPromptType.js'
+import type { SessionGoalWorkflowPolicyVerdict } from './sessionGoalWorkflowPolicy.js'
 
 const MAX_TRANSCRIPT_MESSAGES = 28
 const MAX_TRANSCRIPT_CHARS = 12_000
@@ -105,7 +107,20 @@ export type SessionGoalPostTurnAction =
       event: SessionGoalEvent
       events: SessionGoalEvent[]
     }
+  | {
+      type: 'wait_for_workflow'
+      reason: string
+      event: SessionGoalEvent
+      events: SessionGoalEvent[]
+    }
   | { type: 'continue'; reason: string; prompt: string; event: SessionGoalEvent }
+  | {
+      type: 'launch_workflow'
+      reason: string
+      prompt: string
+      task: string
+      event: SessionGoalEvent
+    }
   | {
       type: 'error'
       reason: string
@@ -332,6 +347,28 @@ export function buildSessionGoalContinuationPrompt(
   ].filter((line): line is string => line !== null).join('\n')
 }
 
+export function buildSessionGoalWorkflowLaunchPrompt(
+  goal: MossenGoalState,
+  task: string,
+  reason: string,
+): string {
+  return [
+    '<session-goal-workflow-launch>',
+    'The active session goal matches Mossen workflow-scale work.',
+    'Call Workflow({ task: <workflow_task> }) as the next action unless a current-state check proves that a workflow is unnecessary.',
+    'Do not mark the goal complete from the workflow launch receipt.',
+    'After launch, wait for the workflow task to reach a terminal state and use its final report, artifacts, files, commands, tests, screenshots, runtime output, or user confirmation as evidence.',
+    `Policy reason: ${truncate(reason, MAX_REASON_CHARS)}`,
+    '<objective>',
+    escapeXmlText(goal.text),
+    '</objective>',
+    '<workflow_task>',
+    escapeXmlText(task),
+    '</workflow_task>',
+    '</session-goal-workflow-launch>',
+  ].join('\n')
+}
+
 export function buildSessionGoalStartPrompt(goal: MossenGoalState): string {
   return [
     '<session-goal-start>',
@@ -428,8 +465,10 @@ export function hasCompletedWorkflowGoalEvidence(goal: MossenGoalState): boolean
     /^Workflow\b[\s\S]*\bcompleted\b/i.test(evidence),
   )
   if (!hasCompletedWorkflow) return false
+  const workflowNegativeEvidence =
+    /^Workflow\b[\s\S]*(\bended (failed|killed)\b|\bneeds verification\b|\bfinal report failed\b)/i
   return !goal.negativeEvidence.some(evidence =>
-    /^Workflow\b[\s\S]*\bended (failed|killed)\b/i.test(evidence),
+    workflowNegativeEvidence.test(evidence),
   )
 }
 
@@ -446,6 +485,42 @@ export function deferActiveSessionGoalAfterTurn(
     reason,
     event,
     events: [event],
+  }
+}
+
+export function waitForActiveSessionGoalWorkflowAfterTurn(
+  reason: string,
+): SessionGoalPostTurnAction {
+  const goal = getSessionGoalState()
+  if (!goal || goal.status !== 'active') return { type: 'none' }
+  const deferred = deferSessionGoalEvaluation(reason) ?? goal
+  const event = buildGoalEvalEvent(deferred, 'wait_for_workflow', reason)
+  observeSessionGoalMetric(GOAL_DEFERRED_METRIC)
+  return {
+    type: 'wait_for_workflow',
+    reason,
+    event,
+    events: [event],
+  }
+}
+
+export function launchActiveSessionGoalWorkflowAfterTurn(
+  policy: Extract<SessionGoalWorkflowPolicyVerdict, { type: 'launch_workflow' }>,
+): SessionGoalPostTurnAction {
+  const goal = getSessionGoalState()
+  if (!goal || goal.status !== 'active') return { type: 'none' }
+  const reason = truncate(policy.reason, MAX_REASON_CHARS)
+  const evaluated = recordSessionGoalEvaluation('not_met', reason) ?? goal
+  const nextPlan = truncate('Launch Workflow for goal: ' + policy.task, 500)
+  const planned = editSessionGoalState({ nextPlan }) ?? evaluated
+  const event = buildGoalEvalEvent(planned, 'launch_workflow', reason)
+  observeSessionGoalMetric(GOAL_CONTINUED_METRIC)
+  return {
+    type: 'launch_workflow',
+    reason,
+    prompt: buildSessionGoalWorkflowLaunchPrompt(planned, policy.task, reason),
+    task: policy.task,
+    event,
   }
 }
 

@@ -30,7 +30,10 @@ function js(value: unknown): string {
   return JSON.stringify(value, null, 2)
 }
 
-export function buildDynamicWorkflowScript(task: string): string {
+export function buildDynamicWorkflowScript(
+  task: string,
+  options: { name?: string } = {},
+): string {
   const normalizedTask = task.replace(/\s+/g, ' ').trim()
   if (!normalizedTask) {
     throw new Error('Workflow task must be a non-empty string.')
@@ -42,12 +45,55 @@ export function buildDynamicWorkflowScript(task: string): string {
   }
 
   const shortTitle = compact(normalizedTask, MAX_DYNAMIC_WORKFLOW_TITLE_CHARS)
+  const workflowName = options.name?.trim()
+    ? options.name.trim()
+    : `dynamic-${slugFromTask(normalizedTask)}`
   const meta = {
-    name: `dynamic-${slugFromTask(normalizedTask)}`,
+    name: workflowName,
     title: `Dynamic workflow: ${shortTitle}`,
     description: `Auto-plan, execute, verify, and synthesize: ${shortTitle}`,
     whenToUse:
       'Use when the user asks Mossen to handle a broad task through multi-agent workflow orchestration.',
+    argsSchema: {
+      type: 'object',
+      properties: {
+        task: {
+          type: 'string',
+          description:
+            'Optional run-specific task note. The generated workflow keeps the original draft goal as its source of truth.',
+        },
+      },
+      additionalProperties: true,
+    },
+    budgets: {
+      timeoutMs: 900000,
+      phaseTimeoutMs: 180000,
+      maxAgents: 8,
+      maxParallel: 4,
+      maxNestedWorkflows: 0,
+    },
+    allowedTools: ['Read', 'Grep', 'Glob'],
+    allowedRoots: ['.'],
+    allowedHosts: [],
+    effort: 'high',
+    evidence: {
+      finalReport: true,
+      citations: false,
+      realProvider: false,
+      processClean: true,
+      validationCommands: [
+        `mossen -p --output-format stream-json "/workflows validate ${workflowName} --strict"`,
+        `mossen -p --output-format stream-json "/workflows test ${workflowName} --run"`,
+      ],
+      artifacts: ['run.json', 'final-report.json', 'progress.log'],
+    },
+    lifecycle: {
+      version: '0.1.0',
+      owner: 'project',
+      status: 'draft',
+      compatibility:
+        'Generated from a broad goal. Review tool, root, host, and budget policy before promotion.',
+    },
     phases: [
       {
         title: 'Plan',
@@ -102,12 +148,14 @@ const PLAN_SCHEMA = {
 const WORK_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['key', 'summary', 'evidence', 'artifacts', 'risks', 'nextActions'],
+  required: ['key', 'summary', 'evidence', 'validationCommands', 'artifacts', 'missingChecks', 'risks', 'nextActions'],
   properties: {
     key: { type: 'string' },
     summary: { type: 'string' },
     evidence: { type: 'array', items: { type: 'string' } },
+    validationCommands: { type: 'array', items: { type: 'string' } },
     artifacts: { type: 'array', items: { type: 'string' } },
+    missingChecks: { type: 'array', items: { type: 'string' } },
     risks: { type: 'array', items: { type: 'string' } },
     nextActions: { type: 'array', items: { type: 'string' } },
   },
@@ -116,12 +164,14 @@ const WORK_SCHEMA = {
 const VERIFY_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['key', 'accepted', 'summary', 'evidence', 'gaps'],
+  required: ['key', 'accepted', 'weakEvidence', 'summary', 'evidence', 'missingChecks', 'gaps'],
   properties: {
     key: { type: 'string' },
     accepted: { type: 'boolean' },
+    weakEvidence: { type: 'boolean' },
     summary: { type: 'string' },
     evidence: { type: 'array', items: { type: 'string' } },
+    missingChecks: { type: 'array', items: { type: 'string' } },
     gaps: { type: 'array', items: { type: 'string' } },
   },
 }
@@ -129,12 +179,14 @@ const VERIFY_SCHEMA = {
 const FINAL_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['summary', 'evidence', 'validationCommands', 'artifacts', 'residualRisks', 'openQuestions'],
+  required: ['summary', 'evidenceQuality', 'evidence', 'validationCommands', 'artifacts', 'missingChecks', 'residualRisks', 'openQuestions'],
   properties: {
     summary: { type: 'string' },
+    evidenceQuality: { type: 'string', enum: ['strong', 'weak', 'missing'] },
     evidence: { type: 'array', items: { type: 'string' } },
     validationCommands: { type: 'array', items: { type: 'string' } },
     artifacts: { type: 'array', items: { type: 'string' } },
+    missingChecks: { type: 'array', items: { type: 'string' } },
     residualRisks: { type: 'array', items: { type: 'string' } },
     openQuestions: { type: 'array', items: { type: 'string' } },
   },
@@ -206,7 +258,7 @@ Work item:
 Instructions:
 \${item.prompt}
 
-Return concise findings, concrete evidence, artifact paths if any, risks, and next actions.
+Return concise findings, concrete evidence, validation commands actually run or still required, artifact paths if any, missing checks, risks, and next actions.
 \`, {
   label: 'execute:' + item.key,
   phase: 'Execute',
@@ -230,7 +282,7 @@ Planned success criteria:
 Work item result:
 \${asText(result)}
 
-Try to falsify the result. Mark accepted=false when evidence is weak, validation is missing, or the result does not satisfy the task.
+Try to falsify the result. Mark accepted=false when evidence is weak, validation is missing, or the result does not satisfy the task. Set weakEvidence=true whenever the result depends only on summaries or claims instead of concrete files, commands, artifacts, screenshots, runtime output, or user confirmation.
 \`, {
   label: 'verify:' + (result && result.key ? result.key : 'result-' + (index + 1)),
   phase: 'Verify',
@@ -253,7 +305,7 @@ Work item results:
 Verification results:
 \${asText(verifications.filter(Boolean))}
 
-Return a direct final summary, evidence, validation commands already run or still required, artifacts, residual risks, and open questions.
+Return a direct final summary, evidenceQuality, concrete evidence, validation commands already run or still required, artifacts, missing checks, residual risks, and open questions. Use evidenceQuality='missing' when the workflow only produced summaries or claims.
 \`, { label: 'synthesis', phase: 'Synthesize', schema: FINAL_SCHEMA })
 
 return {
@@ -267,8 +319,13 @@ return {
     commands: asArray(final.validationCommands),
     evidence: asArray(final.evidence),
     artifacts: asArray(final.artifacts),
-    failures: asArray(final.residualRisks),
+    failures: [
+      ...asArray(final.residualRisks),
+      ...asArray(final.missingChecks).map(item => 'missing check: ' + item),
+    ],
+    evidenceQuality: final.evidenceQuality,
   },
+  missingChecks: asArray(final.missingChecks),
   openQuestions: asArray(final.openQuestions),
 }
 `

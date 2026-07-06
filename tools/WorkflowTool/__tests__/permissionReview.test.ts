@@ -178,6 +178,9 @@ return 'ok'
       'Verify',
       'Synthesize',
     ])
+    expect(review.meta?.budgets?.maxParallel).toBe(4)
+    expect(review.meta?.allowedTools).toEqual(['Read', 'Grep', 'Glob'])
+    expect(review.meta?.lifecycle?.status).toBe('draft')
     expect(review.scriptSource).toContain('const PLAN_SCHEMA')
     expect(review.scriptPreview).toContain('export const meta')
     expect(review.staticSummary?.estimatedAgents).toBeGreaterThanOrEqual(4)

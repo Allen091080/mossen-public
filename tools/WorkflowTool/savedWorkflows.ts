@@ -23,6 +23,7 @@ import {
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { feature } from 'bun:bundle'
+import stripAnsi from 'strip-ansi'
 import type {
   Command,
   LocalCommandResult,
@@ -49,6 +50,8 @@ const KEY_VALUE_RE = /^([A-Za-z_][A-Za-z0-9_-]*)=(.+)$/
 const NUMBER_TOKEN_RE = /(?:^|[^\w.-])#?(\d+)(?=$|[^\w.-])/g
 const LIST_MARKER_RE =
   /\b(?:issues?|tickets?|prs?|pull requests?|items?|ids?|numbers?)\b/i
+// eslint-disable-next-line no-control-regex
+const UNSAFE_CONTROL_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g
 export const WORKFLOW_HOME_ENV = 'MOSSEN_CODE_WORKFLOW_HOME'
 const DIRECT_COMMAND_WAIT_ENV = 'MOSSEN_CODE_WORKFLOW_DIRECT_COMMAND_WAIT_MS'
 const DIRECT_COMMAND_POLL_MS = 50
@@ -272,6 +275,14 @@ function tryParseWorkflowArgJson(value: string): unknown | null {
   }
 }
 
+function normalizeWorkflowArgsInput(value: string): string {
+  return stripAnsi(value).replace(UNSAFE_CONTROL_RE, '').trim()
+}
+
+function startsJsonLike(value: string): boolean {
+  return /^[\[{"]/.test(value.trim())
+}
+
 function tryParseWorkflowArgKeyValues(value: string): Record<string, unknown> | null {
   const pairs = value
     .split(/\s+/)
@@ -288,6 +299,7 @@ function tryParseWorkflowArgKeyValues(value: string): Record<string, unknown> | 
 }
 
 function tryParseWorkflowArgNumberList(value: string): number[] | null {
+  if (startsJsonLike(value)) return null
   const numbers = Array.from(value.matchAll(NUMBER_TOKEN_RE), match =>
     Number(match[1]),
   )
@@ -308,7 +320,7 @@ function tryParseWorkflowArgCommaList(value: string): unknown[] | null {
 }
 
 export function inferWorkflowArgsValue(args: string): unknown | undefined {
-  const trimmed = args.trim()
+  const trimmed = normalizeWorkflowArgsInput(args)
   if (!trimmed) return undefined
 
   return (

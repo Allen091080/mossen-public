@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs'
 import type { TaskState } from '../tasks/types.js'
 import type { Message } from '../types/message.js'
 import type { QueuedCommand } from '../types/textInputTypes.js'
@@ -12,7 +13,9 @@ import {
   deferActiveSessionGoalAfterTurn,
   evaluateActiveSessionGoalAfterTurn,
   getSessionGoalPostTurnEvents,
+  launchActiveSessionGoalWorkflowAfterTurn,
   type SessionGoalPostTurnAction,
+  waitForActiveSessionGoalWorkflowAfterTurn,
 } from './sessionGoalEvaluator.js'
 import {
   createSessionGoalEventMessage,
@@ -27,6 +30,7 @@ import {
 import { t } from './i18n/index.js'
 import { logForDebugging } from './debug.js'
 import { extractTextContent } from './messages.js'
+import { evaluateSessionGoalWorkflowPolicy } from './sessionGoalWorkflowPolicy.js'
 
 export type SessionGoalRuntimeResult = {
   action: SessionGoalPostTurnAction
@@ -70,6 +74,121 @@ function compactTaskEvidence(value: unknown, maxLength = 240): string | null {
   const text = String(value).replace(/\s+/g, ' ').trim()
   if (!text) return null
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text
+}
+
+function compactEvidenceList(value: unknown, maxItems = 3): string[] {
+  if (!Array.isArray(value)) return []
+  const out: string[] = []
+  for (const item of value) {
+    const text = compactTaskEvidence(item, 120)
+    if (!text || out.includes(text)) continue
+    out.push(text)
+    if (out.length >= maxItems) break
+  }
+  return out
+}
+
+type WorkflowFinalReportSummary = {
+  evidenceState?: unknown
+  evidence?: unknown
+  validationCommands?: unknown
+  artifacts?: unknown
+  failures?: unknown
+  missingChecks?: unknown
+  openQuestions?: unknown
+  reportPath?: unknown
+}
+
+type WorkflowFinalReportEvidence = {
+  positive?: string
+  negative?: string
+}
+
+function workflowLabelForEvidence(candidate: {
+  workflowName?: string
+  workflowRunId?: string
+  runId?: string
+}, taskId: string): string {
+  const runId = candidate.workflowRunId ?? candidate.runId ?? taskId
+  return `Workflow ${candidate.workflowName ?? runId} (${runId})`
+}
+
+function loadWorkflowFinalReport(
+  path: unknown,
+): WorkflowFinalReportSummary | 'missing' | 'unreadable' | null {
+  if (typeof path !== 'string' || !path.trim()) return null
+  try {
+    if (!existsSync(path)) return 'missing'
+    const parsed = JSON.parse(readFileSync(path, 'utf8'))
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as WorkflowFinalReportSummary
+      : 'unreadable'
+  } catch {
+    return 'unreadable'
+  }
+}
+
+function summarizeWorkflowFinalReportEvidence(
+  taskId: string,
+  candidate: {
+    workflowName?: string
+    workflowRunId?: string
+    runId?: string
+    finalReportPath?: string
+  },
+): WorkflowFinalReportEvidence | null {
+  if (!candidate.finalReportPath) return null
+  const label = workflowLabelForEvidence(candidate, taskId)
+  const report = loadWorkflowFinalReport(candidate.finalReportPath)
+  if (report === null) return null
+  if (report === 'missing') {
+    return {
+      negative: `${label} needs verification: final report is missing at ${candidate.finalReportPath}`,
+    }
+  }
+  if (report === 'unreadable') {
+    return {
+      negative: `${label} needs verification: final report is unreadable at ${candidate.finalReportPath}`,
+    }
+  }
+  const evidence = compactEvidenceList(report.evidence)
+  const validationCommands = compactEvidenceList(report.validationCommands)
+  const artifacts = compactEvidenceList(report.artifacts)
+  const failures = compactEvidenceList(report.failures)
+  const missingChecks = compactEvidenceList(report.missingChecks)
+  const openQuestions = compactEvidenceList(report.openQuestions)
+  const explicitFacts = [
+    evidence.length ? `evidence: ${evidence.join('; ')}` : null,
+    validationCommands.length
+      ? `validation: ${validationCommands.join('; ')}`
+      : null,
+    artifacts.length ? `artifact: ${artifacts.join('; ')}` : null,
+  ].filter((part): part is string => part !== null)
+  const reportPath =
+    compactTaskEvidence(report.reportPath, 160) ?? candidate.finalReportPath
+  if (report.evidenceState === 'verified' && explicitFacts.length > 0) {
+    return {
+      positive: [
+        `${label} completed with verified final report`,
+        ...explicitFacts,
+        `report: ${reportPath}`,
+      ].join('; '),
+    }
+  }
+  const gaps = [
+    failures.length ? `failures: ${failures.join('; ')}` : null,
+    missingChecks.length ? `missing checks: ${missingChecks.join('; ')}` : null,
+    openQuestions.length ? `open questions: ${openQuestions.join('; ')}` : null,
+  ].filter((part): part is string => part !== null)
+  let reason = 'final report has no explicit evidence'
+  if (gaps.length) {
+    reason = gaps.join('; ')
+  } else if (report.evidenceState === 'failed') {
+    reason = 'final report failed'
+  }
+  return {
+    negative: `${label} needs verification: ${reason}; report: ${reportPath}`,
+  }
 }
 
 function extractXmlTag(text: string, tag: string): string | null {
@@ -159,14 +278,25 @@ export function getSessionGoalTerminalWorkNegativeEvidence(
       workflowName?: string
       workflowRunId?: string
       runId?: string
+      finalReportPath?: string
       failures?: string[]
       error?: string
       title?: string
       sessionId?: string
     }
-    if (candidate.status !== 'failed' && candidate.status !== 'killed') continue
     switch (candidate.type) {
       case 'local_workflow': {
+        if (candidate.status === 'completed') {
+          const reportEvidence = summarizeWorkflowFinalReportEvidence(
+            taskId,
+            candidate,
+          )
+          if (reportEvidence?.negative) evidence.push(reportEvidence.negative)
+          break
+        }
+        if (candidate.status !== 'failed' && candidate.status !== 'killed') {
+          break
+        }
         const runId = candidate.workflowRunId ?? candidate.runId ?? taskId
         const failures = (candidate.failures ?? [])
           .map(item => compactTaskEvidence(item, 160))
@@ -182,6 +312,9 @@ export function getSessionGoalTerminalWorkNegativeEvidence(
       case 'local_agent':
       case 'remote_agent':
       case 'in_process_teammate': {
+        if (candidate.status !== 'failed' && candidate.status !== 'killed') {
+          break
+        }
         const label = compactTaskEvidence(candidate.title) ??
           compactTaskEvidence(candidate.description) ??
           candidate.sessionId ??
@@ -208,6 +341,7 @@ export function getSessionGoalTerminalWorkEvidence(
       workflowName?: string
       workflowRunId?: string
       runId?: string
+      finalReportPath?: string
       failures?: string[]
       error?: string
       result?: string
@@ -222,6 +356,11 @@ export function getSessionGoalTerminalWorkEvidence(
     }
     if (candidate.error || candidate.failures?.length) continue
     const runId = candidate.workflowRunId ?? candidate.runId ?? taskId
+    const reportEvidence = summarizeWorkflowFinalReportEvidence(taskId, candidate)
+    if (reportEvidence) {
+      if (reportEvidence.positive) evidence.push(reportEvidence.positive)
+      continue
+    }
     const parts = [
       `Workflow ${candidate.workflowName ?? runId} (${runId}) completed`,
       typeof candidate.agentCount === 'number'
@@ -278,6 +417,11 @@ export async function evaluateSessionGoalRuntimeAfterTurn(options: {
   signal: AbortSignal
   tasks?: Record<string, unknown>
 }): Promise<SessionGoalRuntimeResult> {
+  const initialGoal = getSessionGoalState()
+  const initialWorkflowPolicy =
+    initialGoal?.status === 'active'
+      ? evaluateSessionGoalWorkflowPolicy(initialGoal, options.tasks)
+      : null
   const pendingReason = getSessionGoalPendingWorkReason(options.tasks)
   if (!pendingReason) {
     for (const evidence of getSessionGoalTerminalWorkEvidence(options.tasks)) {
@@ -296,9 +440,24 @@ export async function evaluateSessionGoalRuntimeAfterTurn(options: {
       recordSessionGoalNegativeEvidence(evidence)
     }
   }
-  const action = pendingReason
-    ? deferActiveSessionGoalAfterTurn(pendingReason)
-    : await evaluateActiveSessionGoalAfterTurn(options.messages, options.signal)
+  const currentGoal = getSessionGoalState()
+  const workflowPolicy =
+    !pendingReason && currentGoal?.status === 'active'
+      ? evaluateSessionGoalWorkflowPolicy(currentGoal, options.tasks)
+      : initialWorkflowPolicy
+  let action: SessionGoalPostTurnAction
+  if (pendingReason) {
+    action = workflowPolicy?.type === 'wait_for_workflow'
+      ? waitForActiveSessionGoalWorkflowAfterTurn(workflowPolicy.reason)
+      : deferActiveSessionGoalAfterTurn(pendingReason)
+  } else if (workflowPolicy?.type === 'launch_workflow') {
+    action = launchActiveSessionGoalWorkflowAfterTurn(workflowPolicy)
+  } else {
+    action = await evaluateActiveSessionGoalAfterTurn(
+      options.messages,
+      options.signal,
+    )
+  }
   const events = getSessionGoalPostTurnEvents(action)
   if (action.type !== 'none') {
     const goal = getSessionGoalState()
@@ -342,7 +501,7 @@ export function enqueueSessionGoalContinuation(
     workload?: string
   },
 ): void {
-  if (action.type !== 'continue') return
+  if (action.type !== 'continue' && action.type !== 'launch_workflow') return
   queue.removeByFilter(isSessionGoalContinuationCommand)
   queue.enqueue({
     mode: 'prompt',

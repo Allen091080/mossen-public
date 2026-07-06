@@ -2906,13 +2906,18 @@ export function REPL({
     const sessionGoalEventMessages = sessionGoalRuntime.eventMessages;
     if (sessionGoalAction.type === 'completed') {
       setMessages(prev => [...prev, ...sessionGoalEventMessages, createSystemMessage(formatSessionGoalActionReason(sessionGoalAction), 'info')]);
-    } else if (sessionGoalAction.type === 'continue') {
+    } else if (
+      sessionGoalAction.type === 'continue' ||
+      sessionGoalAction.type === 'launch_workflow'
+    ) {
       setMessages(prev => [...prev, ...sessionGoalEventMessages, createSystemMessage(formatSessionGoalActionReason(sessionGoalAction), 'info')]);
       enqueueSessionGoalContinuation(sessionGoalAction, {
         enqueue,
         removeByFilter,
         workload: 'goal'
       });
+    } else if (sessionGoalAction.type === 'wait_for_workflow') {
+      setMessages(prev => [...prev, ...sessionGoalEventMessages, createSystemMessage(formatSessionGoalActionReason(sessionGoalAction), 'warning')]);
     } else if (sessionGoalAction.type === 'max_turns') {
       setMessages(prev => [...prev, ...sessionGoalEventMessages, createSystemMessage(formatSessionGoalActionReason(sessionGoalAction), 'warning')]);
     } else if (sessionGoalAction.type === 'deferred') {

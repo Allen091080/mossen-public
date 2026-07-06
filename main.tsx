@@ -4586,8 +4586,9 @@ async function run(): Promise<CommanderCommand> {
       })
       process.exit(process.exitCode ?? 0)
     });
-  program.command('workflows').description('List workflow runs recorded for this session').option('--json', 'Print workflow runs as a JSON array.').option('--session-id <uuid>', 'Read workflow runs for a specific session ID.').action(async (options: {
+  program.command('workflows').description('List workflow runs recorded for this session').option('--json', 'Print workflow runs as a JSON array.').option('--workbench', 'Print a Workbench workflow snapshot JSON object.').option('--session-id <uuid>', 'Read workflow runs for a specific session ID.').action(async (options: {
     json?: boolean;
+    workbench?: boolean;
     sessionId?: string;
   }) => {
     const {

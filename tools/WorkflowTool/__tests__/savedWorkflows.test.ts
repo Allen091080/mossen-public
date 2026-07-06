@@ -79,6 +79,7 @@ async function runBundledWorkflowForTest(
   runOneAgent: RunOneAgent,
 ): Promise<{ result: unknown; events: WorkflowProgressEvent[] }> {
   const events: WorkflowProgressEvent[] = []
+  const { meta, scriptBody } = extractMeta(source)
   const runtime = createWorkflowRuntime({
     limiter: createLimiter(8),
     budget: createBudget(null),
@@ -86,8 +87,8 @@ async function runBundledWorkflowForTest(
     args,
     runOneAgent,
     journal: createJournal('bundled-test-run'),
+    maxAgents: meta.budgets?.maxAgents,
   })
-  const { scriptBody } = extractMeta(source)
   const result = await runSandbox({
     source: scriptBody,
     scope: runtime.scope,
@@ -201,6 +202,15 @@ describe('savedWorkflows loader (S3)', () => {
       'research Node.js permissions',
     )
     expect(inferWorkflowArgsValue('   ')).toBeUndefined()
+  })
+
+  test('inferWorkflowArgsValue strips terminal controls before parsing JSON args', () => {
+    expect(
+      inferWorkflowArgsValue('{"ticket":573}\x1b[38;2;240;124;0m'),
+    ).toEqual({ ticket: 573 })
+    expect(inferWorkflowArgsValue('{"ticket":476}\x1b[?25h')).toEqual({
+      ticket: 476,
+    })
   })
 
   test('saved workflow direct command omits args when caller provided no input', () => {
@@ -544,6 +554,101 @@ describe('savedWorkflows loader (S3)', () => {
     expect(out.report).toContain('https://example.test/official-docs')
     expect(synthPrompts[0]).toContain(
       'exclude claims that did not pass majority support',
+    )
+  })
+
+  test('bundled deep-research caps default real-provider fanout', async () => {
+    const deepResearchSource =
+      loadBundledWorkflowRefs().find(wf => wf.name === 'deep-research')?.source ??
+      ''
+    const labels: string[] = []
+    const runOneAgent: RunOneAgent = async (prompt, opts) => {
+      const label = opts.label ?? ''
+      labels.push(label)
+      if (label === 'Plan research angles') {
+        return {
+          value: {
+            angles: Array.from({ length: 8 }, (_, index) => ({
+              name: `Angle ${index + 1}`,
+              query: `workflow query ${index + 1}`,
+              purpose: 'Exercise fanout caps.',
+            })),
+          },
+          tokens: 1,
+          ok: true,
+        }
+      }
+      if (label.startsWith('Search: ')) {
+        const suffix = label.replace(/^Search: /, '').toLowerCase().replace(/\s+/g, '-')
+        return {
+          value: {
+            results: Array.from({ length: 3 }, (_, index) => ({
+              title: `${label} source ${index + 1}`,
+              url: `https://example.test/${suffix}/${index + 1}`,
+              snippet: 'Snippet',
+              whyUseful: 'Useful',
+            })),
+          },
+          tokens: 1,
+          ok: true,
+        }
+      }
+      if (label.startsWith('Read: ')) {
+        const sourceUrl = prompt.match(/URL: (\S+)/)?.[1] ?? 'https://example.test/source'
+        return {
+          value: {
+            sources: [
+              {
+                title: label.replace(/^Read: /, ''),
+                url: sourceUrl,
+                summary: 'Source summary',
+                claims: Array.from(
+                  { length: 3 },
+                  (_, index) => `Supported claim ${sourceUrl} #${index + 1}`,
+                ),
+              },
+            ],
+          },
+          tokens: 1,
+          ok: true,
+        }
+      }
+      if (label.startsWith('Vote claim ')) {
+        return {
+          value: {
+            supported: true,
+            citations: ['https://example.test/citation'],
+            reason: 'Directly supported.',
+          },
+          tokens: 1,
+          ok: true,
+        }
+      }
+      if (label === 'Find claim conflicts') {
+        return { value: { conflicts: [] }, tokens: 1, ok: true }
+      }
+      if (label === 'Synthesize cited report') {
+        return {
+          value: 'done https://example.test/citation',
+          tokens: 1,
+          ok: true,
+        }
+      }
+      throw new Error(`unexpected bundled agent label: ${label}`)
+    }
+
+    await runBundledWorkflowForTest(
+      deepResearchSource,
+      'What should a small real-provider smoke prove?',
+      runOneAgent,
+    )
+
+    expect(labels.filter(label => label.startsWith('Search: '))).toHaveLength(4)
+    expect(labels.filter(label => label.startsWith('Read: '))).toHaveLength(6)
+    expect(labels.filter(label => label.startsWith('Vote claim '))).toHaveLength(24)
+    expect(labels).toHaveLength(37)
+    expect(extractMeta(deepResearchSource).meta.budgets?.maxAgents).toBeGreaterThanOrEqual(
+      labels.length,
     )
   })
 

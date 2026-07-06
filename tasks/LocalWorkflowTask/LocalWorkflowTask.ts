@@ -85,6 +85,7 @@ export type LocalWorkflowTaskState = TaskStateBase & {
   failures?: string[]
   durationMs?: number
   result?: string
+  finalReportPath?: string
   currentPhase?: string
   phases: string[]
   workflowProgress: SdkWorkflowProgress[]
@@ -123,6 +124,7 @@ type WorkflowTaskFinishPatch = {
   failures?: string[]
   durationMs?: number
   result?: string
+  finalReportPath?: string
   error?: string
 }
 

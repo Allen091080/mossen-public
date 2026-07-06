@@ -91,6 +91,25 @@ describe('evaluateActiveSessionGoalAfterTurn', () => {
         status: 'active',
       }),
     ).toBe(false)
+
+    expect(
+      hasCompletedWorkflowGoalEvidence({
+        id: 'goal_1',
+        text: 'verify workflow completion',
+        recentEvidence: ['Workflow audit (wf_1) completed; result: passed'],
+        negativeEvidence: [
+          'Workflow audit (wf_1) needs verification: final report has no explicit evidence',
+        ],
+        blockerHistory: [],
+        createdAt: '2026-07-01T00:00:00.000Z',
+        updatedAt: '2026-07-01T00:00:00.000Z',
+        evaluatorModel: 'haiku',
+        turnBudget: 4,
+        turnCount: 1,
+        evaluationFailureCount: 0,
+        status: 'active',
+      }),
+    ).toBe(false)
   })
 
   test('budget-limits before evaluator when the time budget is already exhausted', async () => {

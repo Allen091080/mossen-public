@@ -15,6 +15,8 @@ export type SDKGoalEventMessage = {
 export type SessionGoalReasonKind =
   | 'pending'
   | 'deferred'
+  | 'wait_for_workflow'
+  | 'launch_workflow'
   | 'continue'
   | 'completed'
   | 'paused'
@@ -38,6 +40,10 @@ export function formatSessionGoalReason(
       return t('cmd.goal.reason.continue', { reason: detail })
     case 'deferred':
       return t('cmd.goal.reason.deferred', { reason: detail })
+    case 'wait_for_workflow':
+      return t('cmd.goal.reason.waitWorkflow', { reason: detail })
+    case 'launch_workflow':
+      return t('cmd.goal.reason.launchWorkflow', { reason: detail })
     case 'completed':
       return t('cmd.goal.reason.completed', { reason: detail })
     case 'paused':
@@ -90,6 +96,8 @@ export function getSessionGoalEventReasonKind(
     case 'goal_eval':
       if (event.verdict === 'yes') return 'completed'
       if (event.verdict === 'no') return 'continue'
+      if (event.verdict === 'launch_workflow') return 'launch_workflow'
+      if (event.verdict === 'wait_for_workflow') return 'wait_for_workflow'
       if (event.verdict === 'deferred') return 'deferred'
       if (event.verdict === 'max_turns') return 'max_turns'
       return 'error'
@@ -145,6 +153,10 @@ export function formatSessionGoalActionReason(
   switch (action.type) {
     case 'continue':
       return formatSessionGoalReason('continue', action.reason)
+    case 'launch_workflow':
+      return formatSessionGoalReason('launch_workflow', action.reason)
+    case 'wait_for_workflow':
+      return formatSessionGoalReason('wait_for_workflow', action.reason)
     case 'completed':
       return formatSessionGoalReason('completed', action.reason)
     case 'deferred':

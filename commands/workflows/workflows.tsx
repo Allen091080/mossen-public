@@ -11,6 +11,8 @@ import {
   listWorkflowRuns,
   loadRunLog,
   loadRunMeta,
+  loadWorkflowCheckpoint,
+  refreshWorkflowCheckpoint,
   runScriptPath,
   workflowReportPath,
   type WorkflowRunMeta,
@@ -28,11 +30,18 @@ import {
   historyAgentsForRun,
   WorkflowRunsDialog,
 } from './WorkflowRunsDialog.js'
+import { createWorkflowCommand } from './createWorkflow.js'
+import { draftWorkflowCommand } from './draftWorkflow.js'
+import { explainWorkflowCommand } from './explainWorkflow.js'
+import { registryWorkflowCommand } from './registryWorkflow.js'
+import { testWorkflowCommand } from './testWorkflow.js'
 import { saveRun } from './saveWorkflow.js'
 import { exportWorkflowRunReport } from './exportWorkflowReport.js'
+import { validateWorkflowsCommand } from './validateWorkflow.js'
 import {
   buildWorkflowResumeNextInput,
   buildWorkflowResumeResult,
+  buildWorkflowResumeSafetyMessage,
   isResumableWorkflowRunStatus,
   resumeRunFromJournal,
   type WorkflowCommandResult,
@@ -533,11 +542,16 @@ function resumeTaskRun(
     return { message: t('cmd.workflows.notPaused', { runId }) }
   }
   const meta = loadRunMeta(workflowRunId)
+  const checkpoint =
+    refreshWorkflowCheckpoint(workflowRunId) ?? loadWorkflowCheckpoint(workflowRunId)
+  const safetyMessage = buildWorkflowResumeSafetyMessage(workflowRunId, checkpoint)
+  if (safetyMessage) return { message: safetyMessage }
   return buildWorkflowResumeResult(
     workflowRunId,
     meta?.scriptPath ?? task.scriptPath ?? runScriptPath(workflowRunId),
     meta?.args ?? task.args,
     runId,
+    checkpoint,
   )
 }
 
@@ -660,6 +674,43 @@ export async function call(
 
   if (tokens[0] === 'save') {
     onDone(saveRun(tokens.slice(1)))
+    return null
+  }
+
+  if (tokens[0] === 'create') {
+    onDone(createWorkflowCommand(tokens.slice(1)).message, { display: 'system' })
+    return null
+  }
+
+  if (tokens[0] === 'draft') {
+    const result = draftWorkflowCommand(tokens.slice(1))
+    onDone(result.message, { display: 'system' })
+    return null
+  }
+
+  if (tokens[0] === 'validate') {
+    onDone(await validateWorkflowsCommand(tokens.slice(1)), { display: 'system' })
+    return null
+  }
+
+  if (tokens[0] === 'explain') {
+    onDone(explainWorkflowCommand(tokens.slice(1)), { display: 'system' })
+    return null
+  }
+
+  if (tokens[0] === 'test') {
+    const result = testWorkflowCommand(tokens.slice(1))
+    onDone(result.message, {
+      display: 'system',
+      ...(result.nextInput
+        ? { nextInput: result.nextInput, submitNextInput: result.submitNextInput }
+        : {}),
+    })
+    return null
+  }
+
+  if (tokens[0] === 'registry') {
+    onDone(registryWorkflowCommand(tokens.slice(1)), { display: 'system' })
     return null
   }
 

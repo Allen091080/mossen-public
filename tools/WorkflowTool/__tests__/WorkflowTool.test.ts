@@ -30,7 +30,12 @@ import {
 } from '../../../Tool.js'
 import {
   appendWorkflowResultLogLine,
+  DEFAULT_WORKFLOW_TIMEOUT_MS,
   getWorkflowAgentStallTimeoutMs,
+  getWorkflowMaxAgents,
+  getWorkflowMaxNestedWorkflows,
+  getWorkflowMaxParallel,
+  getWorkflowRunTimeoutMs,
   MAX_WORKFLOW_RESULT_LOG_LINES,
   setWorkflowAgentRunnerFactoryForTests,
   WorkflowTool,
@@ -42,6 +47,7 @@ import {
   clearActiveWorkflowRunsForTests,
   initRunArtifacts,
   loadJournal,
+  loadWorkflowFinalReport,
   loadRunLog,
   loadRunMeta,
   STALE_RUNNING_WORKFLOW_MESSAGE,
@@ -126,6 +132,59 @@ describe('getWorkflowAgentStallTimeoutMs', () => {
         MOSSEN_CODE_WORKFLOW_AGENT_STALL_TIMEOUT_MS: 'abc',
       }),
     ).toBe(60_000)
+  })
+})
+
+describe('getWorkflowRunTimeoutMs', () => {
+  it('uses explicit input, env fallback, low clamps, high caps, and default invalid env', () => {
+    expect(getWorkflowRunTimeoutMs(undefined, {})).toBe(
+      DEFAULT_WORKFLOW_TIMEOUT_MS,
+    )
+    expect(
+      getWorkflowRunTimeoutMs(undefined, {
+        MOSSEN_CODE_WORKFLOW_TIMEOUT_MS: '250',
+      }),
+    ).toBe(250)
+    expect(
+      getWorkflowRunTimeoutMs(100, {
+        MOSSEN_CODE_WORKFLOW_TIMEOUT_MS: '250',
+      }),
+    ).toBe(100)
+    expect(
+      getWorkflowRunTimeoutMs(undefined, {
+        MOSSEN_CODE_WORKFLOW_TIMEOUT_MS: '0',
+      }),
+    ).toBe(1)
+    expect(
+      getWorkflowRunTimeoutMs(undefined, {
+        MOSSEN_CODE_WORKFLOW_TIMEOUT_MS: '999999999',
+      }),
+    ).toBe(DEFAULT_WORKFLOW_TIMEOUT_MS)
+    expect(
+      getWorkflowRunTimeoutMs(undefined, {
+        MOSSEN_CODE_WORKFLOW_TIMEOUT_MS: 'abc',
+      }),
+    ).toBe(DEFAULT_WORKFLOW_TIMEOUT_MS)
+    expect(getWorkflowRunTimeoutMs(undefined, {}, 1234)).toBe(1234)
+    expect(
+      getWorkflowRunTimeoutMs(100, {
+        MOSSEN_CODE_WORKFLOW_TIMEOUT_MS: '250',
+      }, 1234),
+    ).toBe(100)
+  })
+})
+
+describe('workflow runtime budget helpers', () => {
+  it('normalizes asset maxAgents, maxParallel, and maxNestedWorkflows', () => {
+    expect(getWorkflowMaxAgents(2)).toBe(2)
+    expect(getWorkflowMaxAgents(0)).toBe(1)
+    expect(getWorkflowMaxAgents(999999)).toBe(1000)
+    expect(getWorkflowMaxParallel(3, 8)).toBe(3)
+    expect(getWorkflowMaxParallel(99, 8)).toBe(8)
+    expect(getWorkflowMaxParallel('bad', 8)).toBe(8)
+    expect(getWorkflowMaxNestedWorkflows(undefined)).toBeUndefined()
+    expect(getWorkflowMaxNestedWorkflows(0)).toBe(0)
+    expect(getWorkflowMaxNestedWorkflows(2)).toBe(2)
   })
 })
 
@@ -504,6 +563,308 @@ return 'ok'
       })
     } finally {
       snapshotOutputTokensForTurn(null)
+    }
+  })
+
+  it('fails timed out workflow runs with terminal artifact evidence', async () => {
+    let state = {
+      tasks: {},
+      toolPermissionContext: getEmptyToolPermissionContext(),
+    } as unknown as AppState
+    const setAppState = (updater: (prev: AppState) => AppState) => {
+      state = updater(state)
+    }
+
+    const result = await WorkflowTool.call!(
+      {
+        script: `
+export const meta = {
+  name: 'timeout-flow',
+  description: 'Timeout workflow',
+  phases: [{ title: 'Wait' }],
+}
+phase('Wait')
+log('entered wait')
+await timers.wait(5000)
+return 'done'
+`,
+        timeoutMs: 25,
+      },
+      {
+        abortController: new AbortController(),
+        getAppState: () => state,
+        setAppState,
+      } as unknown as ToolUseContext,
+      async () => ({ behavior: 'allow' }) as never,
+    )
+
+    expect(result.data.status).toBe('async_launched')
+    expect(await waitForRunMetaStatus(result.data.runId!, 'failed')).toBe(
+      'failed',
+    )
+    const meta = loadRunMeta(result.data.runId!)
+    expect(meta?.timedOut).toBe(true)
+    expect(meta?.timeoutKind).toBe('workflow')
+    expect(meta?.timeoutMs).toBe(25)
+    expect(meta?.timeoutLimitMs).toBe(25)
+    expect(meta?.timeoutActiveAgentCount).toBe(0)
+    expect(meta?.timeoutPhase).toBe('Wait')
+    expect(meta?.error).toContain('Workflow timed out after 25ms')
+
+    const report = loadWorkflowFinalReport(result.data.runId!)
+    expect(report?.status).toBe('failed')
+    expect(report?.evidenceState).toBe('failed')
+    expect(report?.timeout).toMatchObject({
+      timeoutMs: 25,
+      activeAgentCount: 0,
+      currentPhase: 'Wait',
+    })
+
+    const task = await waitForTaskStatus(
+      () => state.tasks[result.data.taskId] as LocalWorkflowTaskState | undefined,
+      'failed',
+    )
+    expect(task?.error).toContain('Workflow timed out after 25ms')
+    expect(loadRunLog(result.data.runId!).join('\n')).toContain('[timeout]')
+  })
+
+  it('enforces asset maxAgents and persists runtime budget metadata', async () => {
+    let state = {
+      tasks: {},
+      toolPermissionContext: getEmptyToolPermissionContext(),
+    } as unknown as AppState
+    const setAppState = (updater: (prev: AppState) => AppState) => {
+      state = updater(state)
+    }
+    setWorkflowAgentRunnerFactoryForTests(() => async prompt => ({
+      value: `ok:${prompt}`,
+      tokens: 1,
+      ok: true,
+    }))
+
+    try {
+      const result = await WorkflowTool.call!(
+        {
+          script: `
+export const meta = {
+  name: 'agent-budget-flow',
+  description: 'Agent budget workflow',
+  budgets: {
+    maxAgents: 1,
+    maxParallel: 1,
+    maxNestedWorkflows: 0,
+    phaseTimeoutMs: 1000,
+  },
+}
+await agent('first')
+await agent('second')
+return 'done'
+`,
+        },
+        {
+          abortController: new AbortController(),
+          getAppState: () => state,
+          setAppState,
+        } as unknown as ToolUseContext,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(await waitForRunMetaStatus(result.data.runId!, 'failed')).toBe(
+        'failed',
+      )
+      const meta = loadRunMeta(result.data.runId!)
+      expect(meta).toMatchObject({
+        maxAgents: 1,
+        maxParallel: 1,
+        maxNestedWorkflows: 0,
+        phaseTimeoutMs: 1000,
+      })
+      expect(meta?.error).toContain('Workflow agent() call cap reached (1)')
+    } finally {
+      setWorkflowAgentRunnerFactoryForTests(null)
+    }
+  })
+
+  it('uses asset maxParallel to limit concurrent agent execution', async () => {
+    let active = 0
+    let peak = 0
+    setWorkflowAgentRunnerFactoryForTests(() => async () => {
+      active++
+      peak = Math.max(peak, active)
+      await new Promise(resolve => setTimeout(resolve, 10))
+      active--
+      return { value: 'ok', tokens: 1, ok: true }
+    })
+
+    try {
+      const result = await WorkflowTool.call!(
+        {
+          script: `
+export const meta = {
+  name: 'parallel-budget-flow',
+  description: 'Parallel budget workflow',
+  budgets: { maxParallel: 1, maxAgents: 4 },
+}
+await parallel([
+  () => agent('first'),
+  () => agent('second'),
+])
+return 'done'
+`,
+        },
+        {
+          abortController: new AbortController(),
+          setAppState: () => {},
+        } as unknown as ToolUseContext,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(await waitForRunMetaStatus(result.data.runId!, 'completed')).toBe(
+        'completed',
+      )
+      expect(peak).toBe(1)
+      expect(loadRunMeta(result.data.runId!)?.maxParallel).toBe(1)
+    } finally {
+      setWorkflowAgentRunnerFactoryForTests(null)
+    }
+  })
+
+  it('enforces asset maxNestedWorkflows before launching child workflows', async () => {
+    const result = await WorkflowTool.call!(
+      {
+        script: `
+export const meta = {
+  name: 'nested-budget-flow',
+  description: 'Nested budget workflow',
+  budgets: { maxNestedWorkflows: 0 },
+}
+await workflow('child-flow')
+return 'done'
+`,
+      },
+      {
+        abortController: new AbortController(),
+        setAppState: () => {},
+      } as unknown as ToolUseContext,
+      async () => ({ behavior: 'allow' }) as never,
+    )
+
+    expect(await waitForRunMetaStatus(result.data.runId!, 'failed')).toBe(
+      'failed',
+    )
+    const meta = loadRunMeta(result.data.runId!)
+    expect(meta?.maxNestedWorkflows).toBe(0)
+    expect(meta?.error).toContain(
+      'Workflow nested workflow call cap reached (0)',
+    )
+  })
+
+  it('enforces asset phaseTimeoutMs as an active watchdog', async () => {
+    let state = {
+      tasks: {},
+      toolPermissionContext: getEmptyToolPermissionContext(),
+    } as unknown as AppState
+    const setAppState = (updater: (prev: AppState) => AppState) => {
+      state = updater(state)
+    }
+
+    const result = await WorkflowTool.call!(
+      {
+        script: `
+export const meta = {
+  name: 'phase-timeout-flow',
+  description: 'Phase timeout workflow',
+  budgets: { timeoutMs: 5000, phaseTimeoutMs: 25 },
+  phases: [{ title: 'Wait' }],
+}
+phase('Wait')
+log('entered phase timeout wait')
+await timers.wait(5000)
+return 'done'
+`,
+      },
+      {
+        abortController: new AbortController(),
+        getAppState: () => state,
+        setAppState,
+      } as unknown as ToolUseContext,
+      async () => ({ behavior: 'allow' }) as never,
+    )
+
+    expect(await waitForRunMetaStatus(result.data.runId!, 'failed')).toBe(
+      'failed',
+    )
+    const meta = loadRunMeta(result.data.runId!)
+    expect(meta?.timedOut).toBe(true)
+    expect(meta?.timeoutKind).toBe('phase')
+    expect(meta?.timeoutMs).toBe(5000)
+    expect(meta?.timeoutLimitMs).toBe(25)
+    expect(meta?.phaseTimeoutMs).toBe(25)
+    expect(meta?.timeoutPhase).toBe('Wait')
+    expect(meta?.error).toContain(
+      'Workflow phase "Wait" timed out after 25ms',
+    )
+
+    const report = loadWorkflowFinalReport(result.data.runId!)
+    expect(report?.status).toBe('failed')
+    expect(report?.timeout).toMatchObject({
+      kind: 'phase',
+      timeoutMs: 25,
+      currentPhase: 'Wait',
+    })
+    expect(loadRunLog(result.data.runId!).join('\n')).toContain('[timeout]')
+  })
+
+  it('passes workflow allowedTools to the agent runner and persists policy metadata', async () => {
+    const observedAllowedTools: Array<readonly string[] | undefined> = []
+    const observedAllowedHosts: Array<readonly string[] | undefined> = []
+    const observedAllowedRoots: Array<readonly string[] | undefined> = []
+    setWorkflowAgentRunnerFactoryForTests(deps => {
+      observedAllowedTools.push(deps.workflowAllowedTools)
+      observedAllowedHosts.push(deps.workflowAllowedHosts)
+      observedAllowedRoots.push(deps.workflowAllowedRoots)
+      return async prompt => ({
+        value: `ok:${prompt}`,
+        tokens: 1,
+        ok: true,
+      })
+    })
+
+    try {
+      const result = await WorkflowTool.call!(
+        {
+          script: `
+export const meta = {
+  name: 'allowed-tools-flow',
+  description: 'Allowed tools workflow',
+  allowedTools: ['WebFetch', 'Read'],
+  allowedHosts: ['docs.example.test'],
+  allowedRoots: ['src'],
+}
+await agent('inspect with constrained tools')
+return 'done'
+`,
+        },
+        {
+          abortController: new AbortController(),
+          setAppState: () => {},
+        } as unknown as ToolUseContext,
+        async () => ({ behavior: 'allow' }) as never,
+      )
+
+      expect(await waitForRunMetaStatus(result.data.runId!, 'completed')).toBe(
+        'completed',
+      )
+      expect(observedAllowedTools).toEqual([['WebFetch', 'Read']])
+      expect(observedAllowedHosts).toEqual([['docs.example.test']])
+      expect(observedAllowedRoots).toEqual([['src']])
+      expect(loadRunMeta(result.data.runId!)).toMatchObject({
+        allowedTools: ['WebFetch', 'Read'],
+        allowedHosts: ['docs.example.test'],
+        allowedRoots: ['src'],
+      })
+    } finally {
+      setWorkflowAgentRunnerFactoryForTests(null)
     }
   })
 })

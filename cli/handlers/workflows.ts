@@ -19,12 +19,15 @@ import {
   type WorkflowJsonRun,
 } from '../../commands/workflows/workflowProgressTree.js'
 import { exportWorkflowRunReport } from '../../commands/workflows/exportWorkflowReport.js'
+import { buildWorkbenchWorkflowSnapshot } from '../../commands/workflows/workbenchSnapshot.js'
+import { validateWorkflowTargetsForCommand } from '../../commands/workflows/validateWorkflow.js'
 import { switchSession } from '../../bootstrap/state.js'
 import { asSessionId } from '../../types/ids.js'
 import { validateUuid } from '../../utils/uuid.js'
 
 export type WorkflowsHandlerOptions = {
   json?: boolean
+  workbench?: boolean
   report?: boolean
   sessionId?: string
 }
@@ -65,6 +68,13 @@ export async function workflowsHandler(
 ): Promise<void> {
   if (!applyWorkflowSessionOption(options)) return
   const runs = listWorkflowRuns()
+  if (options.workbench) {
+    console.log(JSON.stringify(buildWorkbenchWorkflowSnapshot({
+      runs,
+      registryResults: validateWorkflowTargetsForCommand(['--all']),
+    }), null, 2))
+    return
+  }
   if (options.json) {
     console.log(JSON.stringify(workflowRunsToJson(runs), null, 2))
     return

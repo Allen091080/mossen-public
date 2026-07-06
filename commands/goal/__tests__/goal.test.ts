@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   getSessionGoalState,
   resetStateForTests,
+  setSessionGoalState,
 } from '../../../bootstrap/state.js'
+import { createTaskStateBase } from '../../../Task.js'
+import type { LocalWorkflowTaskState } from '../../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import {
   clearMossenConfigOverrides,
   setMossenConfigOverride,
@@ -12,7 +15,9 @@ import type {
   LocalJSXCommandOnDone,
 } from '../../../types/command.js'
 import { getSessionGoalEventFromMessage } from '../../../utils/sessionGoalEvents.js'
+import { parseSessionGoalAction } from '../../../utils/sessionGoalCommand.js'
 import { call } from '../goal.js'
+import { renderGoalDoctorFromPsOutput } from '../render.js'
 
 const BACKEND_ENV_KEYS = [
   'MOSSEN_CODE_API_BASE_URL',
@@ -52,8 +57,11 @@ async function withNoBackendConfigured(
   }
 }
 
-function createCommandContext(): LocalJSXCommandContext {
+function createCommandContext(
+  tasks: Record<string, unknown> = {},
+): LocalJSXCommandContext {
   return {
+    getAppState: () => ({ tasks }),
     setMessages: () => {},
     options: {
       ideInstallationStatus: null,
@@ -61,6 +69,31 @@ function createCommandContext(): LocalJSXCommandContext {
     },
     onChangeAPIKey: () => {},
   } as unknown as LocalJSXCommandContext
+}
+
+function workflowTask(goalId: string): LocalWorkflowTaskState {
+  return {
+    ...createTaskStateBase('wf_goal_status', 'local_workflow', 'goal workflow'),
+    type: 'local_workflow',
+    status: 'running',
+    runId: 'wf_goal_status',
+    workflowRunId: 'wf_goal_status',
+    workflowName: 'goal-status-workflow',
+    scriptPath: '/tmp/mossen/wf_goal_status/script.js',
+    transcriptDir: '/tmp/mossen/wf_goal_status/transcripts',
+    parentGoalId: goalId,
+    isBackgrounded: true,
+    abortController: undefined,
+    agentCount: 1,
+    totalToolCalls: 0,
+    tokensSpent: 0,
+    phases: [],
+    workflowProgress: [],
+    progressVersion: 0,
+    agents: [],
+    log: [],
+    logs: [],
+  }
 }
 
 describe('/goal command', () => {
@@ -92,5 +125,78 @@ describe('/goal command', () => {
         'No Mossen backend is configured',
       )
     })
+  })
+
+  test('status surfaces stale workflow liveness for the active goal', async () => {
+    const goal = setSessionGoalState('ship loop visibility')
+    const task = workflowTask(goal.id)
+    let result = ''
+
+    await call(
+      nextResult => {
+        result = nextResult ?? ''
+      },
+      createCommandContext({ [task.id]: task }),
+      'status',
+    )
+
+    expect(result).toContain('Loop')
+    expect(result).toMatch(/陈旧|stale/)
+    expect(result).toContain('goal-status-workflow')
+    expect(result).toMatch(/缺少当前进程控制器|missing current-process controller/)
+    expect(result).toContain('wf_goal_status')
+  })
+
+  test('doctor aliases route to read-only loop process diagnostics', () => {
+    expect(parseSessionGoalAction('doctor').action).toBe('doctor')
+    expect(parseSessionGoalAction('diagnostics').action).toBe('doctor')
+    expect(parseSessionGoalAction('diag').action).toBe('doctor')
+
+    const result = renderGoalDoctorFromPsOutput(
+      [
+        '44827 1 9-00:00:00 99.7 supervisor --dangerously-skip-permissions',
+        '19446 45412 1-22:03:04 99.1 bun test sessionGoalEvaluator.test.ts',
+        '16074 1 00:10 4.8 supervisor job',
+      ].join('\n'),
+      { generatedAt: '2026-07-06T00:00:00.000Z' },
+    )
+
+    expect(result).toContain('doctor')
+    expect(result).toMatch(/Read-only|只读/)
+    expect(result).toContain('ps -axo pid=,ppid=,etime=,pcpu=,command=')
+    expect(result).toContain('44827')
+    expect(result).toContain('19446')
+    expect(result).toMatch(/explicit operator confirmation|明确确认/)
+    expect(result).not.toContain('16074')
+  })
+
+  test('board aliases route to unified loop board JSON', async () => {
+    expect(parseSessionGoalAction('board').action).toBe('board')
+    expect(parseSessionGoalAction('loop').action).toBe('board')
+    const goal = setSessionGoalState('ship loop board')
+    const task = workflowTask(goal.id)
+    let result = ''
+
+    await call(
+      nextResult => {
+        result = nextResult ?? ''
+      },
+      createCommandContext({ [task.id]: task }),
+      'board --json',
+    )
+
+    const board = JSON.parse(result) as {
+      version: number
+      goal: { id: string }
+      workflows: Array<{ runId: string; state: string }>
+      processDiagnostics: { mode: string }
+    }
+    expect(board.version).toBe(1)
+    expect(board.goal.id).toBe(goal.id)
+    expect(board.workflows[0]).toMatchObject({
+      runId: 'wf_goal_status',
+      state: 'stale',
+    })
+    expect(board.processDiagnostics.mode).toBe('read-only')
   })
 })

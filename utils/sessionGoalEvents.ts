@@ -18,7 +18,15 @@ const SessionGoalCreatedEventSchema = z.object({
 const SessionGoalEvalEventSchema = z.object({
   type: z.literal('goal_eval'),
   goalId: z.string(),
-  verdict: z.enum(['yes', 'no', 'error', 'max_turns', 'deferred']),
+  verdict: z.enum([
+    'yes',
+    'no',
+    'error',
+    'max_turns',
+    'deferred',
+    'launch_workflow',
+    'wait_for_workflow',
+  ]),
   reason: z.string(),
   turnsUsed: z.number(),
   turnBudget: z.number(),

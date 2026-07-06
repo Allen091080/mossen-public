@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   addToTotalCostState,
   getSessionGoalState,
@@ -15,6 +18,7 @@ import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/Local
 import type { MonitorMcpTaskState } from '../../tasks/MonitorMcpTask/MonitorMcpTask.js'
 import type { RemoteAgentTaskState, TaskState } from '../../tasks/types.js'
 import {
+  enqueueSessionGoalContinuation,
   evaluateSessionGoalRuntimeAfterTurn,
   getSessionGoalPendingWorkReason,
   getSessionGoalTaskBudgetForRequest,
@@ -136,6 +140,35 @@ function localWorkflowTask(
     log: [],
     logs: [],
   }
+}
+
+function writeWorkflowFinalReport(
+  patch: Record<string, unknown>,
+): { path: string; root: string } {
+  const root = mkdtempSync(join(tmpdir(), 'goal-final-report-'))
+  const path = join(root, 'final-report.json')
+  writeFileSync(
+    path,
+    JSON.stringify({
+      version: 1,
+      runId: 'workflow_run_1',
+      workflowName: 'goal-verification',
+      status: 'completed',
+      evidenceState: 'needs_verification',
+      summary: 'summary only',
+      evidence: [],
+      validationCommands: [],
+      artifacts: [],
+      failures: [],
+      openQuestions: [],
+      reportPath: path,
+      resultPreview: 'summary only',
+      generatedAt: '2026-07-06T00:00:00.000Z',
+      ...patch,
+    }, null, 2),
+    'utf8',
+  )
+  return { path, root }
 }
 
 function monitorMcpTask(status: TaskStatus = 'running'): MonitorMcpTaskState {
@@ -356,20 +389,145 @@ describe('getSessionGoalPendingWorkReason', () => {
     )
   })
 
+  test('records verified workflow final reports as goal evidence', async () => {
+    const report = writeWorkflowFinalReport({
+      evidenceState: 'verified',
+      summary: 'verified by unit test',
+      evidence: ['unit test passed'],
+      validationCommands: ['bun test utils/__tests__/sessionGoalRuntime.test.ts'],
+      artifacts: ['/tmp/workflow/artifact.json'],
+    })
+    try {
+      setSessionGoalState('workflow final report should become goal evidence', undefined, {
+        maxDurationSec: 0,
+      })
+      const workflow = localWorkflowTask('completed')
+      workflow.result = 'summary should not be the evidence source'
+      workflow.finalReportPath = report.path
+
+      const result = await evaluateSessionGoalRuntimeAfterTurn({
+        messages: [],
+        signal: new AbortController().signal,
+        tasks: { workflow_1: workflow },
+      })
+
+      expect(result.action.type).toBe('max_turns')
+      expect(getSessionGoalState()?.recentEvidence).toContain(
+        `Workflow goal-verification (workflow_run_1) completed with verified final report; evidence: unit test passed; validation: bun test utils/__tests__/sessionGoalRuntime.test.ts; artifact: /tmp/workflow/artifact.json; report: ${report.path}`,
+      )
+    } finally {
+      rmSync(report.root, { recursive: true, force: true })
+    }
+  })
+
+  test('records summary-only workflow final reports as negative evidence', async () => {
+    const report = writeWorkflowFinalReport({
+      evidenceState: 'needs_verification',
+      summary: 'summary only',
+      missingChecks: ['no command output captured'],
+    })
+    try {
+      setSessionGoalState('summary-only workflow must not complete goal', undefined, {
+        maxDurationSec: 0,
+      })
+      const workflow = localWorkflowTask('completed')
+      workflow.result = 'everything is done'
+      workflow.finalReportPath = report.path
+
+      const result = await evaluateSessionGoalRuntimeAfterTurn({
+        messages: [],
+        signal: new AbortController().signal,
+        tasks: { workflow_1: workflow },
+      })
+
+      expect(result.action.type).toBe('max_turns')
+      expect(getSessionGoalState()?.recentEvidence).toEqual([])
+      expect(getSessionGoalState()?.negativeEvidence).toContain(
+        `Workflow goal-verification (workflow_run_1) needs verification: missing checks: no command output captured; report: ${report.path}`,
+      )
+    } finally {
+      rmSync(report.root, { recursive: true, force: true })
+    }
+  })
+
   test('defers the runtime before evaluator when real workflow work is active', async () => {
-    setSessionGoalState('wait for workflow work before evaluating')
+    const goal = setSessionGoalState('wait for workflow work before evaluating')
+    const workflow = localWorkflowTask()
+    workflow.parentGoalId = goal.id
 
     const result = await evaluateSessionGoalRuntimeAfterTurn({
       messages: [],
       signal: new AbortController().signal,
-      tasks: { workflow_1: localWorkflowTask() },
+      tasks: { workflow_1: workflow },
     })
-    const goal = getSessionGoalState()
+    const stateGoal = getSessionGoalState()
 
-    expect(result.action.type).toBe('deferred')
-    expect(goal?.status).toBe('active')
-    expect(goal?.lastEvaluatorStatus).toBe('deferred')
+    expect(result.action.type).toBe('wait_for_workflow')
+    expect(stateGoal?.status).toBe('active')
+    expect(stateGoal?.lastEvaluatorStatus).toBe('deferred')
     expect(result.events.map(event => event.type)).toContain('goal_eval')
+  })
+
+  test('launches a workflow policy continuation for broad goals without workflow evidence', async () => {
+    setSessionGoalState(
+      '根据 docs/upgrade/W473-loop-os-goal-workflow-plan-2026-07-06.md 的内容，实现目标',
+    )
+
+    const result = await evaluateSessionGoalRuntimeAfterTurn({
+      messages: [],
+      signal: new AbortController().signal,
+      tasks: {},
+    })
+
+    expect(result.action.type).toBe('launch_workflow')
+    if (result.action.type !== 'launch_workflow') {
+      throw new Error('expected launch_workflow action')
+    }
+    expect(result.action.prompt).toContain('<session-goal-workflow-launch>')
+    expect(result.action.prompt).toContain('Workflow({ task: <workflow_task> })')
+    expect(result.events[0]?.type).toBe('goal_eval')
+    expect(result.events[0]?.type === 'goal_eval'
+      ? result.events[0].verdict
+      : null).toBe('launch_workflow')
+    expect(getSessionGoalState()?.nextPlan).toContain('Launch Workflow')
+  })
+
+  test('queues launch workflow actions as goal continuations', () => {
+    const enqueued: unknown[] = []
+    enqueueSessionGoalContinuation(
+      {
+        type: 'launch_workflow',
+        reason: 'Goal is workflow-scale.',
+        prompt: '<session-goal-workflow-launch />',
+        task: 'workflow task',
+        event: {
+          type: 'goal_eval',
+          goalId: 'goal_1',
+          verdict: 'launch_workflow',
+          reason: 'Goal is workflow-scale.',
+          turnsUsed: 1,
+          turnBudget: 20,
+          tokensUsed: 0,
+          evaluatedAt: '2026-07-06T00:00:00.000Z',
+        },
+      },
+      {
+        enqueue: command => enqueued.push(command),
+        removeByFilter: () => {},
+        workload: 'goal',
+      },
+    )
+
+    expect(enqueued).toMatchObject([
+      {
+        mode: 'prompt',
+        value: '<session-goal-workflow-launch />',
+        isMeta: true,
+        skipSlashCommands: true,
+        priority: 'later',
+        workload: 'goal',
+      },
+    ])
   })
 
   test('defers for tasks written by concrete registration paths', async () => {

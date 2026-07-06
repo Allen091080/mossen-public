@@ -13,7 +13,7 @@ const workflows: Command = {
   name: 'workflows',
   description: t('cmd.workflows.description'),
   argumentHint:
-    '[<runId> | agent <runId> <agent> | pause <runId> | stop <runId> | stop-agent <runId> <agent> | restart-agent <runId> <agent> | resume-task <runId> | resume <runId> | save <runId> [name] [--user]]',
+    '[<runId> | create <name> [--user] [--force] | draft <goal text> [--name <name>] [--write] | validate [--all|project|user|bundled|<name>|<path>] [--strict] | explain <name|path> [--strict] | test <name|path> [args...] [--run] | registry [--strict] | agent <runId> <agent> | pause <runId> | stop <runId> | stop-agent <runId> <agent> | restart-agent <runId> <agent> | resume-task <runId> | resume <runId> | save <runId> [name] [--user]]',
   isEnabled: () => (feature('WORKFLOW_SCRIPTS') ? isWorkflowRuntimeEnabled() : false),
   load: () => import('./workflows.js'),
 }

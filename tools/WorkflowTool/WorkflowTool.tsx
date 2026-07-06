@@ -21,6 +21,7 @@ import {
   consumeWorkflowAgentControl,
   failWorkflowTask,
   finishWorkflowTask,
+  type LocalWorkflowTaskState,
   registerWorkflowAgentController,
   registerWorkflowTask,
   updateWorkflowTaskProgress,
@@ -42,8 +43,14 @@ import {
   loadRunMeta,
   runScriptPath,
   saveRunLog,
+  saveWorkflowFinalReport,
+  workflowReportPath,
 } from './engine/journalStore.js'
-import { createWorkflowRuntime } from './engine/runtime.js'
+import { buildWorkflowFinalReport } from './finalReport.js'
+import {
+  createWorkflowRuntime,
+  MAX_AGENTS_PER_RUN,
+} from './engine/runtime.js'
 import {
   createWorkflowAgentRunner,
   DEFAULT_LOCAL_AGENT_STALL_TIMEOUT_MS,
@@ -52,6 +59,7 @@ import {
   checkWorkflowScriptDeterminism,
   checkWorkflowScriptSyntax,
   runSandbox,
+  WorkflowTimeoutError,
 } from './engine/sandbox.js'
 import type { WorkflowMeta, WorkflowProgressEvent } from './engine/types.js'
 import {
@@ -86,9 +94,11 @@ import {
 } from './dynamicWorkflow.js'
 
 /** Default wall-clock ceiling for a whole workflow run (30 minutes). */
-const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
+export const DEFAULT_WORKFLOW_TIMEOUT_MS = 30 * 60 * 1000
+const WORKFLOW_TIMEOUT_ENV = 'MOSSEN_CODE_WORKFLOW_TIMEOUT_MS'
 const WORKFLOW_AGENT_STALL_TIMEOUT_ENV =
   'MOSSEN_CODE_WORKFLOW_AGENT_STALL_TIMEOUT_MS'
+export const MAX_WORKFLOW_TIMEOUT_MS = DEFAULT_WORKFLOW_TIMEOUT_MS
 const MAX_WORKFLOW_AGENT_STALL_TIMEOUT_MS = 5 * 60 * 1000
 const MAX_NESTED_WORKFLOW_DEPTH = 1
 export const MAX_WORKFLOW_RESULT_LOG_LINES = 1000
@@ -226,6 +236,72 @@ export function getWorkflowAgentStallTimeoutMs(
   )
 }
 
+function normalizeWorkflowTimeoutMs(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') return null
+  const parsed = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(parsed)) return null
+  return Math.min(
+    MAX_WORKFLOW_TIMEOUT_MS,
+    Math.max(1, Math.floor(parsed)),
+  )
+}
+
+export function getWorkflowRunTimeoutMs(
+  inputTimeoutMs?: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+  metaTimeoutMs?: unknown,
+): number {
+  return (
+    normalizeWorkflowTimeoutMs(inputTimeoutMs) ??
+    normalizeWorkflowTimeoutMs(env[WORKFLOW_TIMEOUT_ENV]) ??
+    normalizeWorkflowTimeoutMs(metaTimeoutMs) ??
+    DEFAULT_WORKFLOW_TIMEOUT_MS
+  )
+}
+
+function normalizePositiveRuntimeBudget(
+  value: unknown,
+  max: number,
+): number | null {
+  if (value === undefined || value === null || value === '') return null
+  const parsed = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(parsed)) return null
+  return Math.min(max, Math.max(1, Math.floor(parsed)))
+}
+
+function normalizeNonNegativeRuntimeBudget(
+  value: unknown,
+  max: number,
+): number | null {
+  if (value === undefined || value === null || value === '') return null
+  const parsed = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(parsed)) return null
+  return Math.min(max, Math.max(0, Math.floor(parsed)))
+}
+
+export function getWorkflowMaxAgents(
+  metaMaxAgents?: unknown,
+): number {
+  return normalizePositiveRuntimeBudget(metaMaxAgents, MAX_AGENTS_PER_RUN)
+    ?? MAX_AGENTS_PER_RUN
+}
+
+export function getWorkflowMaxParallel(
+  metaMaxParallel?: unknown,
+  defaultMax: number = defaultConcurrency(),
+): number {
+  return normalizePositiveRuntimeBudget(metaMaxParallel, defaultMax) ?? defaultMax
+}
+
+export function getWorkflowMaxNestedWorkflows(
+  metaMaxNestedWorkflows?: unknown,
+): number | undefined {
+  return normalizeNonNegativeRuntimeBudget(
+    metaMaxNestedWorkflows,
+    MAX_AGENTS_PER_RUN,
+  ) ?? undefined
+}
+
 export function setWorkflowAgentRunnerFactoryForTests(
   factory: WorkflowAgentRunnerFactory | null,
 ): void {
@@ -238,6 +314,163 @@ type RunningWorkflowTask = {
   status?: string
   runId?: string
   workflowRunId?: string
+}
+
+type WorkflowTimeoutSnapshot = {
+  activeAgentCount: number
+  currentPhase: string | null
+}
+
+type WorkflowPhaseTimeoutReason = {
+  kind: 'workflow_phase_timeout'
+  phase: string | null
+  timeoutMs: number
+  elapsedMs: number
+}
+
+function workflowTimeoutSnapshot(
+  taskId: string,
+  context: ToolUseContext,
+): WorkflowTimeoutSnapshot {
+  const task =
+    typeof context.getAppState === 'function'
+      ? (context.getAppState().tasks?.[taskId] as
+          | LocalWorkflowTaskState
+          | undefined)
+      : undefined
+  const activeAgentCount =
+    task?.agents.filter(agent =>
+      ['queued', 'running', 'retry_requested'].includes(agent.status),
+    ).length ?? 0
+  return {
+    activeAgentCount,
+    currentPhase: task?.currentPhase ?? null,
+  }
+}
+
+function isWorkflowPhaseTimeoutReason(
+  value: unknown,
+): value is WorkflowPhaseTimeoutReason {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Record<string, unknown>
+  return (
+    record.kind === 'workflow_phase_timeout' &&
+    typeof record.timeoutMs === 'number' &&
+    typeof record.elapsedMs === 'number' &&
+    (typeof record.phase === 'string' || record.phase === null)
+  )
+}
+
+function createWorkflowPhaseWatchdog(options: {
+  timeoutMs?: number
+  abortController: AbortController
+}): {
+  observe(event: WorkflowProgressEvent): void
+  dispose(): void
+} {
+  const timeoutMs = options.timeoutMs
+  if (timeoutMs === undefined) {
+    return {
+      observe: () => {},
+      dispose: () => {},
+    }
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let currentPhase: string | null = null
+  let phaseStartedAt = 0
+
+  const clear = () => {
+    if (timer) clearTimeout(timer)
+    timer = undefined
+  }
+
+  const arm = (phase: string) => {
+    clear()
+    currentPhase = phase
+    phaseStartedAt = Date.now()
+    timer = setTimeout(() => {
+      if (options.abortController.signal.aborted) return
+      options.abortController.abort({
+        kind: 'workflow_phase_timeout',
+        phase: currentPhase,
+        timeoutMs,
+        elapsedMs: Date.now() - phaseStartedAt,
+      } satisfies WorkflowPhaseTimeoutReason)
+    }, timeoutMs)
+  }
+
+  return {
+    observe: event => {
+      if (event.kind === 'phase') arm(event.title)
+    },
+    dispose: clear,
+  }
+}
+
+function normalizeWorkflowPolicyList(
+  values?: readonly string[],
+): string[] | undefined {
+  if (!values?.length) return undefined
+  const normalized: string[] = []
+  for (const item of values) {
+    const value = item.trim()
+    if (!value || normalized.includes(value)) continue
+    normalized.push(value)
+  }
+  if (!normalized.length || normalized.includes('*')) return undefined
+  return normalized
+}
+
+function normalizeWorkflowToolAllowlist(
+  allowedTools?: readonly string[],
+): string[] | undefined {
+  return normalizeWorkflowPolicyList(allowedTools)
+}
+
+function normalizeWorkflowHostAllowlist(
+  allowedHosts?: readonly string[],
+): string[] | undefined {
+  return normalizeWorkflowPolicyList(allowedHosts)
+}
+
+function normalizeWorkflowRootAllowlist(
+  allowedRoots?: readonly string[],
+): string[] | undefined {
+  return normalizeWorkflowPolicyList(allowedRoots)
+}
+
+function combineWorkflowToolAllowlists(
+  parentAllowedTools: readonly string[] | undefined,
+  workflowAllowedTools: readonly string[] | undefined,
+): string[] | undefined {
+  const parent = normalizeWorkflowToolAllowlist(parentAllowedTools)
+  const current = normalizeWorkflowToolAllowlist(workflowAllowedTools)
+  if (!parent) return current
+  if (!current) return parent
+  return current.filter(tool => parent.includes(tool))
+}
+
+function combineWorkflowHostAllowlists(
+  parentAllowedHosts: readonly string[] | undefined,
+  workflowAllowedHosts: readonly string[] | undefined,
+): string[] | undefined {
+  const parent = normalizeWorkflowHostAllowlist(parentAllowedHosts)
+  const current = normalizeWorkflowHostAllowlist(workflowAllowedHosts)
+  if (!parent) return current
+  if (!current) return parent
+  return current.filter(host => parent.includes(host))
+}
+
+function combineWorkflowRootAllowlists(
+  parentAllowedRoots: readonly string[] | undefined,
+  workflowAllowedRoots: readonly string[] | undefined,
+): string[] | undefined {
+  const parent = normalizeWorkflowRootAllowlist(parentAllowedRoots)
+  const current = normalizeWorkflowRootAllowlist(workflowAllowedRoots)
+  if (!parent) return current
+  if (!current) return parent
+  return current.filter(root => parent.includes(root))
 }
 
 function sourceFromWorkflowRef(
@@ -832,6 +1065,17 @@ export const WorkflowTool = buildTool({
     const parentGoal = getSessionGoalState()
     const parentGoalId =
       parentGoal?.status === 'active' ? parentGoal.id : undefined
+    const runTimeoutMs = getWorkflowRunTimeoutMs(
+      input.timeoutMs,
+      process.env,
+      meta.budgets?.timeoutMs,
+    )
+    const runMaxAgents = getWorkflowMaxAgents(meta.budgets?.maxAgents)
+    const runMaxParallel = getWorkflowMaxParallel(meta.budgets?.maxParallel)
+    const runMaxNestedWorkflows = getWorkflowMaxNestedWorkflows(
+      meta.budgets?.maxNestedWorkflows,
+    )
+    const runPhaseTimeoutMs = meta.budgets?.phaseTimeoutMs
     removeInactiveWorkflowResumeTasks(
       typeof toolUseContext.getAppState === 'function'
         ? toolUseContext.getAppState().tasks
@@ -852,6 +1096,18 @@ export const WorkflowTool = buildTool({
       scriptPath: persistedScriptPath,
       transcriptDir,
       parentGoalId: parentGoalId ?? null,
+      ...(meta.allowedTools ? { allowedTools: meta.allowedTools } : {}),
+      ...(meta.allowedRoots ? { allowedRoots: meta.allowedRoots } : {}),
+      ...(meta.allowedHosts ? { allowedHosts: meta.allowedHosts } : {}),
+      timeoutMs: runTimeoutMs,
+      maxAgents: runMaxAgents,
+      maxParallel: runMaxParallel,
+      ...(runMaxNestedWorkflows !== undefined
+        ? { maxNestedWorkflows: runMaxNestedWorkflows }
+        : {}),
+      ...(runPhaseTimeoutMs !== undefined
+        ? { phaseTimeoutMs: runPhaseTimeoutMs }
+        : {}),
       createdAt: new Date().toISOString(),
       status: 'running',
     })
@@ -872,6 +1128,7 @@ export const WorkflowTool = buildTool({
 
     const log: string[] = []
     const startedAtMs = Date.now()
+    let observeWorkflowProgress: (event: WorkflowProgressEvent) => void = () => {}
     registerWorkflowTask({
       taskId,
       runId,
@@ -894,7 +1151,13 @@ export const WorkflowTool = buildTool({
       const line = formatEvent(e)
       if (line) appendWorkflowResultLogLine(log, line)
       updateWorkflowTaskProgress(taskId, e, setTaskState)
+      observeWorkflowProgress(e)
     }
+    const phaseWatchdog = createWorkflowPhaseWatchdog({
+      timeoutMs: runPhaseTimeoutMs,
+      abortController: runAbort,
+    })
+    observeWorkflowProgress = phaseWatchdog.observe
     const emitBundledPhaseCompletionMetrics = () => {
       if (workflowSourceScope !== 'bundled') return
       if (typeof toolUseContext.getAppState !== 'function') return
@@ -912,7 +1175,7 @@ export const WorkflowTool = buildTool({
       })
     }
 
-    const limiter = createLimiter(defaultConcurrency())
+    const limiter = createLimiter(runMaxParallel)
     const budget = createBudget(
       getCurrentTurnTokenBudget(),
       getTurnOutputTokens(),
@@ -925,7 +1188,7 @@ export const WorkflowTool = buildTool({
       entry => appendJournalEntry(runId, entry),
       entry => appendJournalStartedEntry(runId, entry),
     )
-    const runOneAgent = workflowAgentRunnerFactory({
+    const agentRunnerBaseDeps = {
       toolUseContext,
       canUseTool,
       runId,
@@ -937,17 +1200,48 @@ export const WorkflowTool = buildTool({
         agentNumber: number,
         controller: AbortController,
       ) => registerWorkflowAgentController(taskId, agentNumber, controller),
-    })
+    }
     const runtimes: WorkflowRuntime[] = []
     const nestedWorkflowCounts = new Map<string, number>()
+    let nestedWorkflowCallCount = 0
     const createRuntimeFor = (
       workflowArgs: unknown,
       depth: number,
       useJournal: boolean,
-      workflowMeta: Pick<WorkflowMeta, 'phases' | 'model'>,
+      workflowMeta: Pick<
+        WorkflowMeta,
+        'phases' | 'model' | 'allowedTools' | 'allowedHosts' | 'allowedRoots'
+      >,
       childBehavior?: ChildWorkflowRuntimeBehavior,
+      parentAllowedTools?: readonly string[],
+      parentAllowedHosts?: readonly string[],
+      parentAllowedRoots?: readonly string[],
     ): WorkflowRuntime => {
       let runtime: WorkflowRuntime
+      const effectiveAllowedTools = combineWorkflowToolAllowlists(
+        parentAllowedTools,
+        workflowMeta.allowedTools,
+      )
+      const effectiveAllowedHosts = combineWorkflowHostAllowlists(
+        parentAllowedHosts,
+        workflowMeta.allowedHosts,
+      )
+      const effectiveAllowedRoots = combineWorkflowRootAllowlists(
+        parentAllowedRoots,
+        workflowMeta.allowedRoots,
+      )
+      const runOneAgent = workflowAgentRunnerFactory({
+        ...agentRunnerBaseDeps,
+        ...(effectiveAllowedTools !== undefined
+          ? { workflowAllowedTools: effectiveAllowedTools }
+          : {}),
+        ...(effectiveAllowedHosts !== undefined
+          ? { workflowAllowedHosts: effectiveAllowedHosts }
+          : {}),
+        ...(effectiveAllowedRoots !== undefined
+          ? { workflowAllowedRoots: effectiveAllowedRoots }
+          : {}),
+      })
       runtime = createWorkflowRuntime({
         limiter,
         budget,
@@ -958,6 +1252,7 @@ export const WorkflowTool = buildTool({
         defaultModel: workflowMeta.model,
         signal: runAbort.signal,
         journal: useJournal ? journal : undefined,
+        maxAgents: runMaxAgents,
         ...(childBehavior ?? {}),
         getAgentControl: (agentNumber: number) =>
           consumeWorkflowAgentControl(taskId, agentNumber),
@@ -966,6 +1261,15 @@ export const WorkflowTool = buildTool({
           depth >= MAX_NESTED_WORKFLOW_DEPTH
             ? undefined
             : async (nameOrRef, nestedArgs) => {
+                if (
+                  runMaxNestedWorkflows !== undefined &&
+                  nestedWorkflowCallCount >= runMaxNestedWorkflows
+                ) {
+                  throw new Error(
+                    `Workflow nested workflow call cap reached (${runMaxNestedWorkflows}).`,
+                  )
+                }
+                nestedWorkflowCallCount++
                 const nested = await resolveNestedWorkflowSource(nameOrRef)
                 const { meta: nestedMeta, scriptBody: nestedScriptBody } =
                   extractMeta(nested.source)
@@ -994,12 +1298,15 @@ export const WorkflowTool = buildTool({
                     ignorePhaseChanges: true,
                     logPrefix: `[${nestedName}] `,
                   },
+                  effectiveAllowedTools,
+                  effectiveAllowedHosts,
+                  effectiveAllowedRoots,
                 )
                 try {
                   const result = await runSandbox({
                     source: nestedScriptBody,
                     scope: nestedRuntime.scope,
-                    timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+                    timeoutMs: runTimeoutMs,
                     signal: runAbort.signal,
                   })
                   progress({
@@ -1048,7 +1355,7 @@ export const WorkflowTool = buildTool({
       runSandbox({
         source: scriptBody,
         scope: runtime.scope,
-        timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        timeoutMs: runTimeoutMs,
         signal: runAbort.signal,
       })
 
@@ -1063,22 +1370,36 @@ export const WorkflowTool = buildTool({
         saveRunLog(runId, log)
         emitCompletionMetric('completed')
         emitBundledPhaseCompletionMetrics()
+        const runFailures = failures()
+        const finalReportPath = saveWorkflowFinalReport(
+          runId,
+          buildWorkflowFinalReport({
+            runId,
+            workflowName: meta.name,
+            status: 'completed',
+            result,
+            failures: runFailures,
+            reportPath: workflowReportPath(runId),
+          }),
+        ) ?? undefined
         finalizeRunMeta(runId, {
           status: 'completed',
           agentCount: agentCount(),
           totalToolCalls: totalToolCalls(),
           tokensSpent: budget.spent(),
-          failures: failures(),
+          failures: runFailures,
           durationMs: durationMs(),
           result: finalResult,
+          finalReportPath,
         })
         completeWorkflowTask(taskId, setTaskState, {
           agentCount: agentCount(),
           totalToolCalls: totalToolCalls(),
           tokensSpent: budget.spent(),
-          failures: failures(),
+          failures: runFailures,
           durationMs: durationMs(),
           result: finalResult,
+          finalReportPath,
         })
         void exportTerminalWorkflowReport(runId)
       })
@@ -1088,33 +1409,115 @@ export const WorkflowTool = buildTool({
         const paused =
           runAbort.signal.aborted &&
           runAbort.signal.reason === WORKFLOW_PAUSE_ABORT_REASON
+        const phaseTimeoutReason = isWorkflowPhaseTimeoutReason(
+          runAbort.signal.reason,
+        )
+          ? runAbort.signal.reason
+          : null
+        const workflowTimedOut =
+          err instanceof WorkflowTimeoutError ||
+          (err as Error | undefined)?.name === 'WorkflowTimeoutError'
+        const timedOut = workflowTimedOut || phaseTimeoutReason !== null
+        if (workflowTimedOut && !runAbort.signal.aborted) {
+          runAbort.abort('workflow_timeout')
+        }
+        const timeoutSnapshot = timedOut
+          ? workflowTimeoutSnapshot(taskId, toolUseContext)
+          : null
+        const timeoutInfo = timedOut
+          ? {
+              kind: phaseTimeoutReason
+                ? ('phase' as const)
+                : ('workflow' as const),
+              timeoutMs: phaseTimeoutReason?.timeoutMs ?? runTimeoutMs,
+              elapsedMs: phaseTimeoutReason?.elapsedMs ?? durationMs(),
+              activeAgentCount: timeoutSnapshot?.activeAgentCount ?? 0,
+              currentPhase:
+                phaseTimeoutReason?.phase ?? timeoutSnapshot?.currentPhase ?? null,
+            }
+          : undefined
+        const errorMessage = phaseTimeoutReason
+          ? `Workflow phase "${phaseTimeoutReason.phase ?? 'unknown'}" timed out after ${phaseTimeoutReason.timeoutMs}ms (elapsed ${timeoutInfo?.elapsedMs ?? phaseTimeoutReason.elapsedMs}ms, active agents ${timeoutInfo?.activeAgentCount ?? 0}).`
+          : timedOut
+            ? `Workflow timed out after ${runTimeoutMs}ms (elapsed ${timeoutInfo?.elapsedMs ?? durationMs()}ms, active agents ${timeoutInfo?.activeAgentCount ?? 0}, phase ${timeoutInfo?.currentPhase ?? 'unknown'}).`
+          : err instanceof Error
+            ? err.message
+            : String(err)
+        if (timedOut) {
+          appendWorkflowResultLogLine(log, `[timeout] ${errorMessage}`)
+        }
         saveRunLog(runId, log)
         if (paused) {
+          const runFailures = failures()
+          const finalReportPath = saveWorkflowFinalReport(
+            runId,
+            buildWorkflowFinalReport({
+              runId,
+              workflowName: meta.name,
+              status: 'paused',
+              result: undefined,
+              failures: runFailures,
+              reportPath: workflowReportPath(runId),
+            }),
+          ) ?? undefined
           finalizeRunMeta(runId, {
             status: 'paused',
             agentCount: agentCount(),
             totalToolCalls: totalToolCalls(),
             tokensSpent: budget.spent(),
-            failures: failures(),
+            failures: runFailures,
             durationMs: durationMs(),
+            finalReportPath,
           })
           return
         }
+        const runFailures = [
+          ...failures(),
+          errorMessage,
+        ].filter(Boolean)
+        const terminalStatus = killed ? 'killed' : 'failed'
+        const finalReportPath = saveWorkflowFinalReport(
+          runId,
+          buildWorkflowFinalReport({
+            runId,
+            workflowName: meta.name,
+            status: terminalStatus,
+            result: timeoutInfo
+              ? { summary: errorMessage, timeout: timeoutInfo }
+              : undefined,
+            failures: runFailures,
+            timeout: timeoutInfo,
+            reportPath: workflowReportPath(runId),
+          }),
+        ) ?? undefined
         finalizeRunMeta(runId, {
-          status: killed ? 'killed' : 'failed',
+          status: terminalStatus,
           agentCount: agentCount(),
           totalToolCalls: totalToolCalls(),
           tokensSpent: budget.spent(),
-          failures: failures(),
+          failures: runFailures,
           durationMs: durationMs(),
-          error: (err as Error).message,
+          error: errorMessage,
+          ...(timeoutInfo
+            ? {
+                timedOut: true,
+                timeoutKind: timeoutInfo.kind,
+                timeoutMs: runTimeoutMs,
+                timeoutLimitMs: timeoutInfo.timeoutMs,
+                timeoutElapsedMs: timeoutInfo.elapsedMs,
+                timeoutActiveAgentCount: timeoutInfo.activeAgentCount,
+                timeoutPhase: timeoutInfo.currentPhase,
+              }
+            : {}),
+          finalReportPath,
         })
         const patch = {
           agentCount: agentCount(),
           totalToolCalls: totalToolCalls(),
           tokensSpent: budget.spent(),
-          failures: failures(),
+          failures: runFailures,
           durationMs: durationMs(),
+          finalReportPath,
         }
         emitCompletionMetric(killed ? 'killed' : 'failed')
         emitBundledPhaseCompletionMetrics()
@@ -1122,9 +1525,12 @@ export const WorkflowTool = buildTool({
         else
           failWorkflowTask(taskId, setTaskState, {
             ...patch,
-            error: (err as Error).message,
+            error: errorMessage,
           })
         void exportTerminalWorkflowReport(runId)
+      })
+      .finally(() => {
+        phaseWatchdog.dispose()
       })
 
     return {

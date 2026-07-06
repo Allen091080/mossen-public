@@ -1,18 +1,22 @@
 import { describe, expect, test } from 'bun:test'
 import { Console } from 'node:console'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
 import {
+  getProjectRoot,
   getSessionId,
+  setProjectRoot,
   switchSession,
 } from '../../../bootstrap/state.js'
 import { getMossenConfigHomeDir } from '../../../utils/envUtils.js'
 import {
+  clearActiveWorkflowRunsForTests,
   initRunArtifacts,
   type WorkflowRunMeta,
 } from '../../../tools/WorkflowTool/engine/journalStore.js'
+import { getProjectWorkflowsDir } from '../../../tools/WorkflowTool/savedWorkflows.js'
 import {
   buildWorkflowProgressTree,
   buildWorkflowVerificationSummary,
@@ -111,14 +115,17 @@ describe('workflowRunToJson', () => {
       ],
       failures: [],
       verification: {
-        state: 'verifying',
-        summary: 'Audit complete. Ready for review.',
-        evidence: ['Audit complete. Ready for review.'],
+        state: 'queued',
+        summary: 'Verification evidence pending',
+        evidence: [],
         commands: [],
         artifacts: [expect.stringContaining('report.md')],
         failures: [],
       },
-      artifacts: [expect.stringContaining('report.md')],
+      artifacts: expect.arrayContaining([
+        expect.stringContaining('report.md'),
+        expect.stringContaining('checkpoint.json'),
+      ]),
       result: '  Audit complete.  Ready for review. ',
       resultSummary: 'Audit complete. Ready for review.',
       tree: {
@@ -148,8 +155,8 @@ describe('workflowRunToJson', () => {
             id: 'wf_run_123:verification',
             kind: 'verification',
             label: 'Verification evidence',
-            state: 'verifying',
-            resultSummary: 'Audit complete. Ready for review.',
+            state: 'queued',
+            resultSummary: 'Verification evidence pending',
           },
           {
             id: 'wf_run_123:result',
@@ -367,6 +374,164 @@ describe('workflow CLI handlers', () => {
       expect(logs.join('\n')).toContain('cli-session-flow')
     } finally {
       globalThis.console = priorConsole
+      switchSession(priorSession)
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
+      resetConfigHomeMemo()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('emits a Workbench workflow snapshot with registry, controls, and goal evidence', async () => {
+    const priorSession = getSessionId()
+    const priorProjectRoot = getProjectRoot()
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
+    const root = mkdtempSync(join(tmpdir(), 'workflow-workbench-snapshot-'))
+    const projectRoot = join(root, 'project')
+    const targetSession =
+      'cccccccc-cccc-4ccc-8ccc-cccccccccccc' as ReturnType<typeof getSessionId>
+    const logs: string[] = []
+    const errors: string[] = []
+    const priorConsole = globalThis.console
+
+    try {
+      process.env.MOSSEN_CONFIG_DIR = join(root, '.mossen')
+      resetConfigHomeMemo()
+      mkdirSync(getProjectWorkflowsDir(projectRoot), { recursive: true })
+      writeFileSync(
+        join(getProjectWorkflowsDir(projectRoot), 'project-flow.js'),
+        `export const meta = {
+  name: 'project-flow',
+  description: 'Project workflow for Workbench snapshot tests',
+  budgets: { timeoutMs: 60000, phaseTimeoutMs: 10000, maxAgents: 2, maxParallel: 1, maxNestedWorkflows: 0 },
+  allowedTools: ['Read'],
+  allowedRoots: ['.'],
+  allowedHosts: [],
+  evidence: { finalReport: true, validationCommands: ['bun test cli/handlers/__tests__/workflows.test.ts'], artifacts: ['./reports/project-flow.md'] },
+  lifecycle: { version: '0.1.0', owner: 'test', status: 'tested', lastTestArtifact: './reports/project-flow.md' },
+  phases: [{ title: 'Plan', detail: 'Plan the work' }, { title: 'Verify', detail: 'Check evidence' }],
+}
+return { summary: 'ok' }
+`,
+        'utf8',
+      )
+
+      setProjectRoot(projectRoot)
+      switchSession(targetSession)
+      initRunArtifacts('wf_snapshot_completed', 'return "completed"', {
+        ...meta({
+          runId: 'wf_snapshot_completed',
+          workflowName: 'project-flow',
+          status: 'completed',
+          parentGoalId: 'goal_snapshot',
+          result: JSON.stringify({
+            summary: 'Artifact reviewed.',
+            verification: {
+              evidence: ['Artifact reviewed.'],
+              commands: ['bun test cli/handlers/__tests__/workflows.test.ts'],
+              artifacts: ['./reports/project-flow.md'],
+            },
+          }),
+        }),
+      })
+      initRunArtifacts('wf_snapshot_running', 'return "running"', {
+        ...meta({
+          runId: 'wf_snapshot_running',
+          workflowName: 'running-flow',
+          status: 'running',
+          parentGoalId: null,
+        }),
+      })
+      initRunArtifacts('wf_snapshot_resumable', 'return "resumable"', {
+        ...meta({
+          runId: 'wf_snapshot_resumable',
+          workflowName: 'resumable-flow',
+          status: 'killed',
+          parentGoalId: 'goal_snapshot',
+          scriptPath: undefined,
+        }),
+      })
+
+      globalThis.console = new Console({
+        stdout: captureStream(logs),
+        stderr: captureStream(errors),
+      }) as unknown as typeof globalThis.console
+
+      await workflowsHandler({
+        json: true,
+        workbench: true,
+        sessionId: targetSession,
+      })
+
+      const snapshot = JSON.parse(logs.join(''))
+      const projectAsset = snapshot.registry.assets.find(
+        (asset: { name: string }) => asset.name === 'project-flow',
+      )
+      const completedRun = snapshot.runs.items.find(
+        (run: { runId: string }) => run.runId === 'wf_snapshot_completed',
+      )
+      const resumableRun = snapshot.runs.items.find(
+        (run: { runId: string }) => run.runId === 'wf_snapshot_resumable',
+      )
+      const goalLink = snapshot.goalLinks.find(
+        (link: { goalId: string }) => link.goalId === 'goal_snapshot',
+      )
+
+      expect(errors).toEqual([])
+      expect(snapshot).toMatchObject({
+        version: 1,
+        surface: 'workbench-workflows',
+        summary: {
+          runs: 3,
+          running: 1,
+          completed: 1,
+          cancelled: 1,
+          goalLinkedRuns: 2,
+          goalLinks: 1,
+        },
+      })
+      expect(snapshot.registry.actions.map((action: { id: string }) => action.id)).toContain(
+        'workflow.registry.create',
+      )
+      expect(projectAsset).toMatchObject({
+        validation: { ok: true },
+        lifecycle: {
+          status: 'tested',
+          lastTestArtifact: './reports/project-flow.md',
+        },
+      })
+      expect(
+        projectAsset.actions.find(
+          (action: { id: string }) => action.id === 'workflow.asset.deprecate',
+        ),
+      ).toMatchObject({
+        available: false,
+        reason: 'no stable workflow deprecate command exists yet',
+      })
+      expect(completedRun.verification.evidence).toContain('Artifact reviewed.')
+      expect(
+        resumableRun.controls.find(
+          (action: { id: string }) => action.id === 'workflow.run.resume',
+        ),
+      ).toMatchObject({
+        available: true,
+        input: '/workflows resume wf_snapshot_resumable',
+      })
+      expect(goalLink).toMatchObject({
+        goalId: 'goal_snapshot',
+        runIds: ['wf_snapshot_resumable', 'wf_snapshot_completed'],
+      })
+      expect(goalLink.evidence).toContain('Artifact reviewed.')
+      expect(goalLink.artifacts).toEqual(
+        expect.arrayContaining(['./reports/project-flow.md']),
+      )
+    } finally {
+      globalThis.console = priorConsole
+      clearActiveWorkflowRunsForTests()
+      setProjectRoot(priorProjectRoot)
       switchSession(priorSession)
       if (priorConfigDir === undefined) {
         delete process.env.MOSSEN_CONFIG_DIR

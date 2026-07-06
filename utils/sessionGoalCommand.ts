@@ -133,6 +133,8 @@ export type SessionGoalCommandAction =
   | 'edit'
   | 'budget'
   | 'history'
+  | 'doctor'
+  | 'board'
 
 export function parseSessionGoalAction(args: string): {
   action: SessionGoalCommandAction
@@ -154,6 +156,10 @@ export function parseSessionGoalAction(args: string): {
   if (action === 'edit') return { action, body }
   if (action === 'budget') return { action, body }
   if (action === 'history') return { action, body }
+  if (action === 'board' || action === 'loop') return { action: 'board', body }
+  if (action === 'doctor' || action === 'diagnostics' || action === 'diag') {
+    return { action: 'doctor', body }
+  }
   if (action === 'why' || action === 'explain') return { action: 'explain', body }
   if (action === 'set') return { action, body }
   return { action: 'set', body: trimmed }

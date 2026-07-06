@@ -13,7 +13,7 @@
  */
 
 import { parse } from 'acorn'
-import type { WorkflowMeta } from './types.js'
+import type { WorkflowLifecycleStatus, WorkflowMeta } from './types.js'
 
 export class WorkflowMetaError extends Error {
   constructor(message: string) {
@@ -236,6 +236,154 @@ function asPhases(value: unknown): WorkflowMeta['phases'] {
   })
 }
 
+function asRecordField(
+  value: unknown,
+  field: string,
+): Record<string, unknown> | undefined {
+  if (value == null) return undefined
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new WorkflowMetaError(`meta.${field} must be an object when present.`)
+  }
+  return value as Record<string, unknown>
+}
+
+function asPositiveInteger(
+  value: unknown,
+  field: string,
+): number | undefined {
+  if (value == null) return undefined
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new WorkflowMetaError(`meta.${field} must be a finite number.`)
+  }
+  const normalized = Math.floor(value)
+  if (normalized < 1 || normalized !== value) {
+    throw new WorkflowMetaError(`meta.${field} must be a positive integer.`)
+  }
+  return normalized
+}
+
+function asNonNegativeInteger(
+  value: unknown,
+  field: string,
+): number | undefined {
+  if (value == null) return undefined
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new WorkflowMetaError(`meta.${field} must be a finite number.`)
+  }
+  const normalized = Math.floor(value)
+  if (normalized < 0 || normalized !== value) {
+    throw new WorkflowMetaError(`meta.${field} must be a non-negative integer.`)
+  }
+  return normalized
+}
+
+function asStringArray(
+  value: unknown,
+  field: string,
+): string[] | undefined {
+  if (value == null) return undefined
+  if (!Array.isArray(value)) {
+    throw new WorkflowMetaError(`meta.${field} must be an array when present.`)
+  }
+  const out: string[] = []
+  for (const [index, item] of value.entries()) {
+    if (typeof item !== 'string' || !item.trim()) {
+      throw new WorkflowMetaError(
+        `meta.${field}[${index}] must be a non-empty string.`,
+      )
+    }
+    out.push(item)
+  }
+  return out
+}
+
+function asBoolean(
+  value: unknown,
+  field: string,
+): boolean | undefined {
+  if (value == null) return undefined
+  if (typeof value !== 'boolean') {
+    throw new WorkflowMetaError(`meta.${field} must be a boolean.`)
+  }
+  return value
+}
+
+function asBudgets(value: unknown): WorkflowMeta['budgets'] {
+  const rec = asRecordField(value, 'budgets')
+  if (!rec) return undefined
+  return {
+    timeoutMs: asPositiveInteger(rec.timeoutMs, 'budgets.timeoutMs'),
+    phaseTimeoutMs: asPositiveInteger(
+      rec.phaseTimeoutMs,
+      'budgets.phaseTimeoutMs',
+    ),
+    maxAgents: asPositiveInteger(rec.maxAgents, 'budgets.maxAgents'),
+    maxParallel: asPositiveInteger(rec.maxParallel, 'budgets.maxParallel'),
+    maxNestedWorkflows: asNonNegativeInteger(
+      rec.maxNestedWorkflows,
+      'budgets.maxNestedWorkflows',
+    ),
+  }
+}
+
+function asEvidence(value: unknown): WorkflowMeta['evidence'] {
+  const rec = asRecordField(value, 'evidence')
+  if (!rec) return undefined
+  return {
+    finalReport: asBoolean(rec.finalReport, 'evidence.finalReport'),
+    citations: asBoolean(rec.citations, 'evidence.citations'),
+    realProvider: asBoolean(rec.realProvider, 'evidence.realProvider'),
+    processClean: asBoolean(rec.processClean, 'evidence.processClean'),
+    validationCommands: asStringArray(
+      rec.validationCommands,
+      'evidence.validationCommands',
+    ),
+    artifacts: asStringArray(rec.artifacts, 'evidence.artifacts'),
+  }
+}
+
+function asOptionalString(
+  value: unknown,
+  field: string,
+): string | undefined {
+  if (value == null) return undefined
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new WorkflowMetaError(`meta.${field} must be a non-empty string when present.`)
+  }
+  return value
+}
+
+function asWorkflowLifecycleStatus(
+  value: unknown,
+): WorkflowLifecycleStatus | undefined {
+  if (value == null) return undefined
+  if (value === 'draft' || value === 'tested' || value === 'deprecated') {
+    return value
+  }
+  throw new WorkflowMetaError(
+    'meta.lifecycle.status must be one of: draft, tested, deprecated.',
+  )
+}
+
+function asLifecycle(value: unknown): WorkflowMeta['lifecycle'] {
+  const rec = asRecordField(value, 'lifecycle')
+  if (!rec) return undefined
+  return {
+    version: asOptionalString(rec.version, 'lifecycle.version'),
+    owner: asOptionalString(rec.owner, 'lifecycle.owner'),
+    status: asWorkflowLifecycleStatus(rec.status),
+    lastTestedAt: asOptionalString(rec.lastTestedAt, 'lifecycle.lastTestedAt'),
+    lastTestArtifact: asOptionalString(
+      rec.lastTestArtifact,
+      'lifecycle.lastTestArtifact',
+    ),
+    compatibility: asOptionalString(
+      rec.compatibility,
+      'lifecycle.compatibility',
+    ),
+  }
+}
+
 /** Validate a raw meta value into a typed WorkflowMeta. */
 export function validateMeta(raw: unknown): WorkflowMeta {
   if (typeof raw !== 'object' || raw == null) {
@@ -253,6 +401,14 @@ export function validateMeta(raw: unknown): WorkflowMeta {
     description: rec.description,
     title: typeof rec.title === 'string' && rec.title.trim() ? rec.title : undefined,
     whenToUse: typeof rec.whenToUse === 'string' ? rec.whenToUse : undefined,
+    argsSchema: asRecordField(rec.argsSchema, 'argsSchema'),
+    budgets: asBudgets(rec.budgets),
+    allowedTools: asStringArray(rec.allowedTools, 'allowedTools'),
+    allowedRoots: asStringArray(rec.allowedRoots, 'allowedRoots'),
+    allowedHosts: asStringArray(rec.allowedHosts, 'allowedHosts'),
+    effort: typeof rec.effort === 'string' && rec.effort.trim() ? rec.effort : undefined,
+    evidence: asEvidence(rec.evidence),
+    lifecycle: asLifecycle(rec.lifecycle),
     phases: asPhases(rec.phases),
     model: typeof rec.model === 'string' ? rec.model : undefined,
   }

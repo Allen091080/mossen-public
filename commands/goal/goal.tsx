@@ -1,4 +1,6 @@
 import type { LocalJSXCommandContext } from '../../commands.js'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import {
   clearSessionGoalState,
   completeSessionGoalState,
@@ -32,12 +34,26 @@ import { persistCurrentSessionGoalSnapshot } from '../../utils/sessionGoalStore.
 import { truncateToGraphemeCount } from '../../utils/truncate.js'
 import {
   getGoalTokenUsageValue,
+  renderGoalBoard,
+  renderGoalDoctorFromPsOutput,
   renderGoalExplanation,
   renderGoalHistory,
   renderGoalStatus,
 } from './render.js'
 
 const MAX_GOAL_GRAPHEMES = 2000
+const execFileAsync = promisify(execFile)
+
+function getCommandTasks(
+  context: LocalJSXCommandContext,
+): Record<string, unknown> | undefined {
+  if (typeof context.getAppState !== 'function') return undefined
+  try {
+    return context.getAppState().tasks
+  } catch {
+    return undefined
+  }
+}
 
 function parsePositiveIntFlag(text: string, name: string): number | undefined {
   const match = new RegExp(`(?:^|\\s)--${name}(?:=|\\s+)(\\d+)(?=\\s|$)`, 'i').exec(text)
@@ -94,9 +110,18 @@ function parseGoalEditOptionalField(value?: string): string | null | undefined {
   return /^(?:none|clear|unset|-)$/i.test(value.trim()) ? null : value
 }
 
+async function readLoopProcessPsOutput(): Promise<string> {
+  const { stdout } = await execFileAsync(
+    'ps',
+    ['-axo', 'pid=,ppid=,etime=,pcpu=,command='],
+    { timeout: 5000, maxBuffer: 1024 * 1024 },
+  )
+  return stdout
+}
+
 export async function call(
   onDone: LocalJSXCommandOnDone,
-  _context: LocalJSXCommandContext,
+  context: LocalJSXCommandContext,
   args: string,
 ): Promise<null> {
   if (isSessionGoalUnavailableByHooksPolicy()) {
@@ -107,12 +132,29 @@ export async function call(
   const { action, body } = parseSessionGoalAction(args)
 
   if (action === 'status') {
-    onDone(renderGoalStatus(getSessionGoalState()))
+    onDone(renderGoalStatus(getSessionGoalState(), getCommandTasks(context)))
     return null
   }
 
   if (action === 'explain') {
-    onDone(renderGoalExplanation(getSessionGoalState()))
+    onDone(renderGoalExplanation(getSessionGoalState(), getCommandTasks(context)))
+    return null
+  }
+
+  if (action === 'board') {
+    onDone(renderGoalBoard(getSessionGoalState(), getCommandTasks(context), body), {
+      display: 'system',
+    })
+    return null
+  }
+
+  if (action === 'doctor') {
+    try {
+      onDone(renderGoalDoctorFromPsOutput(await readLoopProcessPsOutput()))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      onDone(t('cmd.goal.doctor.error', { error: message }))
+    }
     return null
   }
 
@@ -237,7 +279,11 @@ export async function call(
     if (updated) persistCurrentSessionGoalSnapshot()
     onDone(
       updated
-        ? [t('cmd.goal.edit.ok'), '', renderGoalStatus(updated)].join('\n')
+        ? [
+            t('cmd.goal.edit.ok'),
+            '',
+            renderGoalStatus(updated, getCommandTasks(context)),
+          ].join('\n')
         : t('cmd.goal.edit.none'),
     )
     return null
@@ -256,7 +302,11 @@ export async function call(
     if (updated) persistCurrentSessionGoalSnapshot()
     onDone(
       updated
-        ? [t('cmd.goal.budget.ok'), '', renderGoalStatus(updated)].join('\n')
+        ? [
+            t('cmd.goal.budget.ok'),
+            '',
+            renderGoalStatus(updated, getCommandTasks(context)),
+          ].join('\n')
         : t('cmd.goal.budget.none'),
     )
     return null
@@ -320,7 +370,7 @@ export async function call(
         : null,
       backendPauseReason ? t('cmd.goal.set.pausedBackendUnavailable') : null,
       '',
-      renderGoalStatus(statusGoal),
+      renderGoalStatus(statusGoal, getCommandTasks(context)),
     ]
       .filter((line): line is string => line !== null)
       .join('\n'),

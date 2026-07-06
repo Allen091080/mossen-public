@@ -34,12 +34,15 @@ import type {
   JournalStartedEntry,
 } from './journal.js'
 import type { WorkflowPhaseMeta } from './types.js'
+import type { WorkflowFinalReport } from '../finalReport.js'
 
 const JOURNAL_FILE = 'journal.jsonl'
 const SCRIPT_FILE = 'script.js'
 const META_FILE = 'run.json'
 const LOG_FILE = 'progress.log'
 const REPORT_FILE = 'report.md'
+const FINAL_REPORT_FILE = 'final-report.json'
+const CHECKPOINT_FILE = 'checkpoint.json'
 export const STALE_RUNNING_WORKFLOW_MESSAGE =
   'Workflow run was interrupted because the previous process exited; relaunch the workflow to start fresh.'
 const activeWorkflowRunIds = new Set<string>()
@@ -56,15 +59,68 @@ export type WorkflowRunMeta = {
   scriptPath?: string
   transcriptDir?: string
   parentGoalId?: string | null
+  allowedTools?: string[]
+  allowedRoots?: string[]
+  allowedHosts?: string[]
   createdAt: string
   status: Extract<TaskStatus, 'running' | 'paused' | 'completed' | 'failed' | 'killed'>
   agentCount?: number
   totalToolCalls?: number
   tokensSpent?: number
   failures?: string[]
+  timeoutMs?: number
+  timedOut?: boolean
+  timeoutKind?: 'workflow' | 'phase'
+  timeoutLimitMs?: number
+  timeoutElapsedMs?: number
+  timeoutActiveAgentCount?: number
+  timeoutPhase?: string | null
+  maxAgents?: number
+  maxParallel?: number
+  maxNestedWorkflows?: number
+  phaseTimeoutMs?: number
   durationMs?: number
   result?: string
   error?: string
+  finalReportPath?: string
+}
+
+export type WorkflowCheckpointResumeSafety = {
+  canResume: boolean
+  blockedReason: string | null
+  nextAction: 'resume' | 'wait' | 'relaunch' | 'inspect'
+}
+
+export type WorkflowCheckpoint = {
+  version: 1
+  runId: string
+  workflowName: string
+  status: WorkflowRunMeta['status']
+  createdAt: string
+  generatedAt: string
+  scriptPath: string
+  scriptExists: boolean
+  journalPath: string
+  journalExists: boolean
+  reportPath: string
+  finalReportPath: string
+  finalReportExists: boolean
+  counts: {
+    started: number
+    completed: number
+    pendingStarted: number
+    failures: number
+  }
+  lastStartedIndex: number | null
+  lastCompletedIndex: number | null
+  pendingStartedAgents: Array<{
+    index: number
+    agentNumber: number
+    label: string
+    phase: string | null
+    lastProgressAt?: number
+  }>
+  resumeSafety: WorkflowCheckpointResumeSafety
 }
 
 /**
@@ -81,8 +137,26 @@ function runDir(runId: string): string {
   return join(workflowsRoot(), runId)
 }
 
+function runMetaPath(runId: string): string {
+  return join(runDir(runId), META_FILE)
+}
+
+function journalPath(runId: string): string {
+  return join(runDir(runId), JOURNAL_FILE)
+}
+
 function ensureDir(dir: string): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+}
+
+function readRunMetaRaw(runId: string): WorkflowRunMeta | null {
+  try {
+    const path = runMetaPath(runId)
+    if (!existsSync(path)) return null
+    return JSON.parse(readFileSync(path, 'utf8')) as WorkflowRunMeta
+  } catch {
+    return null
+  }
 }
 
 // Reap stale run dirs once per process, lazily on the first run that persists.
@@ -114,7 +188,8 @@ export function initRunArtifacts(
     const dir = runDir(runId)
     ensureDir(dir)
     writeFileSync(join(dir, SCRIPT_FILE), source, 'utf8')
-    writeFileSync(join(dir, META_FILE), JSON.stringify(meta, null, 2), 'utf8')
+    writeFileSync(runMetaPath(runId), JSON.stringify(meta, null, 2), 'utf8')
+    writeWorkflowCheckpointForMeta(meta)
   } catch {
     // Persistence is a resume convenience, never fatal to the run itself.
   }
@@ -140,7 +215,9 @@ function appendJournalLine(
   try {
     const dir = runDir(runId)
     ensureDir(dir)
-    appendFileSync(join(dir, JOURNAL_FILE), `${JSON.stringify(entry)}\n`, 'utf8')
+    appendFileSync(journalPath(runId), `${JSON.stringify(entry)}\n`, 'utf8')
+    const meta = readRunMetaRaw(runId)
+    if (meta) writeWorkflowCheckpointForMeta(meta)
   } catch {
     // ignore — in-memory journal still drives the current run
   }
@@ -155,13 +232,14 @@ export function finalizeRunMeta(
     activeWorkflowRunIds.delete(runId)
   }
   try {
-    const dir = runDir(runId)
-    const path = join(dir, META_FILE)
+    const path = runMetaPath(runId)
     const prior = existsSync(path)
       ? (JSON.parse(readFileSync(path, 'utf8')) as WorkflowRunMeta)
       : null
     if (!prior) return
-    writeFileSync(path, JSON.stringify({ ...prior, ...patch }, null, 2), 'utf8')
+    const next = { ...prior, ...patch }
+    writeFileSync(path, JSON.stringify(next, null, 2), 'utf8')
+    writeWorkflowCheckpointForMeta(next)
   } catch {
     // ignore
   }
@@ -170,7 +248,7 @@ export function finalizeRunMeta(
 /** Load a prior run's journal entries for resume. Returns null if none. */
 export function loadJournal(runId: string): JournalData | null {
   try {
-    const path = join(runDir(runId), JOURNAL_FILE)
+    const path = journalPath(runId)
     if (!existsSync(path)) return null
     const entries: JournalEntry[] = []
     const started: JournalStartedEntry[] = []
@@ -199,7 +277,7 @@ export function loadJournal(runId: string): JournalData | null {
 /** Read a persisted run header (for /workflows listing). */
 export function loadRunMeta(runId: string): WorkflowRunMeta | null {
   try {
-    const path = join(runDir(runId), META_FILE)
+    const path = runMetaPath(runId)
     if (!existsSync(path)) return null
     const meta = JSON.parse(readFileSync(path, 'utf8')) as WorkflowRunMeta
     return normalizeLoadedRunMeta(meta, path)
@@ -243,6 +321,177 @@ export function runLogPath(runId: string): string {
 /** Absolute path to a run's Markdown report. */
 export function workflowReportPath(runId: string): string {
   return join(runDir(runId), REPORT_FILE)
+}
+
+/** Absolute path to a run's machine-readable final report. */
+export function workflowFinalReportPath(runId: string): string {
+  return join(runDir(runId), FINAL_REPORT_FILE)
+}
+
+/** Absolute path to a run's recovery checkpoint summary. */
+export function workflowCheckpointPath(runId: string): string {
+  return join(runDir(runId), CHECKPOINT_FILE)
+}
+
+/** Persist a bounded machine-readable final report for goal/workflow evidence. */
+export function saveWorkflowFinalReport(
+  runId: string,
+  report: WorkflowFinalReport,
+): string | null {
+  try {
+    const dir = runDir(runId)
+    ensureDir(dir)
+    const path = join(dir, FINAL_REPORT_FILE)
+    writeFileSync(path, JSON.stringify(report, null, 2), 'utf8')
+    return path
+  } catch {
+    return null
+  }
+}
+
+/** Read a run's machine-readable final report, if present. */
+export function loadWorkflowFinalReport(
+  runId: string,
+): WorkflowFinalReport | null {
+  try {
+    const path = workflowFinalReportPath(runId)
+    if (!existsSync(path)) return null
+    return JSON.parse(readFileSync(path, 'utf8')) as WorkflowFinalReport
+  } catch {
+    return null
+  }
+}
+
+function maxIndex(values: Array<number | undefined>): number | null {
+  const numbers = values.filter((value): value is number =>
+    typeof value === 'number' && Number.isFinite(value),
+  )
+  return numbers.length ? Math.max(...numbers) : null
+}
+
+function resumeSafetyForCheckpoint(params: {
+  status: WorkflowRunMeta['status']
+  scriptExists: boolean
+}): WorkflowCheckpointResumeSafety {
+  if (params.status === 'running') {
+    return {
+      canResume: false,
+      blockedReason: 'run is still marked running',
+      nextAction: 'wait',
+    }
+  }
+  if (params.status === 'completed') {
+    return {
+      canResume: false,
+      blockedReason: 'run already completed',
+      nextAction: 'inspect',
+    }
+  }
+  if (params.status === 'failed') {
+    return {
+      canResume: false,
+      blockedReason: 'run failed; relaunch without resumeFromRunId',
+      nextAction: 'relaunch',
+    }
+  }
+  if (!params.scriptExists) {
+    return {
+      canResume: false,
+      blockedReason: 'checkpoint script snapshot is missing',
+      nextAction: 'inspect',
+    }
+  }
+  return {
+    canResume: true,
+    blockedReason: null,
+    nextAction: 'resume',
+  }
+}
+
+function buildWorkflowCheckpointFromMeta(
+  meta: WorkflowRunMeta,
+): WorkflowCheckpoint {
+  const journal = loadJournal(meta.runId)
+  const entries = journal?.entries ?? []
+  const started = journal?.started ?? []
+  const completedKeys = new Set(entries.map(entry => `${entry.index}\0${entry.hash}`))
+  const pendingStartedAgents = started
+    .filter(entry => !completedKeys.has(`${entry.index}\0${entry.hash}`))
+    .map(entry => ({
+      index: entry.index,
+      agentNumber: entry.agentNumber,
+      label: entry.label,
+      phase: entry.phase,
+      ...(typeof entry.lastProgressAt === 'number'
+        ? { lastProgressAt: entry.lastProgressAt }
+        : {}),
+    }))
+  const scriptPath = meta.scriptPath ?? runScriptPath(meta.runId)
+  const finalReportPath = meta.finalReportPath ?? workflowFinalReportPath(meta.runId)
+  const scriptExists = existsSync(scriptPath)
+  return {
+    version: 1,
+    runId: meta.runId,
+    workflowName: meta.workflowName,
+    status: meta.status,
+    createdAt: meta.createdAt,
+    generatedAt: new Date().toISOString(),
+    scriptPath,
+    scriptExists,
+    journalPath: journalPath(meta.runId),
+    journalExists: existsSync(journalPath(meta.runId)),
+    reportPath: workflowReportPath(meta.runId),
+    finalReportPath,
+    finalReportExists: existsSync(finalReportPath),
+    counts: {
+      started: started.length,
+      completed: entries.length,
+      pendingStarted: pendingStartedAgents.length,
+      failures: meta.failures?.length ?? 0,
+    },
+    lastStartedIndex: maxIndex(started.map(entry => entry.index)),
+    lastCompletedIndex: maxIndex(entries.map(entry => entry.index)),
+    pendingStartedAgents,
+    resumeSafety: resumeSafetyForCheckpoint({
+      status: meta.status,
+      scriptExists,
+    }),
+  }
+}
+
+function writeWorkflowCheckpointForMeta(
+  meta: WorkflowRunMeta,
+): WorkflowCheckpoint | null {
+  try {
+    const checkpoint = buildWorkflowCheckpointFromMeta(meta)
+    const path = workflowCheckpointPath(meta.runId)
+    ensureDir(runDir(meta.runId))
+    writeFileSync(path, JSON.stringify(checkpoint, null, 2), 'utf8')
+    return checkpoint
+  } catch {
+    return null
+  }
+}
+
+/** Refresh and persist the checkpoint from current run metadata + journal. */
+export function refreshWorkflowCheckpoint(
+  runId: string,
+): WorkflowCheckpoint | null {
+  const meta = loadRunMeta(runId)
+  if (!meta) return null
+  return writeWorkflowCheckpointForMeta(meta)
+}
+
+/** Read the persisted checkpoint artifact without mutating run state. */
+export function loadWorkflowCheckpoint(runId: string): WorkflowCheckpoint | null {
+  try {
+    const path = workflowCheckpointPath(runId)
+    if (!existsSync(path)) return null
+    const payload = JSON.parse(readFileSync(path, 'utf8')) as WorkflowCheckpoint
+    return payload.version === 1 ? payload : null
+  } catch {
+    return null
+  }
 }
 
 /** Read back a run's progress log lines. */
@@ -352,6 +601,7 @@ function normalizeLoadedRunMeta(
   }
   try {
     writeFileSync(path, JSON.stringify(normalized, null, 2), 'utf8')
+    writeWorkflowCheckpointForMeta(normalized)
   } catch {
     // Best-effort display normalization; callers still get the safe status.
   }
