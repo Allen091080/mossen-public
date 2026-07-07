@@ -2,7 +2,7 @@
   "name": "@mossen/cli",
   "private": false,
   "type": "module",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Mossen personal software-engineering AI CLI with configurable providers.",
   "bin": {
     "mossen": "./bin/mossen.js"
