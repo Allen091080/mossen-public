@@ -25,6 +25,7 @@ import {
   workflowRunsToJson,
   workflowStatusToMachineState,
 } from '../../../commands/workflows/workflowProgressTree.js'
+import { recordWorkbenchWorkflowActionReceipt } from '../../../commands/workflows/workbenchActionReceipts.js'
 import { renderWorkflowReport } from '../../../commands/workflows/exportWorkflowReport.js'
 import {
   workflowHandler,
@@ -454,6 +455,16 @@ return { summary: 'ok' }
           scriptPath: undefined,
         }),
       })
+      recordWorkbenchWorkflowActionReceipt({
+        actionId: 'workflow.run.pause',
+        status: 'accepted',
+        input: '/workflows pause wf_snapshot_running',
+        runId: 'wf_snapshot_running',
+        workflowName: 'running-flow',
+        message: 'Workflow wf_snapshot_running paused.',
+        source: 'workbench',
+        createdAt: '2026-06-12T08:01:00.000Z',
+      })
 
       globalThis.console = new Console({
         stdout: captureStream(logs),
@@ -491,6 +502,7 @@ return { summary: 'ok' }
           cancelled: 1,
           goalLinkedRuns: 2,
           goalLinks: 1,
+          actionReceipts: 1,
         },
       })
       expect(snapshot.registry.actions.map((action: { id: string }) => action.id)).toContain(
@@ -528,6 +540,16 @@ return { summary: 'ok' }
       expect(goalLink.artifacts).toEqual(
         expect.arrayContaining(['./reports/project-flow.md']),
       )
+      expect(snapshot.actionReceipts.items).toMatchObject([
+        {
+          actionId: 'workflow.run.pause',
+          status: 'accepted',
+          input: '/workflows pause wf_snapshot_running',
+          runId: 'wf_snapshot_running',
+          workflowName: 'running-flow',
+          message: 'Workflow wf_snapshot_running paused.',
+        },
+      ])
     } finally {
       globalThis.console = priorConsole
       clearActiveWorkflowRunsForTests()

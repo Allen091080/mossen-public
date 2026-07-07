@@ -12,6 +12,10 @@ import {
   type WorkflowMachineState,
   type WorkflowTreeNodeState,
 } from './workflowProgressTree.js'
+import {
+  loadWorkbenchWorkflowActionReceipts,
+  type WorkbenchWorkflowActionReceipt,
+} from './workbenchActionReceipts.js'
 import type { WorkflowValidationCommandResult } from './validateWorkflow.js'
 
 export type WorkbenchWorkflowActionKind = 'slash-input' | 'cli-command' | 'unsupported'
@@ -90,6 +94,7 @@ export type WorkbenchWorkflowSnapshot = {
     cancelled: number
     goalLinkedRuns: number
     goalLinks: number
+    actionReceipts: number
     needsAttention: number
   }
   registry: {
@@ -103,6 +108,10 @@ export type WorkbenchWorkflowSnapshot = {
     items: WorkbenchWorkflowRunItem[]
   }
   goalLinks: WorkbenchWorkflowGoalLink[]
+  actionReceipts: {
+    emptyState: string | null
+    items: WorkbenchWorkflowActionReceipt[]
+  }
 }
 
 function workflowAction(params: {
@@ -464,6 +473,7 @@ export function buildWorkbenchWorkflowSnapshot(options: {
   const registryAssets = options.registryResults.map(buildRegistryItem)
   const runs = workflowRunsToJson(options.runs).map(buildRunItem)
   const goalLinks = goalLinksForRuns(runs)
+  const actionReceipts = loadWorkbenchWorkflowActionReceipts()
   const invalidAssets = registryAssets.filter(asset => !asset.validation.ok).length
   const needsAttention = runs.filter(run =>
     run.state === 'failed' ||
@@ -487,6 +497,7 @@ export function buildWorkbenchWorkflowSnapshot(options: {
       cancelled: countRuns(runs, 'cancelled'),
       goalLinkedRuns: runs.filter(run => Boolean(run.parentGoalId)).length,
       goalLinks: goalLinks.length,
+      actionReceipts: actionReceipts.length,
       needsAttention,
     },
     registry: {
@@ -504,6 +515,12 @@ export function buildWorkbenchWorkflowSnapshot(options: {
       items: runs,
     },
     goalLinks,
+    actionReceipts: {
+      emptyState: actionReceipts.length === 0
+        ? 'No Workbench workflow action receipts recorded for this session.'
+        : null,
+      items: actionReceipts,
+    },
   }
 }
 
