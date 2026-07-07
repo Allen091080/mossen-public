@@ -78,6 +78,8 @@ import {
   createUserMessage,
 } from '../../../utils/messages.js'
 import { exportWorkflowRunReport } from '../exportWorkflowReport.js'
+import { buildWorkbenchWorkflowSnapshot } from '../workbenchSnapshot.js'
+import { workbenchActionReceiptsPath } from '../workbenchActionReceipts.js'
 import {
   getProjectWorkflowsDir,
   getUserWorkflowsDir,
@@ -1425,6 +1427,75 @@ return 'ok'
     expect(message).toContain(runId)
     expect(state.tasks[taskId]?.status).toBe('paused')
     expect(abortController.signal.aborted).toBe(true)
+  })
+
+  test('control commands record Workbench action receipts for the next snapshot', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
+    const root = mkdtempSync(join(tmpdir(), 'wf-action-receipt-'))
+    const taskId = 'wtaskcmd_receipt'
+    const runId = 'wf_cmd_receipt'
+    const abortController = new AbortController()
+    const sessionId =
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' as ReturnType<typeof getSessionId>
+
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'home')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      const state = {
+        tasks: {
+          [taskId]: runningWorkflowTask({ taskId, runId, abortController }),
+        },
+      }
+      let message = ''
+
+      await call(
+        nextMessage => {
+          message = nextMessage
+        },
+        workflowCommandContext(state) as never,
+        `pause ${runId}`,
+      )
+
+      const snapshot = buildWorkbenchWorkflowSnapshot({
+        runs: [],
+        registryResults: [],
+        generatedAt: '2026-07-07T00:00:00.000Z',
+      })
+
+      expect(existsSync(workbenchActionReceiptsPath())).toBe(true)
+      expect(message).toContain(runId)
+      expect(snapshot.summary.actionReceipts).toBe(1)
+      expect(snapshot.actionReceipts.emptyState).toBeNull()
+      expect(snapshot.actionReceipts.items[0]).toMatchObject({
+        actionId: 'workflow.run.pause',
+        status: 'received',
+        input: `/workflows pause ${runId}`,
+        runId,
+        workflowName: 'demo',
+        message,
+        source: 'cli',
+      })
+    } finally {
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   test('run detail prefers live task progress with phase and agent summaries', async () => {

@@ -58,6 +58,10 @@ import {
   workflowRuntimeStatusToMachineState,
 } from './workflowProgressTree.js'
 import {
+  recordWorkbenchWorkflowActionReceipt,
+  type WorkbenchWorkflowActionReceipt,
+} from './workbenchActionReceipts.js'
+import {
   flushSessionStorage,
   loadTranscriptFile,
 } from '../../utils/sessionStorage.js'
@@ -645,6 +649,39 @@ function retryAgentRun(
   })
 }
 
+function workflowNameForReceipt(
+  runId: string | undefined,
+  context: LocalJSXCommandContext,
+): string | null {
+  if (!runId) return null
+  const found = findWorkflowTaskForRun(context.getAppState().tasks, runId)
+  const workflowRunId = found?.workflowRunId ?? runId
+  return (
+    loadRunMeta(workflowRunId)?.workflowName ??
+    found?.task.workflowName ??
+    null
+  )
+}
+
+function recordWorkflowControlReceipt(params: {
+  actionId: string
+  args: string
+  message: string
+  runId?: string
+  context: LocalJSXCommandContext
+}): WorkbenchWorkflowActionReceipt | null {
+  const input = `/workflows ${params.args.trim()}`.trim()
+  return recordWorkbenchWorkflowActionReceipt({
+    actionId: params.actionId,
+    status: 'received',
+    input,
+    runId: params.runId ?? null,
+    workflowName: workflowNameForReceipt(params.runId, params.context),
+    message: params.message,
+    source: 'cli',
+  })
+}
+
 /** `ultracode [on|off]` — view or toggle standing orchestration mode (S6). */
 function ultracode(args: string[]): string {
   const arg = (args[0] ?? '').toLowerCase()
@@ -721,6 +758,13 @@ export async function call(
 
   if (tokens[0] === 'resume') {
     const result = resumeRunFromJournal(tokens[1])
+    recordWorkflowControlReceipt({
+      actionId: 'workflow.run.resume',
+      args,
+      message: result.message,
+      runId: tokens[1],
+      context,
+    })
     onDone(result.message, {
       display: 'system',
       ...(result.nextInput
@@ -739,17 +783,40 @@ export async function call(
   }
 
   if (tokens[0] === 'pause') {
-    onDone(pauseTaskRun(tokens[1], context), { display: 'system' })
+    const message = pauseTaskRun(tokens[1], context)
+    recordWorkflowControlReceipt({
+      actionId: 'workflow.run.pause',
+      args,
+      message,
+      runId: tokens[1],
+      context,
+    })
+    onDone(message, { display: 'system' })
     return null
   }
 
   if (tokens[0] === 'stop' || tokens[0] === 'kill') {
-    onDone(stopTaskRun(tokens[1], context), { display: 'system' })
+    const message = stopTaskRun(tokens[1], context)
+    recordWorkflowControlReceipt({
+      actionId: 'workflow.run.stop',
+      args,
+      message,
+      runId: tokens[1],
+      context,
+    })
+    onDone(message, { display: 'system' })
     return null
   }
 
   if (tokens[0] === 'resume-task') {
     const result = resumeTaskRun(tokens[1], context)
+    recordWorkflowControlReceipt({
+      actionId: 'workflow.run.resumeTask',
+      args,
+      message: result.message,
+      runId: tokens[1],
+      context,
+    })
     onDone(result.message, {
       display: 'system',
       ...(result.nextInput
@@ -760,14 +827,28 @@ export async function call(
   }
 
   if (tokens[0] === 'stop-agent' || tokens[0] === 'skip-agent') {
-    onDone(stopAgentRun(tokens[1], tokens[2], context), { display: 'system' })
+    const message = stopAgentRun(tokens[1], tokens[2], context)
+    recordWorkflowControlReceipt({
+      actionId: 'workflow.run.stopAgent',
+      args,
+      message,
+      runId: tokens[1],
+      context,
+    })
+    onDone(message, { display: 'system' })
     return null
   }
 
   if (tokens[0] === 'retry-agent' || tokens[0] === 'restart-agent') {
-    onDone(retryAgentRun(tokens[1], tokens[2], context), {
-      display: 'system',
+    const message = retryAgentRun(tokens[1], tokens[2], context)
+    recordWorkflowControlReceipt({
+      actionId: 'workflow.run.retryAgent',
+      args,
+      message,
+      runId: tokens[1],
+      context,
     })
+    onDone(message, { display: 'system' })
     return null
   }
 
