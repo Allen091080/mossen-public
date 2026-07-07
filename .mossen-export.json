@@ -2,8 +2,8 @@
   "schema": 1,
   "source": "mossensrc",
   "sourceRef": "HEAD",
-  "sourceSha": "8bfc27a70d9fd995e255705a3af8f219c66a8b53",
-  "sourceCommitDate": "2026-07-07T12:50:28+08:00",
+  "sourceSha": "34460f82b83fa13134e76f739ff68caf65606be9",
+  "sourceCommitDate": "2026-07-07T13:00:02+08:00",
   "manifest": "public-export/manifest.toml",
   "manifestVersion": 1
 }
