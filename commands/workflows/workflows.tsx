@@ -61,6 +61,7 @@ import {
 import {
   recordWorkbenchWorkflowActionReceipt,
   type WorkbenchWorkflowActionReceipt,
+  type WorkbenchWorkflowActionReceiptStatus,
 } from './workbenchActionReceipts.js'
 import {
   flushSessionStorage,
@@ -90,6 +91,30 @@ type WorkflowTaskLookup = {
   taskId: string
   workflowRunId: string
   task: WorkflowTaskSnapshot
+}
+
+type WorkflowControlContext = Pick<
+  LocalJSXCommandContext,
+  'getAppState' | 'setAppState' | 'setAppStateForTasks'
+>
+
+export type WorkflowControlActionId =
+  | 'workflow.run.pause'
+  | 'workflow.run.stop'
+  | 'workflow.run.stopAgent'
+  | 'workflow.run.retryAgent'
+
+export type WorkflowControlExecutionResult = {
+  version: 1
+  subtype: 'workflow_control_result'
+  actionId: WorkflowControlActionId
+  status: WorkbenchWorkflowActionReceiptStatus
+  input: string | null
+  runId: string | null
+  agentNumber: number | null
+  workflowName: string | null
+  message: string
+  receipt: WorkbenchWorkflowActionReceipt | null
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -521,7 +546,7 @@ function findWorkflowTaskForRun(
 
 function pauseTaskRun(
   runId: string | undefined,
-  context: LocalJSXCommandContext,
+  context: WorkflowControlContext,
 ): string {
   if (!runId) return t('cmd.workflows.pauseUsage')
   const found = findWorkflowTaskForRun(context.getAppState().tasks, runId)
@@ -545,7 +570,7 @@ function pauseTaskRun(
 
 function stopTaskRun(
   runId: string | undefined,
-  context: LocalJSXCommandContext,
+  context: WorkflowControlContext,
 ): string {
   if (!runId) return t('cmd.workflows.stopUsage')
   const found = findWorkflowTaskForRun(context.getAppState().tasks, runId)
@@ -620,7 +645,7 @@ function isRetryableWorkflowAgent(
 function stopAgentRun(
   runId: string | undefined,
   agentId: string | undefined,
-  context: LocalJSXCommandContext,
+  context: WorkflowControlContext,
 ): string {
   const agentNumber = parseWorkflowAgentNumber(agentId)
   if (!runId || !agentNumber) return t('cmd.workflows.stopAgentUsage')
@@ -648,7 +673,7 @@ function stopAgentRun(
 function retryAgentRun(
   runId: string | undefined,
   agentId: string | undefined,
-  context: LocalJSXCommandContext,
+  context: WorkflowControlContext,
 ): string {
   const agentNumber = parseWorkflowAgentNumber(agentId)
   if (!runId || !agentNumber) return t('cmd.workflows.retryAgentUsage')
@@ -681,7 +706,7 @@ function retryAgentRun(
 
 function workflowNameForReceipt(
   runId: string | undefined,
-  context: LocalJSXCommandContext,
+  context: WorkflowControlContext,
 ): string | null {
   if (!runId) return null
   const found = findWorkflowTaskForRun(context.getAppState().tasks, runId)
@@ -698,18 +723,130 @@ function recordWorkflowControlReceipt(params: {
   args: string
   message: string
   runId?: string
-  context: LocalJSXCommandContext
+  context: WorkflowControlContext
+  source?: WorkbenchWorkflowActionReceipt['source']
+  status?: WorkbenchWorkflowActionReceiptStatus
 }): WorkbenchWorkflowActionReceipt | null {
   const input = `/workflows ${params.args.trim()}`.trim()
   return recordWorkbenchWorkflowActionReceipt({
     actionId: params.actionId,
-    status: 'received',
+    status: params.status ?? 'received',
     input,
     runId: params.runId ?? null,
     workflowName: workflowNameForReceipt(params.runId, params.context),
     message: params.message,
-    source: 'cli',
+    source: params.source ?? 'cli',
   })
+}
+
+function workflowControlArgs(params: {
+  actionId: WorkflowControlActionId
+  runId: string | null
+  agentNumber: number | null
+}): string {
+  const runId = params.runId ?? ''
+  switch (params.actionId) {
+    case 'workflow.run.pause':
+      return ['pause', runId].filter(Boolean).join(' ')
+    case 'workflow.run.stop':
+      return ['stop', runId].filter(Boolean).join(' ')
+    case 'workflow.run.stopAgent':
+      return ['stop-agent', runId, params.agentNumber ?? undefined]
+        .filter(value => value !== undefined && value !== '')
+        .join(' ')
+    case 'workflow.run.retryAgent':
+      return ['restart-agent', runId, params.agentNumber ?? undefined]
+        .filter(value => value !== undefined && value !== '')
+        .join(' ')
+  }
+}
+
+export function executeWorkflowControlAction(params: {
+  actionId: WorkflowControlActionId
+  runId?: string | null
+  agentNumber?: number | null
+  context: WorkflowControlContext
+  source?: WorkbenchWorkflowActionReceipt['source']
+}): WorkflowControlExecutionResult {
+  const runId = params.runId?.trim() || null
+  const agentNumber =
+    typeof params.agentNumber === 'number' && Number.isInteger(params.agentNumber)
+      ? params.agentNumber
+      : null
+  const args = workflowControlArgs({
+    actionId: params.actionId,
+    runId,
+    agentNumber,
+  })
+  let status: WorkbenchWorkflowActionReceiptStatus = 'rejected'
+  let message: string
+
+  if (!runId) {
+    message =
+      params.actionId === 'workflow.run.pause'
+        ? t('cmd.workflows.pauseUsage')
+        : params.actionId === 'workflow.run.stop'
+          ? t('cmd.workflows.stopUsage')
+          : params.actionId === 'workflow.run.stopAgent'
+            ? t('cmd.workflows.stopAgentUsage')
+            : t('cmd.workflows.retryAgentUsage')
+  } else if (params.actionId === 'workflow.run.pause') {
+    const found = findWorkflowTaskForRun(params.context.getAppState().tasks, runId)
+    status = found?.task.status === 'running' ? 'accepted' : 'rejected'
+    message = pauseTaskRun(runId, params.context)
+  } else if (params.actionId === 'workflow.run.stop') {
+    const found = findWorkflowTaskForRun(params.context.getAppState().tasks, runId)
+    status =
+      found?.task.status === 'running' || found?.task.status === 'paused'
+        ? 'accepted'
+        : 'rejected'
+    message = stopTaskRun(runId, params.context)
+  } else if (params.actionId === 'workflow.run.stopAgent') {
+    const agentId = agentNumber ? String(agentNumber) : undefined
+    const found = findWorkflowTaskForRun(params.context.getAppState().tasks, runId)
+    status =
+      found?.task.status === 'running' &&
+      agentNumber !== null &&
+      hasVisibleAgent(found.task, agentNumber)
+        ? 'accepted'
+        : 'rejected'
+    message = stopAgentRun(runId, agentId, params.context)
+  } else {
+    const agentId = agentNumber ? String(agentNumber) : undefined
+    const found = findWorkflowTaskForRun(params.context.getAppState().tasks, runId)
+    status =
+      found?.task.status === 'running' &&
+      agentNumber !== null &&
+      hasVisibleAgent(found.task, agentNumber) &&
+      isRetryableWorkflowAgent(found.task, agentNumber)
+        ? 'accepted'
+        : 'rejected'
+    message = retryAgentRun(runId, agentId, params.context)
+  }
+
+  const receipt = recordWorkflowControlReceipt({
+    actionId: params.actionId,
+    args,
+    message,
+    runId: runId ?? undefined,
+    context: params.context,
+    source: params.source ?? 'workbench',
+    status,
+  })
+
+  return {
+    version: 1,
+    subtype: 'workflow_control_result',
+    actionId: params.actionId,
+    status,
+    input: args ? `/workflows ${args}` : null,
+    runId,
+    agentNumber,
+    workflowName:
+      receipt?.workflowName ?? workflowNameForReceipt(runId ?? undefined, params.context),
+    message,
+    receipt,
+  }
 }
 
 /** `ultracode [on|off]` — view or toggle standing orchestration mode (S6). */

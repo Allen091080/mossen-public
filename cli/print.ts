@@ -18,6 +18,7 @@ import {
   handleStreamJsonConfigChangeRequest, type StreamJsonApplyConfigChangeResponse, } from 'src/utils/streamJsonConfigChange.js'
 import {
   handleStreamJsonProjectMemoryOperationRequest, type StreamJsonProjectMemoryOperationResponse, } from 'src/utils/streamJsonProjectMemoryOperation.js'
+import { executeWorkflowControlAction } from 'src/commands/workflows/workflows.js'
 import type { ToolPermissionContext } from 'src/Tool.js'
 import type { ThinkingConfig } from 'src/utils/thinking.js'
 import { assembleToolPool, filterToolsByDenyRules } from 'src/tools.js'
@@ -4847,6 +4848,31 @@ function runHeadlessStreaming(
               projectRoot: getCwd(),
             }) as StreamJsonProjectMemoryOperationResponse,
           )
+        } else if (message.request.subtype === 'workflow_control') {
+          const expectedSessionId = message.request.expected_session_id?.trim()
+          const currentSessionId = getSessionId()
+          if (expectedSessionId && expectedSessionId !== currentSessionId) {
+            sendControlResponseError(
+              message,
+              `workflow_control_session_mismatch: expected ${expectedSessionId}, got ${currentSessionId}`,
+            )
+          } else {
+            try {
+              const result = executeWorkflowControlAction({
+                actionId: message.request.action_id,
+                runId: message.request.run_id,
+                agentNumber: message.request.agent_number,
+                context: {
+                  getAppState,
+                  setAppState,
+                },
+                source: message.request.source ?? 'workbench',
+              })
+              sendControlResponseSuccess(message, { ...result })
+            } catch (error) {
+              sendControlResponseError(message, errorMessage(error))
+            }
+          }
         } else if (message.request.subtype === 'slash_command') {
           // Stream-json slash bridges expose a curated subset of CLI
           // capabilities. Wrappers here are either read-only status/listing

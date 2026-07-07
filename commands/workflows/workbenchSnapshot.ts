@@ -21,6 +21,19 @@ import type { WorkflowValidationCommandResult } from './validateWorkflow.js'
 
 export type WorkbenchWorkflowActionKind = 'slash-input' | 'cli-command' | 'unsupported'
 
+export type WorkbenchWorkflowControlActionId =
+  | 'workflow.run.pause'
+  | 'workflow.run.stop'
+  | 'workflow.run.stopAgent'
+  | 'workflow.run.retryAgent'
+
+export type WorkbenchWorkflowControlPayload = {
+  subtype: 'workflow_control'
+  actionId: WorkbenchWorkflowControlActionId
+  runId: string
+  agentNumber?: number
+}
+
 export type WorkbenchWorkflowAction = {
   id: string
   label: string
@@ -28,6 +41,7 @@ export type WorkbenchWorkflowAction = {
   kind: WorkbenchWorkflowActionKind
   input: string | null
   command: string | null
+  control: WorkbenchWorkflowControlPayload | null
   reason: string | null
   destructive: boolean
   requires: string[]
@@ -122,6 +136,7 @@ function workflowAction(params: {
   kind: WorkbenchWorkflowActionKind
   input?: string
   command?: string
+  control?: WorkbenchWorkflowControlPayload
   reason?: string
   destructive?: boolean
   requires?: string[]
@@ -133,6 +148,7 @@ function workflowAction(params: {
     kind: params.kind,
     input: params.input ?? null,
     command: params.command ?? null,
+    control: params.control ?? null,
     reason: params.reason ?? null,
     destructive: params.destructive ?? false,
     requires: params.requires ?? [],
@@ -342,6 +358,13 @@ function runControls(
       available: canPause,
       kind: 'slash-input',
       input: `/workflows pause ${run.runId}`,
+      control: canPause
+        ? {
+            subtype: 'workflow_control',
+            actionId: 'workflow.run.pause',
+            runId: run.runId,
+          }
+        : undefined,
       reason: canPause
         ? undefined
         : run.status === 'running'
@@ -354,6 +377,13 @@ function runControls(
       available: canStop,
       kind: 'slash-input',
       input: `/workflows stop ${run.runId}`,
+      control: canStop
+        ? {
+            subtype: 'workflow_control',
+            actionId: 'workflow.run.stop',
+            runId: run.runId,
+          }
+        : undefined,
       destructive: true,
       reason: canStop
         ? undefined

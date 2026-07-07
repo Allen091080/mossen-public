@@ -660,6 +660,30 @@ export const SDKControlSlashCommandRequestSchema = lazySchema(() =>
     ),
 )
 
+export const SDKControlWorkflowControlActionIdSchema = lazySchema(() =>
+  z.enum([
+    'workflow.run.pause',
+    'workflow.run.stop',
+    'workflow.run.stopAgent',
+    'workflow.run.retryAgent',
+  ]),
+)
+
+export const SDKControlWorkflowControlRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('workflow_control'),
+      action_id: SDKControlWorkflowControlActionIdSchema(),
+      run_id: z.string(),
+      agent_number: z.number().int().positive().optional(),
+      expected_session_id: z.string().optional(),
+      source: z.enum(['workbench', 'cli', 'system']).optional(),
+    })
+    .describe(
+      'Executes a typed Workbench workflow control against the live stream-json process. This is narrower than slash_command and only supports run/agent controls owned by the current process.',
+    ),
+)
+
 // ============================================================================
 // W46 — High-Value Dedicated Control Protocols
 // ============================================================================
@@ -970,6 +994,7 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlGetSettingsRequestSchema(),
     SDKControlElicitationRequestSchema(),
     SDKControlSlashCommandRequestSchema(),
+    SDKControlWorkflowControlRequestSchema(),
     SDKControlCompactConversationRequestSchema(),
     SDKControlGetConfigSummaryRequestSchema(),
     SDKControlRuntimeDoctorSummaryRequestSchema(),

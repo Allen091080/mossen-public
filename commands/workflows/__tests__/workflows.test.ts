@@ -18,7 +18,11 @@ import {
   switchSession,
 } from '../../../bootstrap/state.js'
 import { getTaskOutputPath } from '../../../utils/task/diskOutput.js'
-import { buildWorkflowResumeNextInput, call } from '../workflows.js'
+import {
+  buildWorkflowResumeNextInput,
+  call,
+  executeWorkflowControlAction,
+} from '../workflows.js'
 import {
   buildWorkflowTemplate,
   createWorkflowCommand,
@@ -59,6 +63,7 @@ import {
   initRunArtifacts,
   loadRunMeta,
   loadWorkflowCheckpoint,
+  markActiveWorkflowRunForTests,
   runScriptPath,
   STALE_RUNNING_WORKFLOW_MESSAGE,
   workflowReportPath,
@@ -1499,6 +1504,83 @@ return 'ok'
     }
   })
 
+  test('typed Workbench workflow control pauses a live task and records accepted receipt', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
+    const root = mkdtempSync(join(tmpdir(), 'wf-typed-control-receipt-'))
+    const taskId = 'wtaskcmd_typed_receipt'
+    const runId = 'wf_cmd_typed_receipt'
+    const abortController = new AbortController()
+    const sessionId =
+      'acacacac-acac-4cac-8cac-acacacacacac' as ReturnType<typeof getSessionId>
+
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'home')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      const state = {
+        tasks: {
+          [taskId]: runningWorkflowTask({ taskId, runId, abortController }),
+        },
+      }
+
+      const result = executeWorkflowControlAction({
+        actionId: 'workflow.run.pause',
+        runId,
+        context: workflowCommandContext(state) as never,
+        source: 'workbench',
+      })
+      const snapshot = buildWorkbenchWorkflowSnapshot({
+        runs: [],
+        registryResults: [],
+        generatedAt: '2026-07-07T00:00:00.000Z',
+      })
+
+      expect(result).toMatchObject({
+        version: 1,
+        subtype: 'workflow_control_result',
+        actionId: 'workflow.run.pause',
+        status: 'accepted',
+        input: `/workflows pause ${runId}`,
+        runId,
+        workflowName: 'demo',
+        receipt: {
+          actionId: 'workflow.run.pause',
+          status: 'accepted',
+          source: 'workbench',
+        },
+      })
+      expect(state.tasks[taskId]?.status).toBe('paused')
+      expect(abortController.signal.aborted).toBe(true)
+      expect(snapshot.actionReceipts.items[0]).toMatchObject({
+        actionId: 'workflow.run.pause',
+        status: 'accepted',
+        input: `/workflows pause ${runId}`,
+        runId,
+        workflowName: 'demo',
+        source: 'workbench',
+      })
+    } finally {
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('pause persists checkpoint state for immediate Workbench snapshot reconciliation', async () => {
     const priorRoot = getProjectRoot()
     const priorSession = getSessionId()
@@ -1629,6 +1711,82 @@ return 'ok'
     }
   })
 
+  test('same-process Workbench snapshots expose typed controls for live runs', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
+    const root = mkdtempSync(join(tmpdir(), 'wf-live-typed-controls-'))
+    const sessionId =
+      'aeaeaeae-aeae-4eae-8eae-aeaeaeaeaeae' as ReturnType<typeof getSessionId>
+    const runId = 'wf_live_typed_controls'
+
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'home')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      initRunArtifacts(runId, 'return "live controls"', {
+        runId,
+        workflowName: 'live-control-flow',
+        description: 'Live control flow',
+        createdAt: new Date(0).toISOString(),
+        status: 'running',
+        agentCount: 1,
+        totalToolCalls: 1,
+        tokensSpent: 8,
+      })
+      markActiveWorkflowRunForTests(runId)
+
+      const meta = loadRunMeta(runId)
+      const snapshot = buildWorkbenchWorkflowSnapshot({
+        runs: meta ? [meta] : [],
+        registryResults: [],
+        generatedAt: '2026-07-07T00:00:00.000Z',
+      })
+      const run = snapshot.runs.items.find(item => item.runId === runId)
+
+      expect(
+        run?.controls.find(action => action.id === 'workflow.run.pause'),
+      ).toMatchObject({
+        available: true,
+        input: `/workflows pause ${runId}`,
+        control: {
+          subtype: 'workflow_control',
+          actionId: 'workflow.run.pause',
+          runId,
+        },
+      })
+      expect(
+        run?.controls.find(action => action.id === 'workflow.run.stop'),
+      ).toMatchObject({
+        available: true,
+        input: `/workflows stop ${runId}`,
+        control: {
+          subtype: 'workflow_control',
+          actionId: 'workflow.run.stop',
+          runId,
+        },
+      })
+    } finally {
+      clearActiveWorkflowRunsForTests()
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('external Workbench snapshots do not expose live-only controls', async () => {
     const priorRoot = getProjectRoot()
     const priorSession = getSessionId()
@@ -1690,6 +1848,7 @@ return 'ok'
         runningRun?.controls.find(action => action.id === 'workflow.run.stop'),
       ).toMatchObject({
         available: false,
+        control: null,
         reason: 'only running or paused workflows can be stopped',
       })
       expect(pausedRun).toMatchObject({
@@ -1701,6 +1860,7 @@ return 'ok'
         pausedRun?.controls.find(action => action.id === 'workflow.run.stop'),
       ).toMatchObject({
         available: false,
+        control: null,
         reason: 'requires a live workflow controller in this process',
       })
       expect(
