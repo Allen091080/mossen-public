@@ -181,7 +181,7 @@ export function initRunArtifacts(
   source: string,
   meta: WorkflowRunMeta,
 ): void {
-  if (meta.status === 'running') activeWorkflowRunIds.add(runId)
+  if (meta.status === 'running' || meta.status === 'paused') activeWorkflowRunIds.add(runId)
   else activeWorkflowRunIds.delete(runId)
   reapOnceLazily()
   try {
@@ -228,7 +228,9 @@ export function finalizeRunMeta(
   runId: string,
   patch: Partial<WorkflowRunMeta>,
 ): void {
-  if (patch.status && patch.status !== 'running') {
+  if (patch.status === 'running' || patch.status === 'paused') {
+    activeWorkflowRunIds.add(runId)
+  } else if (patch.status) {
     activeWorkflowRunIds.delete(runId)
   }
   try {
@@ -614,6 +616,10 @@ export function clearActiveWorkflowRunsForTests(): void {
 
 export function markActiveWorkflowRunForTests(runId: string): void {
   activeWorkflowRunIds.add(runId)
+}
+
+export function isWorkflowRunActiveInCurrentProcess(runId: string): boolean {
+  return activeWorkflowRunIds.has(runId)
 }
 
 /**

@@ -1,5 +1,6 @@
 import { basename } from 'node:path'
 import {
+  isWorkflowRunActiveInCurrentProcess,
   loadWorkflowCheckpoint,
   type WorkflowCheckpoint,
   type WorkflowRunMeta,
@@ -311,10 +312,13 @@ function runControls(
   checkpoint: WorkflowCheckpoint | null,
 ): WorkbenchWorkflowAction[] {
   const active = run.status === 'running' || run.status === 'paused'
-  const canPause = run.status === 'running'
-  const canStop = run.status === 'running' || run.status === 'paused'
+  const liveController = isWorkflowRunActiveInCurrentProcess(run.runId)
+  const liveControllerReason = 'requires a live workflow controller in this process'
+  const canPause = run.status === 'running' && liveController
+  const canStop = active && liveController
   const canResume = checkpoint?.resumeSafety.canResume === true
   const hasAgentControls =
+    liveController &&
     active &&
     (collectTreeStates(run, 'running') > 0 || collectTreeStates(run, 'queued') > 0)
   return [
@@ -338,7 +342,11 @@ function runControls(
       available: canPause,
       kind: 'slash-input',
       input: `/workflows pause ${run.runId}`,
-      reason: canPause ? undefined : 'only running workflows can be paused',
+      reason: canPause
+        ? undefined
+        : run.status === 'running'
+          ? liveControllerReason
+          : 'only running workflows can be paused',
     }),
     workflowAction({
       id: 'workflow.run.stop',
@@ -347,7 +355,11 @@ function runControls(
       kind: 'slash-input',
       input: `/workflows stop ${run.runId}`,
       destructive: true,
-      reason: canStop ? undefined : 'only running or paused workflows can be stopped',
+      reason: canStop
+        ? undefined
+        : active
+          ? liveControllerReason
+          : 'only running or paused workflows can be stopped',
     }),
     workflowAction({
       id: 'workflow.run.resume',
@@ -379,7 +391,9 @@ function runControls(
       requires: ['agentNumber'],
       reason: hasAgentControls
         ? undefined
-        : 'requires a running or queued workflow agent',
+        : active && !liveController
+          ? liveControllerReason
+          : 'requires a running or queued workflow agent',
     }),
     workflowAction({
       id: 'workflow.run.retryAgent',
@@ -388,7 +402,11 @@ function runControls(
       kind: 'slash-input',
       input: `/workflows restart-agent ${run.runId} <agentNumber>`,
       requires: ['agentNumber'],
-      reason: hasAgentControls ? undefined : 'requires a running workflow agent',
+      reason: hasAgentControls
+        ? undefined
+        : active && !liveController
+          ? liveControllerReason
+          : 'requires a running workflow agent',
     }),
     workflowAction({
       id: 'workflow.run.save',

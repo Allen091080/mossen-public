@@ -1629,6 +1629,110 @@ return 'ok'
     }
   })
 
+  test('external Workbench snapshots do not expose live-only controls', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
+    const root = mkdtempSync(join(tmpdir(), 'wf-external-control-boundary-'))
+    const sessionId =
+      'adadadad-adad-4dad-8dad-adadadadadad' as ReturnType<typeof getSessionId>
+    const runningRunId = 'wf_external_running'
+    const pausedRunId = 'wf_external_paused'
+
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'home')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      initRunArtifacts(runningRunId, 'return "running"', {
+        runId: runningRunId,
+        workflowName: 'external-running-flow',
+        description: 'External running flow',
+        createdAt: new Date(0).toISOString(),
+        status: 'running',
+        agentCount: 1,
+        totalToolCalls: 1,
+        tokensSpent: 8,
+      })
+      initRunArtifacts(pausedRunId, 'return "paused"', {
+        runId: pausedRunId,
+        workflowName: 'external-paused-flow',
+        description: 'External paused flow',
+        createdAt: new Date(1).toISOString(),
+        status: 'paused',
+        agentCount: 1,
+        totalToolCalls: 1,
+        tokensSpent: 8,
+      })
+      clearActiveWorkflowRunsForTests()
+
+      const runningMeta = loadRunMeta(runningRunId)
+      const pausedMeta = loadRunMeta(pausedRunId)
+      const snapshot = buildWorkbenchWorkflowSnapshot({
+        runs: [runningMeta, pausedMeta].filter((run): run is NonNullable<typeof run> =>
+          Boolean(run),
+        ),
+        registryResults: [],
+        generatedAt: '2026-07-07T00:00:00.000Z',
+      })
+      const runningRun = snapshot.runs.items.find(run => run.runId === runningRunId)
+      const pausedRun = snapshot.runs.items.find(run => run.runId === pausedRunId)
+
+      expect(runningRun).toMatchObject({
+        runId: runningRunId,
+        state: 'failed',
+        status: 'failed',
+        failures: [STALE_RUNNING_WORKFLOW_MESSAGE],
+      })
+      expect(
+        runningRun?.controls.find(action => action.id === 'workflow.run.stop'),
+      ).toMatchObject({
+        available: false,
+        reason: 'only running or paused workflows can be stopped',
+      })
+      expect(pausedRun).toMatchObject({
+        runId: pausedRunId,
+        state: 'blocked',
+        status: 'paused',
+      })
+      expect(
+        pausedRun?.controls.find(action => action.id === 'workflow.run.stop'),
+      ).toMatchObject({
+        available: false,
+        reason: 'requires a live workflow controller in this process',
+      })
+      expect(
+        pausedRun?.controls.find(action => action.id === 'workflow.run.resume'),
+      ).toMatchObject({
+        available: true,
+        input: `/workflows resume ${pausedRunId}`,
+      })
+      expect(
+        pausedRun?.controls.find(action => action.id === 'workflow.run.stopAgent'),
+      ).toMatchObject({
+        available: false,
+        reason: 'requires a live workflow controller in this process',
+      })
+    } finally {
+      clearActiveWorkflowRunsForTests()
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('run detail prefers live task progress with phase and agent summaries', async () => {
     const taskId = 'wtaskcmd_detail'
     const runId = 'wf_cmd_detail'
