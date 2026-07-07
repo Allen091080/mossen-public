@@ -58,6 +58,7 @@ import {
   clearActiveWorkflowRunsForTests,
   initRunArtifacts,
   loadRunMeta,
+  loadWorkflowCheckpoint,
   runScriptPath,
   STALE_RUNNING_WORKFLOW_MESSAGE,
   workflowReportPath,
@@ -1482,6 +1483,136 @@ return 'ok'
         source: 'cli',
       })
     } finally {
+      switchSession(priorSession, priorProjectDir)
+      setProjectRoot(priorRoot)
+      if (priorHome === undefined) {
+        delete process.env.MOSSEN_HOME
+      } else {
+        process.env.MOSSEN_HOME = priorHome
+      }
+      if (priorConfigDir === undefined) {
+        delete process.env.MOSSEN_CONFIG_DIR
+      } else {
+        process.env.MOSSEN_CONFIG_DIR = priorConfigDir
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('pause persists checkpoint state for immediate Workbench snapshot reconciliation', async () => {
+    const priorRoot = getProjectRoot()
+    const priorSession = getSessionId()
+    const priorProjectDir = getSessionProjectDir()
+    const priorHome = process.env.MOSSEN_HOME
+    const priorConfigDir = process.env.MOSSEN_CONFIG_DIR
+    const root = mkdtempSync(join(tmpdir(), 'wf-control-snapshot-'))
+    const taskId = 'wtaskcmd_snapshot_pause'
+    const runId = 'wf_cmd_snapshot_pause'
+    const abortController = new AbortController()
+    const sessionId =
+      'abababab-abab-4bab-8bab-abababababab' as ReturnType<typeof getSessionId>
+
+    try {
+      process.env.MOSSEN_HOME = join(root, 'home')
+      process.env.MOSSEN_CONFIG_DIR = join(root, 'home')
+      setProjectRoot(root)
+      switchSession(sessionId)
+      initRunArtifacts(runId, 'return "snapshot pause"', {
+        runId,
+        workflowName: 'snapshot-pause-flow',
+        description: 'Snapshot pause flow',
+        createdAt: new Date(0).toISOString(),
+        status: 'running',
+        agentCount: 2,
+        totalToolCalls: 3,
+        tokensSpent: 55,
+      })
+      appendJournalStartedEntry(runId, {
+        kind: 'started',
+        index: 0,
+        hash: 'h0',
+        label: 'Scan routes',
+        phase: 'Scan',
+        agentNumber: 1,
+        opts: {},
+      })
+      const state = {
+        tasks: {
+          [taskId]: {
+            ...runningWorkflowTask({ taskId, runId, abortController }),
+            scriptPath: runScriptPath(runId),
+          },
+        },
+      }
+      let message = ''
+
+      await call(
+        nextMessage => {
+          message = nextMessage
+        },
+        workflowCommandContext(state) as never,
+        `pause ${runId}`,
+      )
+
+      const meta = loadRunMeta(runId)
+      const checkpoint = loadWorkflowCheckpoint(runId)
+      const snapshot = buildWorkbenchWorkflowSnapshot({
+        runs: meta ? [meta] : [],
+        registryResults: [],
+        generatedAt: '2026-07-07T00:00:00.000Z',
+      })
+      const run = snapshot.runs.items[0]
+
+      expect(message).toContain(runId)
+      expect(meta?.status).toBe('paused')
+      expect(checkpoint).toMatchObject({
+        status: 'paused',
+        resumeSafety: { canResume: true },
+        counts: { pendingStarted: 1 },
+      })
+      expect(snapshot.summary).toMatchObject({
+        runs: 1,
+        blocked: 1,
+        actionReceipts: 1,
+      })
+      expect(run).toMatchObject({
+        runId,
+        state: 'blocked',
+        status: 'paused',
+        checkpoint: {
+          status: 'paused',
+          resumeSafety: { canResume: true },
+        },
+      })
+      expect(
+        run?.controls.find(action => action.id === 'workflow.run.pause'),
+      ).toMatchObject({
+        available: false,
+        reason: 'only running workflows can be paused',
+      })
+      expect(
+        run?.controls.find(action => action.id === 'workflow.run.resume'),
+      ).toMatchObject({
+        available: true,
+        input: `/workflows resume ${runId}`,
+      })
+      expect(
+        run?.controls.find(action => action.id === 'workflow.run.resumeTask'),
+      ).toMatchObject({
+        available: true,
+        input: `/workflows resume-task ${runId}`,
+      })
+      expect(snapshot.actionReceipts.items[0]).toMatchObject({
+        actionId: 'workflow.run.pause',
+        status: 'received',
+        input: `/workflows pause ${runId}`,
+        runId,
+        workflowName: 'snapshot-pause-flow',
+        message,
+        source: 'cli',
+      })
+    } finally {
+      clearActiveWorkflowRunsForTests()
       switchSession(priorSession, priorProjectDir)
       setProjectRoot(priorRoot)
       if (priorHome === undefined) {

@@ -8,6 +8,7 @@ import { t } from '../../utils/i18n/index.js'
 import { formatDuration, formatNumber } from '../../utils/format.js'
 import { extractTextContent } from '../../utils/messages.js'
 import {
+  finalizeRunMeta,
   listWorkflowRuns,
   loadRunLog,
   loadRunMeta,
@@ -89,6 +90,32 @@ type WorkflowTaskLookup = {
   taskId: string
   workflowRunId: string
   task: WorkflowTaskSnapshot
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function workflowTaskDurationMs(task: WorkflowTaskSnapshot): number | undefined {
+  const existing = finiteNumber((task as { durationMs?: unknown }).durationMs)
+  if (existing !== undefined) return existing
+  const startTime = finiteNumber((task as { startTime?: unknown }).startTime)
+  if (startTime === undefined) return undefined
+  return Math.max(0, Date.now() - startTime)
+}
+
+function persistWorkflowControlState(
+  found: WorkflowTaskLookup,
+  status: Extract<WorkflowRunMeta['status'], 'paused' | 'killed'>,
+): void {
+  finalizeRunMeta(found.workflowRunId, {
+    status,
+    agentCount: finiteNumber(found.task.agentCount),
+    totalToolCalls: finiteNumber(found.task.totalToolCalls),
+    tokensSpent: finiteNumber(found.task.tokensSpent),
+    durationMs: workflowTaskDurationMs(found.task),
+  })
+  refreshWorkflowCheckpoint(found.workflowRunId)
 }
 
 function statusGlyph(status: WorkflowRunMeta['status']): string {
@@ -509,7 +536,9 @@ function pauseTaskRun(
     return t('cmd.workflows.taskNotRunning', { runId })
   }
   const setAppState = context.setAppStateForTasks ?? context.setAppState
-  return pauseWorkflowTask(taskId, setAppState)
+  const paused = pauseWorkflowTask(taskId, setAppState)
+  if (paused) persistWorkflowControlState(found, 'paused')
+  return paused
     ? t('cmd.workflows.paused', { runId })
     : t('cmd.workflows.alreadyPaused', { runId })
 }
@@ -529,6 +558,7 @@ function stopTaskRun(
   }
   const setAppState = context.setAppStateForTasks ?? context.setAppState
   killWorkflowTask(taskId, setAppState)
+  persistWorkflowControlState(found, 'killed')
   return t('cmd.workflows.stopped', { runId })
 }
 
