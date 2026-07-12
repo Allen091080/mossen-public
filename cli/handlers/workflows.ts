@@ -24,12 +24,68 @@ import { validateWorkflowTargetsForCommand } from '../../commands/workflows/vali
 import { switchSession } from '../../bootstrap/state.js'
 import { asSessionId } from '../../types/ids.js'
 import { validateUuid } from '../../utils/uuid.js'
+import {
+  validateWorkflowDraftEnvelope,
+  workflowPublicationProtocolDescriptor,
+} from '../../commands/workflows/publicationProtocol.js'
+import { publishWorkflowDraft } from '../../commands/workflows/publicationRegistry.js'
 
 export type WorkflowsHandlerOptions = {
   json?: boolean
   workbench?: boolean
   report?: boolean
+  capabilities?: boolean
   sessionId?: string
+  operation?: string
+  stdin?: boolean
+  inputText?: string
+}
+
+const MAX_WORKFLOW_PUBLICATION_INPUT_BYTES = 10 * 1024 * 1024
+
+async function readWorkflowPublicationInput(
+  options: WorkflowsHandlerOptions,
+): Promise<unknown> {
+  let text = options.inputText
+  if (text === undefined) {
+    if (!options.stdin) {
+      throw new Error('typed workflow operation requires --stdin')
+    }
+    const chunks: Buffer[] = []
+    let size = 0
+    for await (const chunk of process.stdin) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      size += buffer.byteLength
+      if (size > MAX_WORKFLOW_PUBLICATION_INPUT_BYTES) {
+        throw new Error(
+          `workflow publication input exceeds ${MAX_WORKFLOW_PUBLICATION_INPUT_BYTES} bytes`,
+        )
+      }
+      chunks.push(buffer)
+    }
+    text = Buffer.concat(chunks).toString('utf8')
+  }
+  if (!text.trim()) throw new Error('workflow publication stdin was empty')
+  try {
+    return JSON.parse(text) as unknown
+  } catch (error) {
+    throw new Error(
+      `invalid workflow publication JSON: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    )
+  }
+}
+
+function printWorkflowPublicationProtocolError(error: unknown): void {
+  console.log(JSON.stringify({
+    version: 1,
+    surface: 'workflow-publication-error',
+    status: 'failed',
+    code: 'invalid_input',
+    message: error instanceof Error ? error.message : String(error),
+  }, null, 2))
+  process.exitCode = 1
 }
 
 function workflowRunWithLog(run: WorkflowJsonRun): WorkflowJsonRun & { log: string[] } {
@@ -66,6 +122,39 @@ function applyWorkflowSessionOption(options: WorkflowsHandlerOptions): boolean {
 export async function workflowsHandler(
   options: WorkflowsHandlerOptions = {},
 ): Promise<void> {
+  if (options.operation && !['validate-draft', 'publish-draft'].includes(options.operation)) {
+    console.error(`Unknown workflows operation: ${options.operation}`)
+    process.exitCode = 1
+    return
+  }
+  if (options.operation === 'validate-draft') {
+    try {
+      const input = await readWorkflowPublicationInput(options)
+      console.log(JSON.stringify(validateWorkflowDraftEnvelope(input), null, 2))
+    } catch (error) {
+      printWorkflowPublicationProtocolError(error)
+    }
+    return
+  }
+  if (options.operation === 'publish-draft') {
+    try {
+      const input = await readWorkflowPublicationInput(options)
+      const result = await publishWorkflowDraft(input)
+      if ('receipt' in result) {
+        console.log(JSON.stringify(result.receipt, null, 2))
+      } else {
+        console.log(JSON.stringify(result.conflict, null, 2))
+        process.exitCode = 1
+      }
+    } catch (error) {
+      printWorkflowPublicationProtocolError(error)
+    }
+    return
+  }
+  if (options.capabilities) {
+    console.log(JSON.stringify(workflowPublicationProtocolDescriptor(), null, 2))
+    return
+  }
   if (!applyWorkflowSessionOption(options)) return
   const runs = listWorkflowRuns()
   if (options.workbench) {

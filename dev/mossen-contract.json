@@ -1,14 +1,16 @@
 {
   "$comment": "Mossen Distribution Contract v1 — machine-readable single source of truth for the public API surface that cli-harness and other integrators depend on. Edited only via PR; every PR that changes stable_surface must update this file in the same commit (wave_w442 smoke enforces this).",
-  "contractVersion": "1.0.1",
-  "mossenVersion": "1.1.0",
-  "mossenCommit": "v1.1.0",
-  "lastUpdated": "2026-05-26",
+  "contractVersion": "1.1.0",
+  "mossenVersion": "1.2.4-dev",
+  "mossenCommit": "W490-unreleased",
+  "lastUpdated": "2026-07-10",
   "$changelog": {
+    "1.1.0": "W490 additive typed Workflow publication protocol: capability discovery, Business Asset v2 stdin validation/publication, atomic idempotent receipts, and Workbench identity reconciliation. Published invocation remains explicitly unsupported until a separate typed execution contract exists.",
     "1.0.1": "R8 §3 patch — annotate hook_event subtype variants + permission_denial real location (embedded in result.permission_denials[]); add ndjson_top_level_extras section. Backward-compatible documentation enrichment, no surface change.",
     "1.0.0": "Initial contract per Phase 1 W442. cli-harness R7 §5 sign-off; final GA tag locked at v1.0.0 after R10 sign-off."
   },
   "$mossenVersionHistory": {
+    "1.2.4-dev": "W490 unreleased source candidate adds the typed Desktop Workflow Business Asset v2 publication protocol. This entry does not claim release assets, Desktop pinning, or Published Run support.",
     "1.1.0": "W458 (user-facing model alias scrub) + W459 (first-launch LLM profile wizard) + W459-full (provider picker + URL validation + endpoint test + multi-profile loop + MemorySidecarWizardStep) + W459-schema (per-profile env-var apiKey reference via new ProfileApiKeyEnvRef type) + W462 (/permissions mode-vs-rule clarification). Contract surface unchanged from 1.0.1 — all changes are additive UI/onboarding/internals; no breaking change for cli-harness or other integrators.",
     "1.0.0": "GA release. Distribution Plan v1 all 4 phases. Promoted from v1.0.0-rc2 after cli-harness R10 sign-off."
   },
@@ -112,6 +114,41 @@
       "cli_harness_ownership_prefix": "~/.mossen/.desktop/",
       "mossen_home_env":              "MOSSEN_HOME",
       "$comment": "cli_harness_ownership_prefix is owned exclusively by cli-harness — mossen must NOT read or write under this prefix. settings_active_profile_key value is contract-locked per R4 §B.5."
+    },
+
+    "workflow_publication_protocol": {
+      "$comment": "W490 / cli-harness R4 2026-07-10 addendum. This is a typed CLI JSON boundary; Desktop must not import Mossen source or write the registry.",
+      "version": 1,
+      "surface": "workflow-publication-protocol",
+      "transport": "stdin-json/stdout-json",
+      "draft_schema": "mossen-desktop-workflow-business-asset/v2",
+      "descriptor_command": ["workflows", "--capabilities", "--json"],
+      "operations": {
+        "validate": {
+          "args": ["workflows", "validate-draft", "--stdin", "--json"],
+          "output": "workflow-validation/v1",
+          "idempotent": true,
+          "side_effect_free": true
+        },
+        "publish": {
+          "args": ["workflows", "publish-draft", "--stdin", "--json"],
+          "output": "workflow-publication-receipt/v1",
+          "idempotent": true,
+          "atomic": true
+        },
+        "reconcile": {
+          "args": ["workflows", "--workbench", "--json"],
+          "output": "workbench-workflows/v1+publication",
+          "idempotent": true
+        }
+      },
+      "required_evidence": ["assetId", "assetVersion", "sourceDigest", "receiptId"],
+      "registry_owner": "mossen",
+      "registry_path": "$MOSSEN_HOME/workflow-publication/registry-v1.json",
+      "published_invocation": {
+        "status": "unsupported",
+        "reason": "R4 does not define a typed published-run request or Desktop graph execution mapping. Do not fabricate run evidence."
+      }
     },
 
     "exit_codes": {

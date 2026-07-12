@@ -29,6 +29,12 @@ export type WorkbenchWorkflowActionReceipt = {
   workflowName: string | null
   message: string | null
   source: 'workbench' | 'cli' | 'system'
+  requestId?: string
+  idempotencyKey?: string
+  draftId?: string
+  assetId?: string
+  assetVersion?: string
+  sourceDigest?: string
 }
 
 export function workbenchActionReceiptsPath(): string {

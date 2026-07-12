@@ -18,6 +18,11 @@ import {
   type WorkbenchWorkflowActionReceipt,
 } from './workbenchActionReceipts.js'
 import type { WorkflowValidationCommandResult } from './validateWorkflow.js'
+import {
+  loadWorkflowPublicationRegistry,
+  type PublishedWorkflowAsset,
+  type WorkflowPublicationReceipt,
+} from './publicationRegistry.js'
 
 export type WorkbenchWorkflowActionKind = 'slash-input' | 'cli-command' | 'unsupported'
 
@@ -52,7 +57,7 @@ export type WorkbenchWorkflowRegistryItem = {
   name: string
   title: string | null
   description: string | null
-  scope: WorkflowValidationCommandResult['target']['scope']
+  scope: WorkflowValidationCommandResult['target']['scope'] | 'published'
   source: string
   scriptPath: string | null
   validation: {
@@ -69,6 +74,8 @@ export type WorkbenchWorkflowRegistryItem = {
     lastTestedAt: string | null
     lastTestArtifact: string | null
     compatibility: string | null
+    sourceDigest: string | null
+    lastReceiptId: string | null
   }
   phases: Array<{ title: string; detail: string | null; model: string | null }>
   budgets: Record<string, unknown>
@@ -297,6 +304,8 @@ function buildRegistryItem(
       lastTestedAt: asset?.lifecycle?.lastTestedAt ?? null,
       lastTestArtifact: asset?.lifecycle?.lastTestArtifact ?? null,
       compatibility: asset?.lifecycle?.compatibility ?? null,
+      sourceDigest: null,
+      lastReceiptId: null,
     },
     phases: (asset?.phases ?? []).map(phase => ({
       title: phase.title,
@@ -306,6 +315,120 @@ function buildRegistryItem(
     budgets: asset?.budgets ?? {},
     evidence: asset?.evidence ?? {},
     actions: assetActions(name, result.ok),
+  }
+}
+
+function publishedAssetActions(): WorkbenchWorkflowAction[] {
+  return [
+    workflowAction({
+      id: 'workflow.asset.reconcilePublication',
+      label: 'Reconcile publication',
+      available: true,
+      kind: 'cli-command',
+      command: 'mossen workflows --workbench --json',
+    }),
+    workflowAction({
+      id: 'workflow.asset.validatePublished',
+      label: 'Validate published workflow',
+      available: false,
+      kind: 'unsupported',
+      reason: 'typed validation requires the original Business Asset v2 stdin envelope',
+    }),
+    workflowAction({
+      id: 'workflow.asset.runPublished',
+      label: 'Run published workflow',
+      available: false,
+      kind: 'unsupported',
+      reason:
+        'R4 does not define a typed published-run request or Desktop graph execution mapping',
+    }),
+    workflowAction({
+      id: 'workflow.asset.deprecate',
+      label: 'Deprecate',
+      available: false,
+      kind: 'unsupported',
+      reason: 'no stable workflow deprecate command exists yet',
+      destructive: true,
+    }),
+  ]
+}
+
+function publishedRegistryItem(
+  asset: PublishedWorkflowAsset,
+): WorkbenchWorkflowRegistryItem {
+  const nodes = Array.isArray(asset.definition.nodes)
+    ? asset.definition.nodes
+    : []
+  return {
+    id: asset.assetId,
+    name: asset.canonicalName,
+    title: asset.displayName,
+    description: asset.description || null,
+    scope: 'published',
+    source: `publication ${asset.scope}`,
+    scriptPath: null,
+    validation: {
+      ok: true,
+      status: 'pass',
+      errors: 0,
+      warnings: 0,
+      issues: [],
+    },
+    lifecycle: {
+      status: asset.lifecycle,
+      version: asset.assetVersion,
+      owner: asset.scope,
+      lastTestedAt: null,
+      lastTestArtifact: null,
+      compatibility: 'mossen-desktop-workflow-business-asset/v2',
+      sourceDigest: asset.sourceDigest,
+      lastReceiptId: asset.lastReceiptId,
+    },
+    phases: nodes.flatMap(node => {
+      if (!node || typeof node !== 'object' || Array.isArray(node)) return []
+      const record = node as Record<string, unknown>
+      const business = record.business
+      const title =
+        business && typeof business === 'object' && !Array.isArray(business) &&
+        typeof (business as Record<string, unknown>).title === 'string'
+          ? String((business as Record<string, unknown>).title)
+          : typeof record.type === 'string'
+            ? record.type
+            : 'workflow-step'
+      return [{ title, detail: null, model: null }]
+    }),
+    budgets: {},
+    evidence: {
+      draftId: asset.draftId,
+      localRevision: asset.localRevision,
+      sourceDigest: asset.sourceDigest,
+      receiptId: asset.lastReceiptId,
+    },
+    actions: publishedAssetActions(),
+  }
+}
+
+function publicationActionReceipt(
+  receipt: WorkflowPublicationReceipt,
+): WorkbenchWorkflowActionReceipt {
+  return {
+    version: 1,
+    receiptId: receipt.receiptId,
+    actionId: 'workflow.asset.publish',
+    status: 'accepted',
+    createdAt: receipt.publishedAt,
+    input: null,
+    command: 'mossen workflows publish-draft --stdin --json',
+    runId: null,
+    workflowName: receipt.canonicalName,
+    message: `Published ${receipt.assetId} version ${receipt.assetVersion}.`,
+    source: 'system',
+    requestId: receipt.requestId,
+    idempotencyKey: receipt.idempotencyKey,
+    draftId: receipt.draftId,
+    assetId: receipt.assetId,
+    assetVersion: receipt.assetVersion,
+    sourceDigest: receipt.sourceDigest,
   }
 }
 
@@ -518,10 +641,19 @@ export function buildWorkbenchWorkflowSnapshot(options: {
   registryResults: WorkflowValidationCommandResult[]
   generatedAt?: string
 }): WorkbenchWorkflowSnapshot {
-  const registryAssets = options.registryResults.map(buildRegistryItem)
+  const publicationRegistry = loadWorkflowPublicationRegistry()
+  const registryAssets = [
+    ...options.registryResults.map(buildRegistryItem),
+    ...publicationRegistry.assets.map(publishedRegistryItem),
+  ]
   const runs = workflowRunsToJson(options.runs).map(buildRunItem)
   const goalLinks = goalLinksForRuns(runs)
-  const actionReceipts = loadWorkbenchWorkflowActionReceipts()
+  const actionReceipts = [
+    ...loadWorkbenchWorkflowActionReceipts(),
+    ...publicationRegistry.receipts.map(publicationActionReceipt),
+  ]
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .slice(0, 50)
   const invalidAssets = registryAssets.filter(asset => !asset.validation.ok).length
   const needsAttention = runs.filter(run =>
     run.state === 'failed' ||

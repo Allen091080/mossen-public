@@ -4586,15 +4586,20 @@ async function run(): Promise<CommanderCommand> {
       })
       process.exit(process.exitCode ?? 0)
     });
-  program.command('workflows').description('List workflow runs recorded for this session').option('--json', 'Print workflow runs as a JSON array.').option('--workbench', 'Print a Workbench workflow snapshot JSON object.').option('--session-id <uuid>', 'Read workflow runs for a specific session ID.').action(async (options: {
+  program.command('workflows [operation]').description('List workflow runs or use the typed workflow publication protocol').option('--json', 'Print workflow output as JSON.').option('--workbench', 'Print a Workbench workflow snapshot JSON object.').option('--capabilities', 'Print the typed workflow publication capability descriptor.').option('--stdin', 'Read a typed workflow operation request from stdin.').option('--session-id <uuid>', 'Read workflow runs for a specific session ID.').action(async (operation: string | undefined, options: {
     json?: boolean;
     workbench?: boolean;
+    capabilities?: boolean;
+    stdin?: boolean;
     sessionId?: string;
   }) => {
     const {
       workflowsHandler
     } = await import('./cli/handlers/workflows.js');
-    await workflowsHandler(options);
+    await workflowsHandler({
+      ...options,
+      operation
+    });
     process.exit(process.exitCode ?? 0);
   });
   program.command('workflow <id>').description('Show one workflow run').option('--json', 'Print workflow run details as JSON.').option('--report', 'Export a Markdown report for this workflow run.').option('--session-id <uuid>', 'Read the workflow run from a specific session ID.').action(async (id: string, options: {

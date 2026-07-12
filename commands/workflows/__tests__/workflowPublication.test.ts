@@ -1,0 +1,520 @@
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import {
+  computeDesktopWorkflowSourceDigest,
+  validateWorkflowDraftEnvelope,
+  workflowPublicationProtocolDescriptor,
+} from '../publicationProtocol.js'
+import {
+  loadWorkflowPublicationRegistry,
+  publishWorkflowDraft,
+  workflowPublicationRegistryPath,
+} from '../publicationRegistry.js'
+import { buildWorkbenchWorkflowSnapshot } from '../workbenchSnapshot.js'
+
+const REQUEST_ID = '11111111-1111-4111-8111-111111111111'
+const SECOND_REQUEST_ID = '22222222-2222-4222-8222-222222222222'
+const THIRD_REQUEST_ID = '33333333-3333-4333-8333-333333333333'
+const IDEMPOTENCY_KEY = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const SECOND_IDEMPOTENCY_KEY = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+const THIRD_IDEMPOTENCY_KEY = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+
+function businessAssetDefinition(
+  id = 'desktop-draft-1',
+  name = 'Daily report approval',
+): Record<string, unknown> {
+  const definition: Record<string, unknown> = {
+    id,
+    schemaVersion: 2,
+    name,
+    description: 'Prepare, review, and send a daily report.',
+    enabled: true,
+    goal: {
+      statement: 'Send an approved daily report.',
+      expectedOutcome: 'The report is delivered with an auditable receipt.',
+      successCriteria: ['Approval recorded', 'Delivery receipt recorded'],
+    },
+    subjectRefs: [
+      {
+        providerId: 'dingtalk',
+        resourceType: 'group',
+        resourceId: 'group-fixture',
+      },
+    ],
+    team: {
+      bindings: [
+        {
+          id: 'binding_sender',
+          templateRoleId: 'role_sender',
+          templateVersion: 1,
+          snapshotDigest: 'b'.repeat(64),
+          nameSnapshot: 'Report sender',
+          descriptionSnapshot: 'Sends approved reports.',
+          responsibilities: ['Send the approved report'],
+          requiredInputs: ['Approved report'],
+          expectedOutputs: ['Delivery receipt'],
+          facets: [],
+          executor: {
+            kind: 'service',
+            providerId: 'dingtalk',
+            serviceId: 'send-message',
+          },
+          skillRefs: ['daily-report-skill'],
+          capabilityRefs: ['dingtalk.send-message'],
+          permissionPolicyRef: 'policy-report-send',
+          createdAt: 10,
+          updatedAt: 20,
+        },
+      ],
+    },
+    dependencies: {
+      skills: [
+        {
+          skillId: 'daily-report-skill',
+          requiredByRoleBindingIds: ['binding_sender'],
+        },
+      ],
+      capabilities: [
+        {
+          capabilityId: 'dingtalk.send-message',
+          providerId: 'dingtalk',
+          requiredByStepIds: ['step_send'],
+        },
+      ],
+      connectors: [
+        {
+          providerId: 'dingtalk',
+          requiredByCapabilityIds: ['dingtalk.send-message'],
+        },
+      ],
+      permissionPolicies: [
+        {
+          policyId: 'policy-report-send',
+          requiredByRoleBindingIds: ['binding_sender'],
+        },
+      ],
+    },
+    evidencePolicy: {
+      captureInputs: true,
+      captureOutputs: true,
+      captureApprovals: true,
+      captureArtifacts: true,
+      captureRawCapabilityEvidence: true,
+      retention: 'local',
+    },
+    nodes: [
+      {
+        id: 'trigger_manual',
+        type: 'trigger-manual',
+        position: { x: 10, y: 20 },
+        config: {},
+      },
+      {
+        id: 'step_send',
+        type: 'capability-action',
+        position: { x: 30, y: 40 },
+        business: {
+          title: 'Send approved report',
+          expectedOutcome: 'Delivery receipt',
+          gatePolicy: 'optional',
+        },
+        assignment: {
+          executorRoleBindingId: 'binding_sender',
+          ownerRoleBindingId: 'binding_sender',
+          reviewerRoleBindingIds: [],
+          approverRoleBindingIds: [],
+        },
+        config: {
+          capabilityId: 'dingtalk.send-message',
+          providerId: 'dingtalk',
+          inputs: { targetId: 'fixture-target', message: 'fixture' },
+        },
+      },
+    ],
+    edges: [
+      {
+        from: { nodeId: 'trigger_manual' },
+        to: { nodeId: 'step_send' },
+      },
+    ],
+    roleRelations: [],
+    variables: {},
+    createdAt: 1,
+    updatedAt: 2,
+  }
+  const sourceDigest = computeDesktopWorkflowSourceDigest(definition)
+  definition.release = {
+    localRevision: 1,
+    sourceDigest,
+    validation: { status: 'not-validated', issues: [] },
+  }
+  return definition
+}
+
+function draftEnvelope(
+  definition = businessAssetDefinition(),
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const release = definition.release as Record<string, unknown>
+  return {
+    protocolVersion: 1,
+    requestId: REQUEST_ID,
+    draftSchema: 'mossen-desktop-workflow-business-asset/v2',
+    draftId: definition.id,
+    localRevision: release.localRevision,
+    sourceDigest: release.sourceDigest,
+    definition,
+    ...overrides,
+  }
+}
+
+function publishRequest(
+  definition = businessAssetDefinition(),
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...draftEnvelope(definition),
+    idempotencyKey: IDEMPOTENCY_KEY,
+    expectedAssetId: null,
+    expectedAssetVersion: null,
+    scope: 'user',
+    ...overrides,
+  }
+}
+
+function revisedDefinition(
+  prior: Record<string, unknown>,
+  description: string,
+): Record<string, unknown> {
+  const next = structuredClone(prior)
+  next.description = description
+  const digest = computeDesktopWorkflowSourceDigest(next)
+  next.release = {
+    localRevision: Number((prior.release as Record<string, unknown>).localRevision) + 1,
+    sourceDigest: digest,
+    validation: { status: 'not-validated', issues: [] },
+  }
+  return next
+}
+
+describe('workflow publication protocol v1', () => {
+  let root: string
+  let priorHome: string | undefined
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'workflow-publication-'))
+    priorHome = process.env.MOSSEN_HOME
+    process.env.MOSSEN_HOME = join(root, 'mossen-home')
+  })
+
+  afterEach(() => {
+    if (priorHome === undefined) delete process.env.MOSSEN_HOME
+    else process.env.MOSSEN_HOME = priorHome
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  test('advertises the exact Desktop validate/publish/reconcile contract', () => {
+    expect(workflowPublicationProtocolDescriptor()).toMatchObject({
+      version: 1,
+      surface: 'workflow-publication-protocol',
+      transport: 'stdin-json/stdout-json',
+      draftSchema: 'mossen-desktop-workflow-business-asset/v2',
+      operations: {
+        validate: {
+          args: ['workflows', 'validate-draft', '--stdin', '--json'],
+          input: 'stdin-json',
+          output: 'workflow-validation/v1',
+          idempotent: true,
+        },
+        publish: {
+          args: ['workflows', 'publish-draft', '--stdin', '--json'],
+          input: 'stdin-json',
+          output: 'workflow-publication-receipt/v1',
+          idempotent: true,
+        },
+        reconcile: {
+          args: ['workflows', '--workbench', '--json'],
+          output: 'workbench-workflows/v1+publication',
+        },
+      },
+      requiredEvidence: ['assetId', 'assetVersion', 'sourceDigest', 'receiptId'],
+    })
+  })
+
+  test('matches the golden digest generated by cli-harness Business Asset v2', () => {
+    const definition = {
+      id: 'wf_golden',
+      name: 'Golden',
+      description: '',
+      enabled: true,
+      goal: {
+        statement: 'Ship',
+        expectedOutcome: 'Done',
+        successCriteria: ['Pass'],
+      },
+      subjectRefs: [],
+      team: { bindings: [] },
+      dependencies: {
+        skills: [],
+        capabilities: [],
+        connectors: [],
+        permissionPolicies: [],
+      },
+      evidencePolicy: {
+        captureInputs: true,
+        captureOutputs: true,
+        captureApprovals: true,
+        captureArtifacts: true,
+        captureRawCapabilityEvidence: true,
+        retention: 'local',
+      },
+      nodes: [
+        {
+          id: 'n1',
+          type: 'trigger-manual',
+          position: { x: 10, y: 20 },
+          config: {},
+        },
+      ],
+      edges: [],
+      roleRelations: [],
+      variables: {},
+      createdAt: 1,
+      updatedAt: 2,
+      schemaVersion: 2,
+    }
+    expect(computeDesktopWorkflowSourceDigest(definition)).toBe(
+      'e613721c650a8487210bc3e06498542b67fe84ffc6a18fdcde02f695b8d7f0cd',
+    )
+  })
+
+  test('validates a complete draft without creating publication state', () => {
+    const response = validateWorkflowDraftEnvelope(draftEnvelope())
+    expect(response).toMatchObject({
+      surface: 'workflow-validation',
+      status: 'pass',
+      publishable: true,
+      errors: [],
+      warnings: [],
+    })
+    expect(existsSync(workflowPublicationRegistryPath())).toBe(false)
+  })
+
+  test('returns node, role, skill, connector, and policy issues as structured errors', () => {
+    const definition = businessAssetDefinition()
+    const nodes = definition.nodes as Array<Record<string, unknown>>
+    const action = nodes[1]!
+    nodes.push({ id: 'unknown-step', type: 'future-node', config: {} })
+    action.assignment = {
+      executorRoleBindingId: 'missing-binding',
+      reviewerRoleBindingIds: [],
+      approverRoleBindingIds: [],
+    }
+    const binding = ((definition.team as Record<string, unknown>).bindings as Array<Record<string, unknown>>)[0]!
+    binding.skillRefs = ['missing-skill']
+    binding.capabilityRefs = ['missing-capability']
+    binding.permissionPolicyRef = 'missing-policy'
+    ;(action.config as Record<string, unknown>).providerId = 'missing-connector'
+    const digest = computeDesktopWorkflowSourceDigest(definition)
+    definition.release = {
+      localRevision: 1,
+      sourceDigest: digest,
+      validation: { status: 'not-validated', issues: [] },
+    }
+    const response = validateWorkflowDraftEnvelope(draftEnvelope(definition))
+    expect(response.status).toBe('fail')
+    expect(response.publishable).toBe(false)
+    expect(response.errors.map(issue => issue.code)).toEqual(
+      expect.arrayContaining([
+        'role-binding-missing',
+        'skill-requirement-missing',
+        'capability-requirement-missing',
+        'permission-policy-requirement-missing',
+        'connector-requirement-missing',
+        'unknown-node-type',
+      ]),
+    )
+    expect(response.errors.some(issue => Boolean(
+      issue.nodeId || issue.roleBindingId || issue.skillId || issue.providerId || issue.policyId,
+    ))).toBe(true)
+  })
+
+  test('publishes atomically and replays the same idempotency result', async () => {
+    const request = publishRequest()
+    const first = await publishWorkflowDraft(request, new Date('2026-07-10T10:00:00.000Z'))
+    expect(first.ok).toBe(true)
+    if ('conflict' in first) throw new Error(first.conflict.message)
+    expect(first.replayed).toBe(false)
+    expect(first.receipt).toMatchObject({
+      status: 'accepted',
+      assetVersion: '1.0.0',
+      lifecycle: 'published',
+      sourceDigest: request.sourceDigest,
+    })
+    const replay = await publishWorkflowDraft(request, new Date('2026-07-10T11:00:00.000Z'))
+    expect(replay).toEqual({ ok: true, receipt: first.receipt, replayed: true })
+    const stored = loadWorkflowPublicationRegistry()
+    expect(stored.assets).toHaveLength(1)
+    expect(stored.receipts).toHaveLength(1)
+    expect(readFileSync(workflowPublicationRegistryPath(), 'utf8')).toContain(first.receipt.receiptId)
+  })
+
+  test('serializes concurrent retries into one asset and one receipt', async () => {
+    const request = publishRequest()
+    const [left, right] = await Promise.all([
+      publishWorkflowDraft(request),
+      publishWorkflowDraft(request),
+    ])
+    expect(left.ok).toBe(true)
+    expect(right.ok).toBe(true)
+    if ('conflict' in left || 'conflict' in right) {
+      throw new Error('concurrent idempotent publish should not conflict')
+    }
+    expect(left.receipt).toEqual(right.receipt)
+    expect([left.replayed, right.replayed].sort()).toEqual([false, true])
+    const stored = loadWorkflowPublicationRegistry()
+    expect(stored.assets).toHaveLength(1)
+    expect(stored.receipts).toHaveLength(1)
+  })
+
+  test('updates the stable asset version and rejects stale writers', async () => {
+    const original = businessAssetDefinition()
+    const first = await publishWorkflowDraft(publishRequest(original))
+    if ('conflict' in first) throw new Error(first.conflict.message)
+    const revised = revisedDefinition(original, 'Revised publication definition.')
+    const update = await publishWorkflowDraft(publishRequest(revised, {
+      requestId: SECOND_REQUEST_ID,
+      idempotencyKey: SECOND_IDEMPOTENCY_KEY,
+      expectedAssetId: first.receipt.assetId,
+      expectedAssetVersion: first.receipt.assetVersion,
+    }))
+    expect(update.ok).toBe(true)
+    if ('conflict' in update) throw new Error(update.conflict.message)
+    expect(update.receipt.assetId).toBe(first.receipt.assetId)
+    expect(update.receipt.assetVersion).toBe('1.0.1')
+    expect(update.receipt.sourceDigest).not.toBe(first.receipt.sourceDigest)
+
+    const stale = revisedDefinition(revised, 'Stale writer change.')
+    const staleResult = await publishWorkflowDraft(publishRequest(stale, {
+      requestId: THIRD_REQUEST_ID,
+      idempotencyKey: THIRD_IDEMPOTENCY_KEY,
+      expectedAssetId: first.receipt.assetId,
+      expectedAssetVersion: '1.0.0',
+    }))
+    expect(staleResult.ok).toBe(false)
+    if (!('conflict' in staleResult)) throw new Error('expected stale conflict')
+    expect(staleResult.conflict).toMatchObject({
+      code: 'stale_asset_version',
+      current: {
+        assetId: first.receipt.assetId,
+        assetVersion: '1.0.1',
+        sourceDigest: update.receipt.sourceDigest,
+      },
+    })
+  })
+
+  test('returns typed canonical-name and idempotency-key conflicts', async () => {
+    const firstRequest = publishRequest()
+    const first = await publishWorkflowDraft(firstRequest)
+    if ('conflict' in first) throw new Error(first.conflict.message)
+
+    const otherDefinition = businessAssetDefinition(
+      'desktop-draft-2',
+      'Daily report approval',
+    )
+    const nameConflict = await publishWorkflowDraft(publishRequest(otherDefinition, {
+      requestId: SECOND_REQUEST_ID,
+      idempotencyKey: SECOND_IDEMPOTENCY_KEY,
+    }))
+    expect(nameConflict.ok).toBe(false)
+    if (!('conflict' in nameConflict)) throw new Error('expected name conflict')
+    expect(nameConflict.conflict.code).toBe('canonical_name_conflict')
+
+    const changed = revisedDefinition(businessAssetDefinition(), 'Different request, reused key.')
+    const idempotencyConflict = await publishWorkflowDraft(publishRequest(changed, {
+      requestId: THIRD_REQUEST_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+      expectedAssetId: first.receipt.assetId,
+      expectedAssetVersion: first.receipt.assetVersion,
+    }))
+    expect(idempotencyConflict.ok).toBe(false)
+    if (!('conflict' in idempotencyConflict)) throw new Error('expected idempotency conflict')
+    expect(idempotencyConflict.conflict.code).toBe('idempotency_key_conflict')
+  })
+
+  test('does not let optional plugin packaging change stable workflow identity', async () => {
+    const definition = businessAssetDefinition()
+    const first = await publishWorkflowDraft(publishRequest(definition))
+    if ('conflict' in first) throw new Error(first.conflict.message)
+    const packaged = structuredClone(definition)
+    packaged.plugin = { packageId: 'optional-distribution-bundle' }
+    const second = await publishWorkflowDraft(publishRequest(packaged, {
+      requestId: SECOND_REQUEST_ID,
+      idempotencyKey: SECOND_IDEMPOTENCY_KEY,
+      expectedAssetId: first.receipt.assetId,
+      expectedAssetVersion: first.receipt.assetVersion,
+    }))
+    expect(second.ok).toBe(true)
+    if ('conflict' in second) throw new Error(second.conflict.message)
+    expect(second.receipt.assetId).toBe(first.receipt.assetId)
+    expect(second.receipt.assetVersion).toBe(first.receipt.assetVersion)
+    expect(second.receipt.sourceDigest).toBe(first.receipt.sourceDigest)
+  })
+
+  test('fails closed on a corrupt registry without overwriting it', async () => {
+    const path = workflowPublicationRegistryPath()
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, '{ corrupt registry', 'utf8')
+    const result = await publishWorkflowDraft(publishRequest())
+    expect(result.ok).toBe(false)
+    if (!('conflict' in result)) throw new Error('expected registry failure')
+    expect(result.conflict.code).toBe('registry_unavailable')
+    expect(readFileSync(path, 'utf8')).toBe('{ corrupt registry')
+  })
+
+  test('reconciles receipt identity through the Workbench snapshot', async () => {
+    const published = await publishWorkflowDraft(publishRequest())
+    if ('conflict' in published) throw new Error(published.conflict.message)
+    const snapshot = buildWorkbenchWorkflowSnapshot({
+      runs: [],
+      registryResults: [],
+      generatedAt: '2026-07-10T12:00:00.000Z',
+    })
+    const asset = snapshot.registry.assets.find(
+      item => item.id === published.receipt.assetId,
+    )
+    expect(asset).toMatchObject({
+      id: published.receipt.assetId,
+      scope: 'published',
+      lifecycle: {
+        status: 'published',
+        version: published.receipt.assetVersion,
+        sourceDigest: published.receipt.sourceDigest,
+        lastReceiptId: published.receipt.receiptId,
+      },
+    })
+    expect(
+      asset?.actions.find(action => action.id === 'workflow.asset.runPublished'),
+    ).toMatchObject({ available: false, kind: 'unsupported' })
+    expect(snapshot.actionReceipts.items).toContainEqual(
+      expect.objectContaining({
+        receiptId: published.receipt.receiptId,
+        requestId: published.receipt.requestId,
+        idempotencyKey: published.receipt.idempotencyKey,
+        draftId: published.receipt.draftId,
+        assetId: published.receipt.assetId,
+        assetVersion: published.receipt.assetVersion,
+        sourceDigest: published.receipt.sourceDigest,
+      }),
+    )
+  })
+})

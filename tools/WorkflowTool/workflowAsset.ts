@@ -14,6 +14,7 @@ export type WorkflowAssetScope =
   | 'user'
   | 'plugin'
   | 'bundled'
+  | 'published'
   | 'task'
 
 export type WorkflowAssetIssueSeverity = 'error' | 'warning'
