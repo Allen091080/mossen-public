@@ -33,6 +33,45 @@ export function writeToStderr(data: string): void {
   writeOut(process.stderr, data)
 }
 
+function writeOutAndWait(
+  stream: NodeJS.WriteStream,
+  data: string,
+): Promise<void> {
+  if (stream.destroyed) {
+    return Promise.reject(new Error('output stream was already destroyed'))
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    let settled = false
+    const cleanup = () => stream.off('error', fail)
+    const finish = () => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve()
+    }
+    const fail = (error: Error) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+    stream.once('error', fail)
+    stream.write(data, error => {
+      if (error) {
+        fail(error)
+        return
+      }
+      finish()
+    })
+  })
+}
+
+/** Write stdout and resolve only after Node reports the full chunk complete. */
+export function writeToStdoutAndWait(data: string): Promise<void> {
+  return writeOutAndWait(process.stdout, data)
+}
+
 /**
  * Wait for process.stdout's userspace queue to drain before the caller's
  * next blocking operation (typically process.exit).

@@ -29,6 +29,7 @@ import {
   workflowPublicationProtocolDescriptor,
 } from '../../commands/workflows/publicationProtocol.js'
 import { publishWorkflowDraft } from '../../commands/workflows/publicationRegistry.js'
+import { writeToStdoutAndWait } from '../../utils/process.js'
 
 export type WorkflowsHandlerOptions = {
   json?: boolean
@@ -77,14 +78,26 @@ async function readWorkflowPublicationInput(
   }
 }
 
-function printWorkflowPublicationProtocolError(error: unknown): void {
-  console.log(JSON.stringify({
-    version: 1,
-    surface: 'workflow-publication-error',
-    status: 'failed',
-    code: 'invalid_input',
-    message: error instanceof Error ? error.message : String(error),
-  }, null, 2))
+function writeWorkflowStdout(value: string): Promise<void> {
+  return writeToStdoutAndWait(`${value}\n`)
+}
+
+async function printWorkflowPublicationProtocolError(
+  error: unknown,
+): Promise<void> {
+  await writeWorkflowStdout(
+    JSON.stringify(
+      {
+        version: 1,
+        surface: 'workflow-publication-error',
+        status: 'failed',
+        code: 'invalid_input',
+        message: error instanceof Error ? error.message : String(error),
+      },
+      null,
+      2,
+    ),
+  )
   process.exitCode = 1
 }
 
@@ -130,9 +143,11 @@ export async function workflowsHandler(
   if (options.operation === 'validate-draft') {
     try {
       const input = await readWorkflowPublicationInput(options)
-      console.log(JSON.stringify(validateWorkflowDraftEnvelope(input), null, 2))
+      await writeWorkflowStdout(
+        JSON.stringify(validateWorkflowDraftEnvelope(input), null, 2),
+      )
     } catch (error) {
-      printWorkflowPublicationProtocolError(error)
+      await printWorkflowPublicationProtocolError(error)
     }
     return
   }
@@ -141,38 +156,48 @@ export async function workflowsHandler(
       const input = await readWorkflowPublicationInput(options)
       const result = await publishWorkflowDraft(input)
       if ('receipt' in result) {
-        console.log(JSON.stringify(result.receipt, null, 2))
+        await writeWorkflowStdout(JSON.stringify(result.receipt, null, 2))
       } else {
-        console.log(JSON.stringify(result.conflict, null, 2))
+        await writeWorkflowStdout(JSON.stringify(result.conflict, null, 2))
         process.exitCode = 1
       }
     } catch (error) {
-      printWorkflowPublicationProtocolError(error)
+      await printWorkflowPublicationProtocolError(error)
     }
     return
   }
   if (options.capabilities) {
-    console.log(JSON.stringify(workflowPublicationProtocolDescriptor(), null, 2))
+    await writeWorkflowStdout(
+      JSON.stringify(workflowPublicationProtocolDescriptor(), null, 2),
+    )
     return
   }
   if (!applyWorkflowSessionOption(options)) return
   const runs = listWorkflowRuns()
   if (options.workbench) {
-    console.log(JSON.stringify(buildWorkbenchWorkflowSnapshot({
-      runs,
-      registryResults: validateWorkflowTargetsForCommand(['--all']),
-    }), null, 2))
+    await writeWorkflowStdout(
+      JSON.stringify(
+        buildWorkbenchWorkflowSnapshot({
+          runs,
+          registryResults: validateWorkflowTargetsForCommand(['--all']),
+        }),
+        null,
+        2,
+      ),
+    )
     return
   }
   if (options.json) {
-    console.log(JSON.stringify(workflowRunsToJson(runs), null, 2))
+    await writeWorkflowStdout(JSON.stringify(workflowRunsToJson(runs), null, 2))
     return
   }
   if (runs.length === 0) {
-    console.log('No workflow runs recorded for this session.')
+    await writeWorkflowStdout('No workflow runs recorded for this session.')
     return
   }
-  console.log(workflowRunsToJson(runs).map(formatWorkflowRun).join('\n'))
+  await writeWorkflowStdout(
+    workflowRunsToJson(runs).map(formatWorkflowRun).join('\n'),
+  )
 }
 
 export async function workflowHandler(

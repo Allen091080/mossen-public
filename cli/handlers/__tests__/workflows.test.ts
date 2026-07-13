@@ -347,6 +347,7 @@ describe('workflow CLI handlers', () => {
     const logs: string[] = []
     const errors: string[] = []
     const priorConsole = globalThis.console
+    const priorStdout = process.stdout
 
     try {
       process.env.MOSSEN_CONFIG_DIR = join(root, '.mossen')
@@ -362,8 +363,13 @@ describe('workflow CLI handlers', () => {
       })
       switchSession('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' as ReturnType<typeof getSessionId>)
 
+      const stdout = captureStream(logs)
+      Object.defineProperty(process, 'stdout', {
+        value: stdout,
+        configurable: true,
+      })
       globalThis.console = new Console({
-        stdout: captureStream(logs),
+        stdout,
         stderr: captureStream(errors),
       }) as unknown as typeof globalThis.console
 
@@ -374,6 +380,10 @@ describe('workflow CLI handlers', () => {
       expect(logs.join('\n')).toContain(runId)
       expect(logs.join('\n')).toContain('cli-session-flow')
     } finally {
+      Object.defineProperty(process, 'stdout', {
+        value: priorStdout,
+        configurable: true,
+      })
       globalThis.console = priorConsole
       switchSession(priorSession)
       if (priorConfigDir === undefined) {
@@ -397,6 +407,7 @@ describe('workflow CLI handlers', () => {
     const logs: string[] = []
     const errors: string[] = []
     const priorConsole = globalThis.console
+    const priorStdout = process.stdout
 
     try {
       process.env.MOSSEN_CONFIG_DIR = join(root, '.mossen')
@@ -466,8 +477,13 @@ return { summary: 'ok' }
         createdAt: '2026-06-12T08:01:00.000Z',
       })
 
+      const stdout = captureStream(logs)
+      Object.defineProperty(process, 'stdout', {
+        value: stdout,
+        configurable: true,
+      })
       globalThis.console = new Console({
-        stdout: captureStream(logs),
+        stdout,
         stderr: captureStream(errors),
       }) as unknown as typeof globalThis.console
 
@@ -551,6 +567,10 @@ return { summary: 'ok' }
         },
       ])
     } finally {
+      Object.defineProperty(process, 'stdout', {
+        value: priorStdout,
+        configurable: true,
+      })
       globalThis.console = priorConsole
       clearActiveWorkflowRunsForTests()
       setProjectRoot(priorProjectRoot)

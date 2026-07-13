@@ -4593,14 +4593,19 @@ async function run(): Promise<CommanderCommand> {
     stdin?: boolean;
     sessionId?: string;
   }) => {
-    const {
-      workflowsHandler
-    } = await import('./cli/handlers/workflows.js');
-    await workflowsHandler({
-      ...options,
-      operation
-    });
-    process.exit(process.exitCode ?? 0);
+    const { workflowsHandler } = await import('./cli/handlers/workflows.js')
+    try {
+      await workflowsHandler({
+        ...options,
+        operation,
+      })
+    } catch (error) {
+      process.exitCode = 1
+      process.stderr.write(
+        `Error: failed to complete workflows stdout: ${errorMessage(error)}\n`,
+      )
+    }
+    process.exit(process.exitCode ?? 0)
   });
   program.command('workflow <id>').description('Show one workflow run').option('--json', 'Print workflow run details as JSON.').option('--report', 'Export a Markdown report for this workflow run.').option('--session-id <uuid>', 'Read the workflow run from a specific session ID.').action(async (id: string, options: {
     json?: boolean;
