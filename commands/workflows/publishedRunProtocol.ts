@@ -62,10 +62,23 @@ export type PublishedWorkflowStep = {
   error: string | null
 }
 
+export type PublishedWorkflowArtifact = {
+  artifactId: string
+  name: string
+  kind: string
+  mediaType: string
+  digest: string
+  sizeBytes: number
+  producedByNodeId: string
+  createdAt: string
+  uri: string
+}
+
 export type PublishedWorkflowRun = {
   version: 1
   surface: 'workflow-published-run'
   runId: string
+  retryOfRunId: string | null
   requestId: string
   idempotencyKey: string
   receiptId: string
@@ -81,6 +94,7 @@ export type PublishedWorkflowRun = {
   cancelledAt: string | null
   input: unknown
   steps: PublishedWorkflowStep[]
+  artifacts: PublishedWorkflowArtifact[]
   waits: {
     approvalNodeIds: string[]
     permissionNodeIds: string[]
@@ -98,8 +112,9 @@ export type PublishedWorkflowRuntimeReceipt = {
   surface:
     | 'workflow-enable-receipt'
     | 'workflow-run-receipt'
+    | 'workflow-run-retry-receipt'
     | 'workflow-run-cancel-receipt'
-  action: 'enable' | 'invoke' | 'cancel'
+  action: 'enable' | 'invoke' | 'retry' | 'cancel'
   status: 'accepted'
   requestId: string
   idempotencyKey: string
@@ -110,6 +125,8 @@ export type PublishedWorkflowRuntimeReceipt = {
   workflowName: string
   runId: string | null
   runState: PublishedWorkflowRunState | null
+  retryOfRunId?: string | null
+  artifactIds?: string[]
   createdAt: string
 }
 
@@ -130,7 +147,11 @@ export type PublishedWorkflowRuntimeRegistry = {
   runs: PublishedWorkflowRun[]
   idempotency: Record<
     string,
-    { operation: 'enable' | 'invoke' | 'cancel'; fingerprint: string; response: unknown }
+    {
+      operation: 'enable' | 'invoke' | 'retry' | 'cancel'
+      fingerprint: string
+      response: unknown
+    }
   >
 }
 
@@ -142,13 +163,14 @@ export type PublishedWorkflowConflictCode =
   | 'asset_not_enabled'
   | 'run_not_found'
   | 'run_identity_conflict'
+  | 'run_not_retryable'
   | 'run_not_cancellable'
   | 'runtime_unavailable'
 
 export type PublishedWorkflowConflict = {
   version: 1
   surface: 'workflow-published-run-conflict'
-  operation: 'enable' | 'invoke' | 'query' | 'cancel'
+  operation: 'enable' | 'invoke' | 'retry' | 'query' | 'cancel'
   status: 'rejected'
   requestId: string
   idempotencyKey: string | null
@@ -186,6 +208,15 @@ export type PublishedWorkflowQueryResponse = {
   run: PublishedWorkflowRun
 }
 
+export type PublishedWorkflowRetryResponse = PublishedWorkflowRuntimeReceipt & {
+  surface: 'workflow-run-retry-receipt'
+  action: 'retry'
+  runId: string
+  runState: PublishedWorkflowRunState
+  retryOfRunId: string
+  run: PublishedWorkflowRun
+}
+
 export type PublishedWorkflowCancelResponse = PublishedWorkflowRuntimeReceipt & {
   surface: 'workflow-run-cancel-receipt'
   runId: string
@@ -208,6 +239,7 @@ type IdentityRequest = {
 type MutationRequest = IdentityRequest & { idempotencyKey: string }
 type InvokeRequest = MutationRequest & { input?: unknown }
 type RunRequest = IdentityRequest & { runId: string }
+type RetryRequest = RunRequest & { idempotencyKey: string }
 type CancelRequest = RunRequest & { idempotencyKey: string }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -248,7 +280,20 @@ export function loadPublishedWorkflowRuntimeRegistry(): PublishedWorkflowRuntime
   ) {
     throw new Error('Published workflow runtime registry has an invalid v1 shape.')
   }
-  return value as PublishedWorkflowRuntimeRegistry
+  const registry = value as PublishedWorkflowRuntimeRegistry
+  return {
+    ...registry,
+    runs: registry.runs.map(run => ({
+      ...run,
+      retryOfRunId:
+        typeof (run as Partial<PublishedWorkflowRun>).retryOfRunId === 'string'
+          ? run.retryOfRunId
+          : null,
+      artifacts: Array.isArray((run as Partial<PublishedWorkflowRun>).artifacts)
+        ? run.artifacts
+        : [],
+    })),
+  }
 }
 
 function hash(prefix: string, value: string, length = 24): string {
@@ -326,6 +371,13 @@ function parseCancelRequest(value: unknown): CancelRequest | null {
   const raw = requestStrings(value)
   if (!request || !validateUuid(raw.idempotencyKey)) return null
   return raw as CancelRequest
+}
+
+function parseRetryRequest(value: unknown): RetryRequest | null {
+  const request = parseRunRequest(value)
+  const raw = requestStrings(value)
+  if (!request || !validateUuid(raw.idempotencyKey)) return null
+  return raw as RetryRequest
 }
 
 function currentAsset(asset: PublishedWorkflowAsset | null): PublishedWorkflowConflict['current'] {
@@ -432,7 +484,7 @@ function retainRegistry(registry: PublishedWorkflowRuntimeRegistry): void {
 
 function recordIdempotency(
   registry: PublishedWorkflowRuntimeRegistry,
-  operation: 'enable' | 'invoke' | 'cancel',
+  operation: 'enable' | 'invoke' | 'retry' | 'cancel',
   idempotencyKey: string,
   requestFingerprint: string,
   response: unknown,
@@ -446,7 +498,7 @@ function recordIdempotency(
 
 function priorResponse<T>(
   registry: PublishedWorkflowRuntimeRegistry,
-  operation: 'enable' | 'invoke' | 'cancel',
+  operation: 'enable' | 'invoke' | 'retry' | 'cancel',
   request: MutationRequest,
 ): PublishedWorkflowOperationResult<T> | null {
   const key = `${operation}:${request.idempotencyKey}`
@@ -577,6 +629,7 @@ function capturePolicy(asset: PublishedWorkflowAsset): {
   inputs: boolean
   outputs: boolean
   approvals: boolean
+  artifacts: boolean
   raw: boolean
 } {
   const policy = isRecord(asset.definition.evidencePolicy)
@@ -586,6 +639,7 @@ function capturePolicy(asset: PublishedWorkflowAsset): {
     inputs: policy.captureInputs !== false,
     outputs: policy.captureOutputs !== false,
     approvals: policy.captureApprovals !== false,
+    artifacts: policy.captureArtifacts !== false,
     raw: policy.captureRawCapabilityEvidence !== false,
   }
 }
@@ -628,6 +682,46 @@ function conditionMatches(input: unknown, config: Record<string, unknown>): bool
   }
 }
 
+function artifactText(value: unknown, fallback: string, maxLength: number): string {
+  return typeof value === 'string' && value.trim()
+    ? value.trim().slice(0, maxLength)
+    : fallback
+}
+
+function artifactForNode(
+  runId: string,
+  nodeId: string,
+  config: Record<string, unknown>,
+  value: unknown,
+  createdAt: string,
+): PublishedWorkflowArtifact | null {
+  if (!isRecord(config.artifact)) return null
+  const bytes = Buffer.from(valueJson(value), 'utf8')
+  const digest = createHash('sha256').update(bytes).digest('hex')
+  const name = artifactText(config.artifact.name, `${nodeId}-output`, 200)
+  const kind = artifactText(config.artifact.kind, 'node-output', 100)
+  const mediaType = artifactText(
+    config.artifact.mediaType,
+    'application/json',
+    200,
+  )
+  const artifactId = hash(
+    'wfpa',
+    `${runId}:${nodeId}:${name}:${kind}:${mediaType}:${digest}`,
+  )
+  return {
+    artifactId,
+    name,
+    kind,
+    mediaType,
+    digest,
+    sizeBytes: bytes.byteLength,
+    producedByNodeId: nodeId,
+    createdAt,
+    uri: `mossen-artifact://published-runs/${encodeURIComponent(runId)}/${encodeURIComponent(artifactId)}`,
+  }
+}
+
 const PERMISSION_NODE_TYPES = new Set([
   'mossen-call',
   'http-request',
@@ -644,6 +738,7 @@ async function executePublishedRun(
   request: InvokeRequest,
   receiptId: string,
   now: Date,
+  retryOfRunId: string | null = null,
 ): Promise<PublishedWorkflowRun> {
   const timestamp = now.toISOString()
   const nodes = publishedNodes(asset)
@@ -663,7 +758,13 @@ async function executePublishedRun(
   const run: PublishedWorkflowRun = {
     version: 1,
     surface: 'workflow-published-run',
-    runId: hash('wfpubrun', `${asset.assetId}:${request.idempotencyKey}`),
+    runId: hash(
+      'wfpubrun',
+      retryOfRunId
+        ? `${asset.assetId}:${retryOfRunId}:${request.idempotencyKey}`
+        : `${asset.assetId}:${request.idempotencyKey}`,
+    ),
+    retryOfRunId,
     requestId: request.requestId,
     idempotencyKey: request.idempotencyKey,
     receiptId,
@@ -679,6 +780,7 @@ async function executePublishedRun(
     cancelledAt: null,
     input: request.input ?? null,
     steps,
+    artifacts: [],
     waits: { approvalNodeIds: [], permissionNodeIds: [] },
     finalResult: null,
   }
@@ -785,6 +887,16 @@ async function executePublishedRun(
       step.evidence.push(
         evidence('output', current, step.completedAt, policy.outputs, 'Step output captured.'),
       )
+      const artifact = policy.artifacts
+        ? artifactForNode(
+            run.runId,
+            step.nodeId,
+            config,
+            current,
+            step.completedAt,
+          )
+        : null
+      if (artifact) run.artifacts.push(artifact)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       step.state = 'failed'
@@ -868,6 +980,8 @@ export async function invokePublishedWorkflow(
         workflowName: resolved.asset.canonicalName,
         runId: run.runId,
         runState: run.state,
+        retryOfRunId: null,
+        artifactIds: run.artifacts.map(artifact => artifact.artifactId),
         createdAt: now.toISOString(),
         run,
       }
@@ -912,6 +1026,113 @@ function runIdentityMatches(run: PublishedWorkflowRun, request: RunRequest): boo
     run.assetVersion === request.assetVersion &&
     run.sourceDigest === request.sourceDigest
   )
+}
+
+export async function retryPublishedWorkflowRun(
+  value: unknown,
+  now = new Date(),
+): Promise<PublishedWorkflowOperationResult<PublishedWorkflowRetryResponse>> {
+  const request = parseRetryRequest(value)
+  if (!request) {
+    return conflict('retry', value, 'invalid_request', 'Published run retry request is invalid.')
+  }
+  try {
+    const resolved = findExactAsset(request)
+    if (!('asset' in resolved)) {
+      return conflict('retry', request, resolved.code, resolved.message, resolved.current)
+    }
+    return await withRuntimeLock(async registry => {
+      const replay = priorResponse<PublishedWorkflowRetryResponse>(
+        registry,
+        'retry',
+        request,
+      )
+      if (replay) return replay
+      const original = findRun(registry, request)
+      if (!original) {
+        return conflict(
+          'retry',
+          request,
+          'run_not_found',
+          `Run ${request.runId} was not found.`,
+        )
+      }
+      if (!runIdentityMatches(original, request)) {
+        return conflict(
+          'retry',
+          request,
+          'run_identity_conflict',
+          'Run identity does not match the requested published asset identity.',
+          runCurrent(original),
+        )
+      }
+      if (original.state !== 'failed' && original.state !== 'cancelled') {
+        return conflict(
+          'retry',
+          request,
+          'run_not_retryable',
+          `Run ${original.runId} is ${original.state}; only failed or cancelled runs can be retried.`,
+          runCurrent(original),
+        )
+      }
+      const timestamp = now.toISOString()
+      const receiptId = hash('wfrr', request.idempotencyKey)
+      const retriedRun = await executePublishedRun(
+        resolved.asset,
+        {
+          protocolVersion: request.protocolVersion,
+          requestId: request.requestId,
+          idempotencyKey: request.idempotencyKey,
+          assetId: request.assetId,
+          assetVersion: request.assetVersion,
+          sourceDigest: request.sourceDigest,
+          input: original.input,
+        },
+        receiptId,
+        now,
+        original.runId,
+      )
+      const response: PublishedWorkflowRetryResponse = {
+        version: 1,
+        surface: 'workflow-run-retry-receipt',
+        action: 'retry',
+        status: 'accepted',
+        requestId: request.requestId,
+        idempotencyKey: request.idempotencyKey,
+        receiptId,
+        assetId: original.assetId,
+        assetVersion: original.assetVersion,
+        sourceDigest: original.sourceDigest,
+        workflowName: original.workflowName,
+        runId: retriedRun.runId,
+        runState: retriedRun.state,
+        createdAt: timestamp,
+        retryOfRunId: original.runId,
+        artifactIds: retriedRun.artifacts.map(artifact => artifact.artifactId),
+        run: retriedRun,
+      }
+      registry.runs.unshift(retriedRun)
+      registry.receipts.unshift(response)
+      registry.updatedAt = retriedRun.updatedAt
+      recordIdempotency(
+        registry,
+        'retry',
+        request.idempotencyKey,
+        fingerprint(request),
+        response,
+      )
+      retainRegistry(registry)
+      saveRegistry(registry)
+      return { ok: true, response, replayed: false }
+    })
+  } catch (error) {
+    return conflict(
+      'retry',
+      request,
+      'runtime_unavailable',
+      error instanceof Error ? error.message : String(error),
+    )
+  }
 }
 
 export function queryPublishedWorkflowRun(
@@ -1029,6 +1250,8 @@ export async function cancelPublishedWorkflowRun(
         workflowName: run.workflowName,
         runId: run.runId,
         runState: 'cancelled',
+        retryOfRunId: nextRun.retryOfRunId,
+        artifactIds: nextRun.artifacts.map(artifact => artifact.artifactId),
         createdAt: timestamp,
         run: nextRun,
       }

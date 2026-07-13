@@ -85,6 +85,13 @@ export type WorkflowPublicationProtocolDescriptor = {
       output: 'workflow-run-receipt/v1'
       idempotent: true
     }
+    retry: {
+      available: true
+      args: ['workflows', 'retry-published-run', '--stdin', '--json']
+      input: 'stdin-json'
+      output: 'workflow-run-retry-receipt/v1'
+      idempotent: true
+    }
     query: {
       available: true
       args: ['workflows', 'query-published-run', '--stdin', '--json']
@@ -103,8 +110,10 @@ export type WorkflowPublicationProtocolDescriptor = {
   requiredEvidence: ['assetId', 'assetVersion', 'sourceDigest', 'receiptId']
   requiredRunEvidence: [
     'runId',
+    'retryOfRunId',
     'steps',
     'evidence',
+    'artifacts',
     'actionReceipt',
     'waits',
     'finalResult',
@@ -206,6 +215,13 @@ export function workflowPublicationProtocolDescriptor(): WorkflowPublicationProt
         output: 'workflow-run-receipt/v1',
         idempotent: true,
       },
+      retry: {
+        available: true,
+        args: ['workflows', 'retry-published-run', '--stdin', '--json'],
+        input: 'stdin-json',
+        output: 'workflow-run-retry-receipt/v1',
+        idempotent: true,
+      },
       query: {
         available: true,
         args: ['workflows', 'query-published-run', '--stdin', '--json'],
@@ -224,8 +240,10 @@ export function workflowPublicationProtocolDescriptor(): WorkflowPublicationProt
     requiredEvidence: ['assetId', 'assetVersion', 'sourceDigest', 'receiptId'],
     requiredRunEvidence: [
       'runId',
+      'retryOfRunId',
       'steps',
       'evidence',
+      'artifacts',
       'actionReceipt',
       'waits',
       'finalResult',

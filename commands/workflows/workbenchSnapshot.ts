@@ -465,6 +465,8 @@ function runtimeActionReceipt(
       ? 'workflow.asset.enablePublished'
       : receipt.action === 'invoke'
         ? 'workflow.asset.runPublished'
+        : receipt.action === 'retry'
+          ? 'workflow.run.retryPublished'
         : 'workflow.run.cancelPublished'
   return {
     version: 1,
@@ -478,6 +480,8 @@ function runtimeActionReceipt(
         ? 'enable-published'
         : receipt.action === 'invoke'
           ? 'run-published'
+          : receipt.action === 'retry'
+            ? 'retry-published-run'
           : 'cancel-published-run'
     } --stdin --json`,
     runId: receipt.runId,
@@ -491,6 +495,12 @@ function runtimeActionReceipt(
     assetId: receipt.assetId,
     assetVersion: receipt.assetVersion,
     sourceDigest: receipt.sourceDigest,
+    ...(receipt.retryOfRunId !== undefined
+      ? { retryOfRunId: receipt.retryOfRunId }
+      : {}),
+    ...(receipt.artifactIds !== undefined
+      ? { artifactIds: receipt.artifactIds }
+      : {}),
   }
 }
 

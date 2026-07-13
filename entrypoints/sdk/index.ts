@@ -92,5 +92,5 @@ export { HOOK_EVENTS, EXIT_REASONS } from './coreTypes.js'
 // === Contract metadata ========================================================
 // Re-export the contract version + schema reference so consumers can pin
 // their integration to a specific contract revision (matches dev/mossen-contract.json).
-export const MOSSEN_CONTRACT_VERSION = '1.2.0' as const
+export const MOSSEN_CONTRACT_VERSION = '1.3.0' as const
 export const MOSSEN_CONTRACT_PATH = 'dev/mossen-contract.json' as const

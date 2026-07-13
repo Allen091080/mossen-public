@@ -35,6 +35,8 @@ export type WorkbenchWorkflowActionReceipt = {
   assetId?: string
   assetVersion?: string
   sourceDigest?: string
+  retryOfRunId?: string | null
+  artifactIds?: string[]
 }
 
 export function workbenchActionReceiptsPath(): string {
@@ -139,6 +141,15 @@ function parseReceipt(value: unknown): WorkbenchWorkflowActionReceipt | null {
       candidate.source === 'cli' || candidate.source === 'system'
         ? candidate.source
         : 'workbench',
+    ...(typeof candidate.retryOfRunId === 'string'
+      ? { retryOfRunId: candidate.retryOfRunId }
+      : candidate.retryOfRunId === null
+        ? { retryOfRunId: null }
+        : {}),
+    ...(Array.isArray(candidate.artifactIds) &&
+    candidate.artifactIds.every(item => typeof item === 'string')
+      ? { artifactIds: candidate.artifactIds }
+      : {}),
   }
 }
 

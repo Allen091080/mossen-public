@@ -24,7 +24,10 @@ import {
   cancelPublishedWorkflowRun,
   enablePublishedWorkflow,
   invokePublishedWorkflow,
+  loadPublishedWorkflowRuntimeRegistry,
+  publishedWorkflowRuntimeRegistryPath,
   queryPublishedWorkflowRun,
+  retryPublishedWorkflowRun,
 } from '../publishedRunProtocol.js'
 
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111'
@@ -268,7 +271,14 @@ function deterministicDefinition(): Record<string, unknown> {
         reviewerRoleBindingIds: [],
         approverRoleBindingIds: [],
       },
-      config: { operation: 'uppercase' },
+      config: {
+        operation: 'uppercase',
+        artifact: {
+          name: 'published-result.json',
+          kind: 'workflow-result',
+          mediaType: 'application/json',
+        },
+      },
     },
   ]
   definition.edges = [
@@ -291,6 +301,25 @@ function approvalDefinition(): Record<string, unknown> {
   definition.nodes = [
     { id: 'trigger', type: 'trigger-manual', config: {} },
     {
+      id: 'prepare',
+      type: 'text-transform',
+      business: { title: 'Prepare approval artifact' },
+      assignment: {
+        executorRoleBindingId: 'binding_runtime',
+        ownerRoleBindingId: 'binding_runtime',
+        reviewerRoleBindingIds: [],
+        approverRoleBindingIds: [],
+      },
+      config: {
+        operation: 'trim',
+        artifact: {
+          name: 'approval-input.json',
+          kind: 'approval-input',
+          mediaType: 'application/json',
+        },
+      },
+    },
+    {
       id: 'approve',
       type: 'human-approval',
       business: { title: 'Approve result', gatePolicy: 'required' },
@@ -304,7 +333,8 @@ function approvalDefinition(): Record<string, unknown> {
     },
   ]
   definition.edges = [
-    { from: { nodeId: 'trigger' }, to: { nodeId: 'approve' } },
+    { from: { nodeId: 'trigger' }, to: { nodeId: 'prepare' } },
+    { from: { nodeId: 'prepare' }, to: { nodeId: 'approve' } },
   ]
   const sourceDigest = computeDesktopWorkflowSourceDigest(definition)
   definition.release = {
@@ -331,7 +361,7 @@ describe('workflow publication protocol v1', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
-  test('advertises publication plus typed enable/invoke/query/cancel', () => {
+  test('advertises publication plus typed enable/invoke/retry/query/cancel', () => {
     expect(workflowPublicationProtocolDescriptor()).toMatchObject({
       version: 1,
       surface: 'workflow-publication-protocol',
@@ -364,6 +394,11 @@ describe('workflow publication protocol v1', () => {
           output: 'workflow-run-receipt/v1',
           idempotent: true,
         },
+        retry: {
+          args: ['workflows', 'retry-published-run', '--stdin', '--json'],
+          output: 'workflow-run-retry-receipt/v1',
+          idempotent: true,
+        },
         query: {
           args: ['workflows', 'query-published-run', '--stdin', '--json'],
           output: 'workflow-run-query/v1',
@@ -378,8 +413,10 @@ describe('workflow publication protocol v1', () => {
       requiredEvidence: ['assetId', 'assetVersion', 'sourceDigest', 'receiptId'],
       requiredRunEvidence: [
         'runId',
+        'retryOfRunId',
         'steps',
         'evidence',
+        'artifacts',
         'actionReceipt',
         'waits',
         'finalResult',
@@ -750,6 +787,20 @@ describe('workflow publication protocol v1', () => {
         step => step.state === 'completed' && step.evidence.length >= 2,
       ),
     ).toBe(true)
+    expect(invoked.response.run.retryOfRunId).toBeNull()
+    expect(invoked.response.run.artifacts).toHaveLength(1)
+    expect(invoked.response.run.artifacts[0]).toMatchObject({
+      name: 'published-result.json',
+      kind: 'workflow-result',
+      mediaType: 'application/json',
+      producedByNodeId: 'uppercase',
+      digest: invoked.response.run.finalResult?.digest,
+      sizeBytes: Buffer.byteLength(JSON.stringify('PUBLISHED RESULT')),
+    })
+    expect(invoked.response.run.artifacts[0]?.artifactId).toMatch(/^wfpa_[a-f0-9]{24}$/)
+    expect(invoked.response.run.artifacts[0]?.uri).toBe(
+      `mossen-artifact://published-runs/${invoked.response.runId}/${invoked.response.run.artifacts[0]?.artifactId}`,
+    )
 
     const queried = queryPublishedWorkflowRun({
       ...identity,
@@ -789,6 +840,81 @@ describe('workflow publication protocol v1', () => {
         }),
       ]),
     )
+    const completedRetry = await retryPublishedWorkflowRun({
+      ...identity,
+      requestId: '88888888-8888-4888-8888-888888888888',
+      idempotencyKey: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      runId: invoked.response.runId,
+    })
+    expect(completedRetry.ok).toBe(false)
+    if (!('conflict' in completedRetry)) {
+      throw new Error('expected completed run retry rejection')
+    }
+    expect(completedRetry.conflict.code).toBe('run_not_retryable')
+  })
+
+  test('returns an explicit empty artifact array when no node declares an artifact', async () => {
+    const definition = deterministicDefinition()
+    const uppercase = (definition.nodes as Array<Record<string, unknown>>)[2]!
+    uppercase.config = { operation: 'uppercase' }
+    const sourceDigest = computeDesktopWorkflowSourceDigest(definition)
+    definition.release = {
+      localRevision: 1,
+      sourceDigest,
+      validation: { status: 'not-validated', issues: [] },
+    }
+    const published = await publishWorkflowDraft(publishRequest(definition))
+    if ('conflict' in published) throw new Error(published.conflict.message)
+    const identity = {
+      protocolVersion: 1 as const,
+      assetId: published.receipt.assetId,
+      assetVersion: published.receipt.assetVersion,
+      sourceDigest: published.receipt.sourceDigest,
+    }
+    const enabled = await enablePublishedWorkflow({
+      ...identity,
+      requestId: SECOND_REQUEST_ID,
+      idempotencyKey: SECOND_IDEMPOTENCY_KEY,
+    })
+    if (!('response' in enabled)) throw new Error(enabled.conflict.message)
+    const invoked = await invokePublishedWorkflow({
+      ...identity,
+      requestId: THIRD_REQUEST_ID,
+      idempotencyKey: THIRD_IDEMPOTENCY_KEY,
+      input: 'no artifact',
+    })
+    if (!('response' in invoked)) throw new Error(invoked.conflict.message)
+    expect(invoked.response.artifactIds).toEqual([])
+    expect(invoked.response.run.artifacts).toEqual([])
+
+    const queried = queryPublishedWorkflowRun({
+      ...identity,
+      requestId: REQUEST_ID,
+      runId: invoked.response.runId,
+    })
+    if (!('response' in queried)) throw new Error(queried.conflict.message)
+    expect(queried.response.run.artifacts).toEqual([])
+
+    const snapshot = buildWorkbenchWorkflowSnapshot({ runs: [], registryResults: [] })
+    expect(
+      snapshot.publishedRuns.items.find(run => run.runId === invoked.response.runId)
+        ?.artifacts,
+    ).toEqual([])
+
+    const legacyRegistry = JSON.parse(
+      readFileSync(publishedWorkflowRuntimeRegistryPath(), 'utf8'),
+    ) as { runs: Array<Record<string, unknown>> }
+    delete legacyRegistry.runs[0]?.artifacts
+    delete legacyRegistry.runs[0]?.retryOfRunId
+    writeFileSync(
+      publishedWorkflowRuntimeRegistryPath(),
+      `${JSON.stringify(legacyRegistry)}\n`,
+      'utf8',
+    )
+    expect(loadPublishedWorkflowRuntimeRegistry().runs[0]).toMatchObject({
+      artifacts: [],
+      retryOfRunId: null,
+    })
   })
 
   test('persists approval and permission waits and cancels a waiting run', async () => {
@@ -819,10 +945,11 @@ describe('workflow publication protocol v1', () => {
       waits: { approvalNodeIds: ['approve'] },
       finalResult: null,
     })
-    expect(invoked.response.run.steps[1]).toMatchObject({
+    expect(invoked.response.run.steps[2]).toMatchObject({
       state: 'waiting_approval',
       approval: { status: 'waiting', message: 'Approve the fixture result.' },
     })
+    expect(invoked.response.run.artifacts).toHaveLength(1)
 
     const cancelled = await cancelPublishedWorkflowRun({
       ...identity,
@@ -836,6 +963,79 @@ describe('workflow publication protocol v1', () => {
       runId: invoked.response.runId,
       runState: 'cancelled',
       run: { state: 'cancelled', finalResult: { status: 'cancelled' } },
+    })
+    const originalAfterCancel = structuredClone(cancelled.response.run)
+    const retryRequest = {
+      ...identity,
+      requestId: '44444444-4444-4444-8444-444444444444',
+      idempotencyKey: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      runId: invoked.response.runId,
+    }
+    const retried = await retryPublishedWorkflowRun(retryRequest)
+    const retryReplay = await retryPublishedWorkflowRun(retryRequest)
+    if (!('response' in retried)) throw new Error(retried.conflict.message)
+    if (!('response' in retryReplay)) throw new Error(retryReplay.conflict.message)
+    expect(retryReplay.replayed).toBe(true)
+    expect(retryReplay.response).toEqual(retried.response)
+    expect(retried.response.runId).not.toBe(invoked.response.runId)
+    expect(retried.response.retryOfRunId).toBe(invoked.response.runId)
+    expect(retried.response.run.retryOfRunId).toBe(invoked.response.runId)
+    expect(retried.response.run.artifacts).toHaveLength(1)
+    expect(retried.response.artifactIds).toEqual(
+      retried.response.run.artifacts.map(artifact => artifact.artifactId),
+    )
+
+    const originalQuery = queryPublishedWorkflowRun({
+      ...identity,
+      requestId: '55555555-5555-4555-8555-555555555555',
+      runId: invoked.response.runId,
+    })
+    const retryQuery = queryPublishedWorkflowRun({
+      ...identity,
+      requestId: '66666666-6666-4666-8666-666666666666',
+      runId: retried.response.runId,
+    })
+    if (!('response' in originalQuery)) throw new Error(originalQuery.conflict.message)
+    if (!('response' in retryQuery)) throw new Error(retryQuery.conflict.message)
+    expect(originalQuery.response.run).toEqual(originalAfterCancel)
+    expect(retryQuery.response.run).toEqual(retried.response.run)
+
+    const changedReplay = await retryPublishedWorkflowRun({
+      ...retryRequest,
+      runId: retried.response.runId,
+    })
+    expect(changedReplay.ok).toBe(false)
+    if (!('conflict' in changedReplay)) throw new Error('expected retry idempotency conflict')
+    expect(changedReplay.conflict.code).toBe('idempotency_key_conflict')
+
+    const staleRetry = await retryPublishedWorkflowRun({
+      ...retryRequest,
+      requestId: '77777777-7777-4777-8777-777777777777',
+      idempotencyKey: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      assetVersion: '0.0.0',
+    })
+    expect(staleRetry.ok).toBe(false)
+    if (!('conflict' in staleRetry)) throw new Error('expected stale retry conflict')
+    expect(staleRetry.conflict.code).toBe('stale_asset_identity')
+
+    const retrySnapshot = buildWorkbenchWorkflowSnapshot({
+      runs: [],
+      registryResults: [],
+    })
+    expect(
+      retrySnapshot.publishedRuns.items.find(
+        run => run.runId === retried.response.runId,
+      ),
+    ).toEqual(retried.response.run)
+    expect(
+      retrySnapshot.actionReceipts.items.find(
+        receipt => receipt.receiptId === retried.response.receiptId,
+      ),
+    ).toMatchObject({
+      actionId: 'workflow.run.retryPublished',
+      runId: retried.response.runId,
+      retryOfRunId: invoked.response.runId,
+      artifactIds: retried.response.artifactIds,
     })
 
     const permissionDefinition = businessAssetDefinition(

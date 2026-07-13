@@ -1,16 +1,18 @@
 {
   "$comment": "Mossen Distribution Contract v1 — machine-readable single source of truth for the public API surface that cli-harness and other integrators depend on. Edited only via PR; every PR that changes stable_surface must update this file in the same commit (wave_w442 smoke enforces this).",
-  "contractVersion": "1.2.0",
-  "mossenVersion": "1.3.0",
-  "mossenCommit": "v1.3.0",
+  "contractVersion": "1.3.0",
+  "mossenVersion": "1.3.1",
+  "mossenCommit": "v1.3.1",
   "lastUpdated": "2026-07-13",
   "$changelog": {
+    "1.3.0": "W493 additive Published Run artifacts and typed retry lineage: safe structured artifact identities, explicit empty arrays, exact-identity idempotent retry, immutable retryOfRunId, and receipt/query/Workbench reconciliation.",
     "1.2.0": "W492 additive typed Workflow enable/invoke/query/cancel protocol with exact publication identity, idempotent authoritative runId, step evidence, approval/permission waits, cancellation receipts, and Workbench run reconciliation.",
     "1.1.0": "W490 additive typed Workflow publication protocol: capability discovery, Business Asset v2 stdin validation/publication, atomic idempotent receipts, and Workbench identity reconciliation. Published invocation remains explicitly unsupported until a separate typed execution contract exists.",
     "1.0.1": "R8 §3 patch — annotate hook_event subtype variants + permission_denial real location (embedded in result.permission_denials[]); add ndjson_top_level_extras section. Backward-compatible documentation enrichment, no surface change.",
     "1.0.0": "Initial contract per Phase 1 W442. cli-harness R7 §5 sign-off; final GA tag locked at v1.0.0 after R10 sign-off."
   },
   "$mossenVersionHistory": {
+    "1.3.1": "Formal patch release of W493 Published Run artifacts and typed retry lineage. Five architecture binaries report 1.3.1 and are published as v1.3.1 assets.",
     "1.3.0": "Formal release of W490 publication plus W491 Electron stdout completion and W492 S7 typed Enable / Published Run. Five architecture binaries report 1.3.0 and are published as v1.3.0 assets.",
     "1.2.4-dev": "W490 unreleased source candidate adds the typed Desktop Workflow Business Asset v2 publication protocol. This entry does not claim release assets, Desktop pinning, or Published Run support.",
     "1.1.0": "W458 (user-facing model alias scrub) + W459 (first-launch LLM profile wizard) + W459-full (provider picker + URL validation + endpoint test + multi-profile loop + MemorySidecarWizardStep) + W459-schema (per-profile env-var apiKey reference via new ProfileApiKeyEnvRef type) + W462 (/permissions mode-vs-rule clarification). Contract surface unchanged from 1.0.1 — all changes are additive UI/onboarding/internals; no breaking change for cli-harness or other integrators.",
@@ -155,6 +157,13 @@
           "idempotent": true,
           "authoritative_run_id": true
         },
+        "retry": {
+          "args": ["workflows", "retry-published-run", "--stdin", "--json"],
+          "output": "workflow-run-retry-receipt/v1",
+          "idempotent": true,
+          "exact_identity_required": true,
+          "immutable_lineage": true
+        },
         "query": {
           "args": ["workflows", "query-published-run", "--stdin", "--json"],
           "output": "workflow-run-query/v1",
@@ -167,7 +176,7 @@
         }
       },
       "required_evidence": ["assetId", "assetVersion", "sourceDigest", "receiptId"],
-      "required_run_evidence": ["runId", "steps", "evidence", "actionReceipt", "waits", "finalResult"],
+      "required_run_evidence": ["runId", "retryOfRunId", "steps", "evidence", "artifacts", "actionReceipt", "waits", "finalResult"],
       "registry_owner": "mossen",
       "registry_path": "$MOSSEN_HOME/workflow-publication/registry-v1.json",
       "runtime_registry_path": "$MOSSEN_HOME/workflow-publication/runtime-v1.json",
@@ -176,6 +185,8 @@
         "enable_required": true,
         "identity": ["assetId", "assetVersion", "sourceDigest"],
         "states": ["running", "waiting_approval", "waiting_permission", "completed", "failed", "cancelled"],
+        "retryable_states": ["failed", "cancelled"],
+        "artifacts": "Every run returns artifacts[]. Artifact URIs use the mossen-artifact scheme and never expose local filesystem paths.",
         "authority_boundary": "Deterministic no-side-effect nodes execute in Mossen. Human and external capability nodes wait for explicit approval/permission and are never auto-completed."
       }
     },

@@ -35,6 +35,7 @@ import {
   enablePublishedWorkflow,
   invokePublishedWorkflow,
   queryPublishedWorkflowRun,
+  retryPublishedWorkflowRun,
   type PublishedWorkflowOperationResult,
 } from '../../commands/workflows/publishedRunProtocol.js'
 
@@ -158,6 +159,7 @@ export async function workflowsHandler(
     'publish-draft',
     'enable-published',
     'run-published',
+    'retry-published-run',
     'query-published-run',
     'cancel-published-run',
   ]
@@ -169,6 +171,7 @@ export async function workflowsHandler(
   if (
     options.operation === 'enable-published' ||
     options.operation === 'run-published' ||
+    options.operation === 'retry-published-run' ||
     options.operation === 'query-published-run' ||
     options.operation === 'cancel-published-run'
   ) {
@@ -179,6 +182,8 @@ export async function workflowsHandler(
           ? await enablePublishedWorkflow(input)
           : options.operation === 'run-published'
             ? await invokePublishedWorkflow(input)
+            : options.operation === 'retry-published-run'
+              ? await retryPublishedWorkflowRun(input)
             : options.operation === 'query-published-run'
               ? queryPublishedWorkflowRun(input)
               : await cancelPublishedWorkflowRun(input)
