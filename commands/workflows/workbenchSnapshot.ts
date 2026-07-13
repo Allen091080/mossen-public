@@ -23,6 +23,12 @@ import {
   type PublishedWorkflowAsset,
   type WorkflowPublicationReceipt,
 } from './publicationRegistry.js'
+import {
+  loadPublishedWorkflowRuntimeRegistry,
+  type EnabledPublishedWorkflow,
+  type PublishedWorkflowRun,
+  type PublishedWorkflowRuntimeReceipt,
+} from './publishedRunProtocol.js'
 
 export type WorkbenchWorkflowActionKind = 'slash-input' | 'cli-command' | 'unsupported'
 
@@ -76,6 +82,10 @@ export type WorkbenchWorkflowRegistryItem = {
     compatibility: string | null
     sourceDigest: string | null
     lastReceiptId: string | null
+    executionStatus: 'enabled' | 'not_enabled' | null
+    enabledVersion: string | null
+    enabledSourceDigest: string | null
+    lastEnableReceiptId: string | null
   }
   phases: Array<{ title: string; detail: string | null; model: string | null }>
   budgets: Record<string, unknown>
@@ -118,6 +128,9 @@ export type WorkbenchWorkflowSnapshot = {
     goalLinks: number
     actionReceipts: number
     needsAttention: number
+    publishedRuns: number
+    waitingApproval: number
+    waitingPermission: number
   }
   registry: {
     validationMode: 'legacy-compatible'
@@ -133,6 +146,10 @@ export type WorkbenchWorkflowSnapshot = {
   actionReceipts: {
     emptyState: string | null
     items: WorkbenchWorkflowActionReceipt[]
+  }
+  publishedRuns: {
+    emptyState: string | null
+    items: PublishedWorkflowRun[]
   }
 }
 
@@ -306,6 +323,10 @@ function buildRegistryItem(
       compatibility: asset?.lifecycle?.compatibility ?? null,
       sourceDigest: null,
       lastReceiptId: null,
+      executionStatus: null,
+      enabledVersion: null,
+      enabledSourceDigest: null,
+      lastEnableReceiptId: null,
     },
     phases: (asset?.phases ?? []).map(phase => ({
       title: phase.title,
@@ -318,7 +339,13 @@ function buildRegistryItem(
   }
 }
 
-function publishedAssetActions(): WorkbenchWorkflowAction[] {
+function publishedAssetActions(
+  asset: PublishedWorkflowAsset,
+  enabled: EnabledPublishedWorkflow | undefined,
+): WorkbenchWorkflowAction[] {
+  const exactEnabled =
+    enabled?.assetVersion === asset.assetVersion &&
+    enabled.sourceDigest === asset.sourceDigest
   return [
     workflowAction({
       id: 'workflow.asset.reconcilePublication',
@@ -335,12 +362,24 @@ function publishedAssetActions(): WorkbenchWorkflowAction[] {
       reason: 'typed validation requires the original Business Asset v2 stdin envelope',
     }),
     workflowAction({
+      id: 'workflow.asset.enablePublished',
+      label: 'Enable published workflow',
+      available: !exactEnabled,
+      kind: 'cli-command',
+      command: 'mossen workflows enable-published --stdin --json',
+      reason: exactEnabled ? 'the current published identity is already enabled' : undefined,
+      requires: ['assetId', 'assetVersion', 'sourceDigest', 'idempotencyKey'],
+    }),
+    workflowAction({
       id: 'workflow.asset.runPublished',
       label: 'Run published workflow',
-      available: false,
-      kind: 'unsupported',
-      reason:
-        'R4 does not define a typed published-run request or Desktop graph execution mapping',
+      available: exactEnabled,
+      kind: 'cli-command',
+      command: 'mossen workflows run-published --stdin --json',
+      reason: exactEnabled
+        ? undefined
+        : 'the exact asset version and source digest must be enabled first',
+      requires: ['assetId', 'assetVersion', 'sourceDigest', 'idempotencyKey'],
     }),
     workflowAction({
       id: 'workflow.asset.deprecate',
@@ -355,6 +394,7 @@ function publishedAssetActions(): WorkbenchWorkflowAction[] {
 
 function publishedRegistryItem(
   asset: PublishedWorkflowAsset,
+  enabled: EnabledPublishedWorkflow | undefined,
 ): WorkbenchWorkflowRegistryItem {
   const nodes = Array.isArray(asset.definition.nodes)
     ? asset.definition.nodes
@@ -383,6 +423,14 @@ function publishedRegistryItem(
       compatibility: 'mossen-desktop-workflow-business-asset/v2',
       sourceDigest: asset.sourceDigest,
       lastReceiptId: asset.lastReceiptId,
+      executionStatus:
+        enabled?.assetVersion === asset.assetVersion &&
+        enabled.sourceDigest === asset.sourceDigest
+          ? 'enabled'
+          : 'not_enabled',
+      enabledVersion: enabled?.assetVersion ?? null,
+      enabledSourceDigest: enabled?.sourceDigest ?? null,
+      lastEnableReceiptId: enabled?.lastReceiptId ?? null,
     },
     phases: nodes.flatMap(node => {
       if (!node || typeof node !== 'object' || Array.isArray(node)) return []
@@ -403,8 +451,46 @@ function publishedRegistryItem(
       localRevision: asset.localRevision,
       sourceDigest: asset.sourceDigest,
       receiptId: asset.lastReceiptId,
+      enabledIdentity: enabled ?? null,
     },
-    actions: publishedAssetActions(),
+    actions: publishedAssetActions(asset, enabled),
+  }
+}
+
+function runtimeActionReceipt(
+  receipt: PublishedWorkflowRuntimeReceipt,
+): WorkbenchWorkflowActionReceipt {
+  const actionId =
+    receipt.action === 'enable'
+      ? 'workflow.asset.enablePublished'
+      : receipt.action === 'invoke'
+        ? 'workflow.asset.runPublished'
+        : 'workflow.run.cancelPublished'
+  return {
+    version: 1,
+    receiptId: receipt.receiptId,
+    actionId,
+    status: 'accepted',
+    createdAt: receipt.createdAt,
+    input: null,
+    command: `mossen workflows ${
+      receipt.action === 'enable'
+        ? 'enable-published'
+        : receipt.action === 'invoke'
+          ? 'run-published'
+          : 'cancel-published-run'
+    } --stdin --json`,
+    runId: receipt.runId,
+    workflowName: receipt.workflowName,
+    message: `${receipt.action} accepted for ${receipt.assetId}${
+      receipt.runId ? ` run ${receipt.runId}` : ''
+    }.`,
+    source: 'system',
+    requestId: receipt.requestId,
+    idempotencyKey: receipt.idempotencyKey,
+    assetId: receipt.assetId,
+    assetVersion: receipt.assetVersion,
+    sourceDigest: receipt.sourceDigest,
   }
 }
 
@@ -642,15 +728,19 @@ export function buildWorkbenchWorkflowSnapshot(options: {
   generatedAt?: string
 }): WorkbenchWorkflowSnapshot {
   const publicationRegistry = loadWorkflowPublicationRegistry()
+  const runtimeRegistry = loadPublishedWorkflowRuntimeRegistry()
   const registryAssets = [
     ...options.registryResults.map(buildRegistryItem),
-    ...publicationRegistry.assets.map(publishedRegistryItem),
+    ...publicationRegistry.assets.map(asset =>
+      publishedRegistryItem(asset, runtimeRegistry.enabled[asset.assetId]),
+    ),
   ]
   const runs = workflowRunsToJson(options.runs).map(buildRunItem)
   const goalLinks = goalLinksForRuns(runs)
   const actionReceipts = [
     ...loadWorkbenchWorkflowActionReceipts(),
     ...publicationRegistry.receipts.map(publicationActionReceipt),
+    ...runtimeRegistry.receipts.map(runtimeActionReceipt),
   ]
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .slice(0, 50)
@@ -679,6 +769,13 @@ export function buildWorkbenchWorkflowSnapshot(options: {
       goalLinks: goalLinks.length,
       actionReceipts: actionReceipts.length,
       needsAttention,
+      publishedRuns: runtimeRegistry.runs.length,
+      waitingApproval: runtimeRegistry.runs.filter(
+        run => run.state === 'waiting_approval',
+      ).length,
+      waitingPermission: runtimeRegistry.runs.filter(
+        run => run.state === 'waiting_permission',
+      ).length,
     },
     registry: {
       validationMode: 'legacy-compatible',
@@ -700,6 +797,13 @@ export function buildWorkbenchWorkflowSnapshot(options: {
         ? 'No Workbench workflow action receipts recorded for this session.'
         : null,
       items: actionReceipts,
+    },
+    publishedRuns: {
+      emptyState:
+        runtimeRegistry.runs.length === 0
+          ? 'No published workflow runs recorded.'
+          : null,
+      items: runtimeRegistry.runs,
     },
   }
 }

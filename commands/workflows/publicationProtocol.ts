@@ -71,12 +71,57 @@ export type WorkflowPublicationProtocolDescriptor = {
       output: 'workbench-workflows/v1+publication'
       idempotent: true
     }
+    enable: {
+      available: true
+      args: ['workflows', 'enable-published', '--stdin', '--json']
+      input: 'stdin-json'
+      output: 'workflow-enable-receipt/v1'
+      idempotent: true
+    }
+    invoke: {
+      available: true
+      args: ['workflows', 'run-published', '--stdin', '--json']
+      input: 'stdin-json'
+      output: 'workflow-run-receipt/v1'
+      idempotent: true
+    }
+    query: {
+      available: true
+      args: ['workflows', 'query-published-run', '--stdin', '--json']
+      input: 'stdin-json'
+      output: 'workflow-run-query/v1'
+      idempotent: true
+    }
+    cancel: {
+      available: true
+      args: ['workflows', 'cancel-published-run', '--stdin', '--json']
+      input: 'stdin-json'
+      output: 'workflow-run-cancel-receipt/v1'
+      idempotent: true
+    }
   }
   requiredEvidence: ['assetId', 'assetVersion', 'sourceDigest', 'receiptId']
-  unsupported: {
+  requiredRunEvidence: [
+    'runId',
+    'steps',
+    'evidence',
+    'actionReceipt',
+    'waits',
+    'finalResult',
+  ]
+  execution: {
     publishedInvocation: {
-      available: false
-      reason: string
+      available: true
+      enableRequired: true
+      identity: ['assetId', 'assetVersion', 'sourceDigest']
+      runStates: [
+        'running',
+        'waiting_approval',
+        'waiting_permission',
+        'completed',
+        'failed',
+        'cancelled',
+      ]
     }
   }
 }
@@ -147,13 +192,57 @@ export function workflowPublicationProtocolDescriptor(): WorkflowPublicationProt
         output: 'workbench-workflows/v1+publication',
         idempotent: true,
       },
+      enable: {
+        available: true,
+        args: ['workflows', 'enable-published', '--stdin', '--json'],
+        input: 'stdin-json',
+        output: 'workflow-enable-receipt/v1',
+        idempotent: true,
+      },
+      invoke: {
+        available: true,
+        args: ['workflows', 'run-published', '--stdin', '--json'],
+        input: 'stdin-json',
+        output: 'workflow-run-receipt/v1',
+        idempotent: true,
+      },
+      query: {
+        available: true,
+        args: ['workflows', 'query-published-run', '--stdin', '--json'],
+        input: 'stdin-json',
+        output: 'workflow-run-query/v1',
+        idempotent: true,
+      },
+      cancel: {
+        available: true,
+        args: ['workflows', 'cancel-published-run', '--stdin', '--json'],
+        input: 'stdin-json',
+        output: 'workflow-run-cancel-receipt/v1',
+        idempotent: true,
+      },
     },
     requiredEvidence: ['assetId', 'assetVersion', 'sourceDigest', 'receiptId'],
-    unsupported: {
+    requiredRunEvidence: [
+      'runId',
+      'steps',
+      'evidence',
+      'actionReceipt',
+      'waits',
+      'finalResult',
+    ],
+    execution: {
       publishedInvocation: {
-        available: false,
-        reason:
-          'R4 defines publication identity and reconciliation but does not define a typed published-run request or Desktop graph execution mapping.',
+        available: true,
+        enableRequired: true,
+        identity: ['assetId', 'assetVersion', 'sourceDigest'],
+        runStates: [
+          'running',
+          'waiting_approval',
+          'waiting_permission',
+          'completed',
+          'failed',
+          'cancelled',
+        ],
       },
     },
   }

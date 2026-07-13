@@ -30,6 +30,13 @@ import {
 } from '../../commands/workflows/publicationProtocol.js'
 import { publishWorkflowDraft } from '../../commands/workflows/publicationRegistry.js'
 import { writeToStdoutAndWait } from '../../utils/process.js'
+import {
+  cancelPublishedWorkflowRun,
+  enablePublishedWorkflow,
+  invokePublishedWorkflow,
+  queryPublishedWorkflowRun,
+  type PublishedWorkflowOperationResult,
+} from '../../commands/workflows/publishedRunProtocol.js'
 
 export type WorkflowsHandlerOptions = {
   json?: boolean
@@ -101,6 +108,17 @@ async function printWorkflowPublicationProtocolError(
   process.exitCode = 1
 }
 
+async function printPublishedWorkflowOperation(
+  result: PublishedWorkflowOperationResult<unknown>,
+): Promise<void> {
+  if ('response' in result) {
+    await writeWorkflowStdout(JSON.stringify(result.response, null, 2))
+    return
+  }
+  await writeWorkflowStdout(JSON.stringify(result.conflict, null, 2))
+  process.exitCode = 1
+}
+
 function workflowRunWithLog(run: WorkflowJsonRun): WorkflowJsonRun & { log: string[] } {
   return {
     ...run,
@@ -135,9 +153,39 @@ function applyWorkflowSessionOption(options: WorkflowsHandlerOptions): boolean {
 export async function workflowsHandler(
   options: WorkflowsHandlerOptions = {},
 ): Promise<void> {
-  if (options.operation && !['validate-draft', 'publish-draft'].includes(options.operation)) {
+  const operations = [
+    'validate-draft',
+    'publish-draft',
+    'enable-published',
+    'run-published',
+    'query-published-run',
+    'cancel-published-run',
+  ]
+  if (options.operation && !operations.includes(options.operation)) {
     console.error(`Unknown workflows operation: ${options.operation}`)
     process.exitCode = 1
+    return
+  }
+  if (
+    options.operation === 'enable-published' ||
+    options.operation === 'run-published' ||
+    options.operation === 'query-published-run' ||
+    options.operation === 'cancel-published-run'
+  ) {
+    try {
+      const input = await readWorkflowPublicationInput(options)
+      const result =
+        options.operation === 'enable-published'
+          ? await enablePublishedWorkflow(input)
+          : options.operation === 'run-published'
+            ? await invokePublishedWorkflow(input)
+            : options.operation === 'query-published-run'
+              ? queryPublishedWorkflowRun(input)
+              : await cancelPublishedWorkflowRun(input)
+      await printPublishedWorkflowOperation(result)
+    } catch (error) {
+      await printWorkflowPublicationProtocolError(error)
+    }
     return
   }
   if (options.operation === 'validate-draft') {

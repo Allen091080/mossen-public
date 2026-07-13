@@ -20,6 +20,12 @@ import {
   workflowPublicationRegistryPath,
 } from '../publicationRegistry.js'
 import { buildWorkbenchWorkflowSnapshot } from '../workbenchSnapshot.js'
+import {
+  cancelPublishedWorkflowRun,
+  enablePublishedWorkflow,
+  invokePublishedWorkflow,
+  queryPublishedWorkflowRun,
+} from '../publishedRunProtocol.js'
 
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111'
 const SECOND_REQUEST_ID = '22222222-2222-4222-8222-222222222222'
@@ -206,6 +212,109 @@ function revisedDefinition(
   return next
 }
 
+function deterministicDefinition(): Record<string, unknown> {
+  const definition = businessAssetDefinition(
+    'desktop-published-run',
+    'Deterministic published run',
+  )
+  definition.team = {
+    bindings: [
+      {
+        id: 'binding_runtime',
+        templateRoleId: 'role_runtime',
+        templateVersion: 1,
+        snapshotDigest: 'd'.repeat(64),
+        nameSnapshot: 'Published runtime',
+        descriptionSnapshot: 'Executes deterministic published steps.',
+        responsibilities: ['Execute published steps'],
+        requiredInputs: ['Run input'],
+        expectedOutputs: ['Run result'],
+        facets: [],
+        executor: { kind: 'mossen-agent' },
+        skillRefs: [],
+        capabilityRefs: [],
+        createdAt: 10,
+        updatedAt: 20,
+      },
+    ],
+  }
+  definition.dependencies = {
+    skills: [],
+    capabilities: [],
+    connectors: [],
+    permissionPolicies: [],
+  }
+  definition.nodes = [
+    { id: 'trigger', type: 'trigger-manual', config: {} },
+    {
+      id: 'trim',
+      type: 'text-transform',
+      business: { title: 'Trim input' },
+      assignment: {
+        executorRoleBindingId: 'binding_runtime',
+        ownerRoleBindingId: 'binding_runtime',
+        reviewerRoleBindingIds: [],
+        approverRoleBindingIds: [],
+      },
+      config: { operation: 'trim' },
+    },
+    {
+      id: 'uppercase',
+      type: 'text-transform',
+      business: { title: 'Uppercase input' },
+      assignment: {
+        executorRoleBindingId: 'binding_runtime',
+        ownerRoleBindingId: 'binding_runtime',
+        reviewerRoleBindingIds: [],
+        approverRoleBindingIds: [],
+      },
+      config: { operation: 'uppercase' },
+    },
+  ]
+  definition.edges = [
+    { from: { nodeId: 'trigger' }, to: { nodeId: 'trim' } },
+    { from: { nodeId: 'trim' }, to: { nodeId: 'uppercase' } },
+  ]
+  const sourceDigest = computeDesktopWorkflowSourceDigest(definition)
+  definition.release = {
+    localRevision: 1,
+    sourceDigest,
+    validation: { status: 'not-validated', issues: [] },
+  }
+  return definition
+}
+
+function approvalDefinition(): Record<string, unknown> {
+  const definition = deterministicDefinition()
+  definition.id = 'desktop-approval-run'
+  definition.name = 'Published approval run'
+  definition.nodes = [
+    { id: 'trigger', type: 'trigger-manual', config: {} },
+    {
+      id: 'approve',
+      type: 'human-approval',
+      business: { title: 'Approve result', gatePolicy: 'required' },
+      assignment: {
+        executorRoleBindingId: 'binding_runtime',
+        ownerRoleBindingId: 'binding_runtime',
+        reviewerRoleBindingIds: [],
+        approverRoleBindingIds: ['binding_runtime'],
+      },
+      config: { message: 'Approve the fixture result.', allowReject: true },
+    },
+  ]
+  definition.edges = [
+    { from: { nodeId: 'trigger' }, to: { nodeId: 'approve' } },
+  ]
+  const sourceDigest = computeDesktopWorkflowSourceDigest(definition)
+  definition.release = {
+    localRevision: 1,
+    sourceDigest,
+    validation: { status: 'not-validated', issues: [] },
+  }
+  return definition
+}
+
 describe('workflow publication protocol v1', () => {
   let root: string
   let priorHome: string | undefined
@@ -222,7 +331,7 @@ describe('workflow publication protocol v1', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
-  test('advertises the exact Desktop validate/publish/reconcile contract', () => {
+  test('advertises publication plus typed enable/invoke/query/cancel', () => {
     expect(workflowPublicationProtocolDescriptor()).toMatchObject({
       version: 1,
       surface: 'workflow-publication-protocol',
@@ -245,8 +354,39 @@ describe('workflow publication protocol v1', () => {
           args: ['workflows', '--workbench', '--json'],
           output: 'workbench-workflows/v1+publication',
         },
+        enable: {
+          args: ['workflows', 'enable-published', '--stdin', '--json'],
+          output: 'workflow-enable-receipt/v1',
+          idempotent: true,
+        },
+        invoke: {
+          args: ['workflows', 'run-published', '--stdin', '--json'],
+          output: 'workflow-run-receipt/v1',
+          idempotent: true,
+        },
+        query: {
+          args: ['workflows', 'query-published-run', '--stdin', '--json'],
+          output: 'workflow-run-query/v1',
+          idempotent: true,
+        },
+        cancel: {
+          args: ['workflows', 'cancel-published-run', '--stdin', '--json'],
+          output: 'workflow-run-cancel-receipt/v1',
+          idempotent: true,
+        },
       },
       requiredEvidence: ['assetId', 'assetVersion', 'sourceDigest', 'receiptId'],
+      requiredRunEvidence: [
+        'runId',
+        'steps',
+        'evidence',
+        'actionReceipt',
+        'waits',
+        'finalResult',
+      ],
+      execution: {
+        publishedInvocation: { available: true, enableRequired: true },
+      },
     })
   })
 
@@ -504,7 +644,7 @@ describe('workflow publication protocol v1', () => {
     })
     expect(
       asset?.actions.find(action => action.id === 'workflow.asset.runPublished'),
-    ).toMatchObject({ available: false, kind: 'unsupported' })
+    ).toMatchObject({ available: false, kind: 'cli-command' })
     expect(snapshot.actionReceipts.items).toContainEqual(
       expect.objectContaining({
         receiptId: published.receipt.receiptId,
@@ -516,5 +656,231 @@ describe('workflow publication protocol v1', () => {
         sourceDigest: published.receipt.sourceDigest,
       }),
     )
+  })
+
+  test('enables an exact identity and rejects stale published versions', async () => {
+    const definition = deterministicDefinition()
+    const published = await publishWorkflowDraft(publishRequest(definition))
+    if ('conflict' in published) throw new Error(published.conflict.message)
+    const enableRequest = {
+      protocolVersion: 1,
+      requestId: SECOND_REQUEST_ID,
+      idempotencyKey: SECOND_IDEMPOTENCY_KEY,
+      assetId: published.receipt.assetId,
+      assetVersion: published.receipt.assetVersion,
+      sourceDigest: published.receipt.sourceDigest,
+    }
+    const enabled = await enablePublishedWorkflow(enableRequest)
+    const replay = await enablePublishedWorkflow(enableRequest)
+    if (!('response' in enabled)) throw new Error(enabled.conflict.message)
+    if (!('response' in replay)) throw new Error(replay.conflict.message)
+    expect(replay.response).toEqual(enabled.response)
+    expect(replay.replayed).toBe(true)
+
+    const revised = revisedDefinition(definition, 'A newer published definition.')
+    const update = await publishWorkflowDraft(publishRequest(revised, {
+      requestId: THIRD_REQUEST_ID,
+      idempotencyKey: THIRD_IDEMPOTENCY_KEY,
+      expectedAssetId: published.receipt.assetId,
+      expectedAssetVersion: published.receipt.assetVersion,
+    }))
+    if ('conflict' in update) throw new Error(update.conflict.message)
+    const stale = await invokePublishedWorkflow({
+      ...enableRequest,
+      requestId: REQUEST_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+      input: 'fixture',
+    })
+    expect(stale.ok).toBe(false)
+    if (!('conflict' in stale)) throw new Error('expected stale conflict')
+    expect(stale.conflict).toMatchObject({
+      code: 'stale_asset_identity',
+      current: {
+        assetId: update.receipt.assetId,
+        assetVersion: update.receipt.assetVersion,
+        sourceDigest: update.receipt.sourceDigest,
+      },
+    })
+  })
+
+  test('invokes, queries, and reconciles a completed published run', async () => {
+    const definition = deterministicDefinition()
+    const published = await publishWorkflowDraft(publishRequest(definition))
+    if ('conflict' in published) throw new Error(published.conflict.message)
+    const identity = {
+      protocolVersion: 1,
+      assetId: published.receipt.assetId,
+      assetVersion: published.receipt.assetVersion,
+      sourceDigest: published.receipt.sourceDigest,
+    }
+    const enabled = await enablePublishedWorkflow({
+      ...identity,
+      requestId: SECOND_REQUEST_ID,
+      idempotencyKey: SECOND_IDEMPOTENCY_KEY,
+    })
+    if (!('response' in enabled)) throw new Error(enabled.conflict.message)
+    const invokeRequest = {
+      ...identity,
+      requestId: THIRD_REQUEST_ID,
+      idempotencyKey: THIRD_IDEMPOTENCY_KEY,
+      input: '  published result  ',
+    }
+    const invoked = await invokePublishedWorkflow(invokeRequest)
+    const replay = await invokePublishedWorkflow(invokeRequest)
+    if (!('response' in invoked)) throw new Error(invoked.conflict.message)
+    if (!('response' in replay)) throw new Error(replay.conflict.message)
+    expect(replay.response).toEqual(invoked.response)
+    expect(replay.replayed).toBe(true)
+    expect(invoked.response).toMatchObject({
+      surface: 'workflow-run-receipt',
+      runState: 'completed',
+      run: {
+        runId: invoked.response.runId,
+        assetId: identity.assetId,
+        assetVersion: identity.assetVersion,
+        sourceDigest: identity.sourceDigest,
+        state: 'completed',
+        waits: { approvalNodeIds: [], permissionNodeIds: [] },
+        finalResult: { status: 'succeeded', value: 'PUBLISHED RESULT' },
+      },
+    })
+    expect(invoked.response.run.steps).toHaveLength(3)
+    expect(
+      invoked.response.run.steps.every(
+        step => step.state === 'completed' && step.evidence.length >= 2,
+      ),
+    ).toBe(true)
+
+    const queried = queryPublishedWorkflowRun({
+      ...identity,
+      requestId: REQUEST_ID,
+      runId: invoked.response.runId,
+    })
+    if (!('response' in queried)) throw new Error(queried.conflict.message)
+    expect(queried.response.run).toEqual(invoked.response.run)
+
+    const snapshot = buildWorkbenchWorkflowSnapshot({
+      runs: [],
+      registryResults: [],
+      generatedAt: '2026-07-13T12:00:00.000Z',
+    })
+    expect(snapshot.publishedRuns.items).toContainEqual(invoked.response.run)
+    expect(snapshot.registry.assets.find(item => item.id === identity.assetId)).toMatchObject({
+      lifecycle: {
+        status: 'published',
+        executionStatus: 'enabled',
+        enabledVersion: identity.assetVersion,
+        enabledSourceDigest: identity.sourceDigest,
+      },
+      actions: expect.arrayContaining([
+        expect.objectContaining({ id: 'workflow.asset.runPublished', available: true }),
+      ]),
+    })
+    expect(snapshot.actionReceipts.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          receiptId: enabled.response.receiptId,
+          actionId: 'workflow.asset.enablePublished',
+        }),
+        expect.objectContaining({
+          receiptId: invoked.response.receiptId,
+          actionId: 'workflow.asset.runPublished',
+          runId: invoked.response.runId,
+        }),
+      ]),
+    )
+  })
+
+  test('persists approval and permission waits and cancels a waiting run', async () => {
+    const definition = approvalDefinition()
+    const published = await publishWorkflowDraft(publishRequest(definition))
+    if ('conflict' in published) throw new Error(published.conflict.message)
+    const identity = {
+      protocolVersion: 1,
+      assetId: published.receipt.assetId,
+      assetVersion: published.receipt.assetVersion,
+      sourceDigest: published.receipt.sourceDigest,
+    }
+    const enabled = await enablePublishedWorkflow({
+      ...identity,
+      requestId: SECOND_REQUEST_ID,
+      idempotencyKey: SECOND_IDEMPOTENCY_KEY,
+    })
+    if (!('response' in enabled)) throw new Error(enabled.conflict.message)
+    const invoked = await invokePublishedWorkflow({
+      ...identity,
+      requestId: THIRD_REQUEST_ID,
+      idempotencyKey: THIRD_IDEMPOTENCY_KEY,
+      input: 'approval fixture',
+    })
+    if (!('response' in invoked)) throw new Error(invoked.conflict.message)
+    expect(invoked.response.run).toMatchObject({
+      state: 'waiting_approval',
+      waits: { approvalNodeIds: ['approve'] },
+      finalResult: null,
+    })
+    expect(invoked.response.run.steps[1]).toMatchObject({
+      state: 'waiting_approval',
+      approval: { status: 'waiting', message: 'Approve the fixture result.' },
+    })
+
+    const cancelled = await cancelPublishedWorkflowRun({
+      ...identity,
+      requestId: REQUEST_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+      runId: invoked.response.runId,
+    })
+    if (!('response' in cancelled)) throw new Error(cancelled.conflict.message)
+    expect(cancelled.response).toMatchObject({
+      surface: 'workflow-run-cancel-receipt',
+      runId: invoked.response.runId,
+      runState: 'cancelled',
+      run: { state: 'cancelled', finalResult: { status: 'cancelled' } },
+    })
+
+    const permissionDefinition = businessAssetDefinition(
+      'desktop-permission-run',
+      'Published permission run',
+    )
+    const permissionPublish = await publishWorkflowDraft(publishRequest(
+      permissionDefinition,
+      { requestId: SECOND_REQUEST_ID, idempotencyKey: SECOND_IDEMPOTENCY_KEY },
+    ))
+    if ('conflict' in permissionPublish) {
+      throw new Error(permissionPublish.conflict.message)
+    }
+    const permissionIdentity = {
+      protocolVersion: 1,
+      assetId: permissionPublish.receipt.assetId,
+      assetVersion: permissionPublish.receipt.assetVersion,
+      sourceDigest: permissionPublish.receipt.sourceDigest,
+    }
+    const permissionEnabled = await enablePublishedWorkflow({
+      ...permissionIdentity,
+      requestId: THIRD_REQUEST_ID,
+      idempotencyKey: THIRD_IDEMPOTENCY_KEY,
+    })
+    if (!('response' in permissionEnabled)) {
+      throw new Error(permissionEnabled.conflict.message)
+    }
+    const permissionRun = await invokePublishedWorkflow({
+      ...permissionIdentity,
+      requestId: REQUEST_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+      input: 'permission fixture',
+    })
+    if (!('response' in permissionRun)) throw new Error(permissionRun.conflict.message)
+    expect(permissionRun.response.run).toMatchObject({
+      state: 'waiting_permission',
+      waits: { permissionNodeIds: ['step_send'] },
+      finalResult: null,
+    })
+    expect(permissionRun.response.run.steps[1]).toMatchObject({
+      state: 'waiting_permission',
+      permission: {
+        status: 'waiting',
+        capability: 'dingtalk.send-message',
+      },
+    })
   })
 })
