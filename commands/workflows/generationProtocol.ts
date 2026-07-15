@@ -488,7 +488,7 @@ function shortId(prefix: string, seed: string, size = 20): string {
 function runtimeVersion(): string {
   return typeof MACRO !== 'undefined' && MACRO.VERSION
     ? MACRO.VERSION
-    : '1.4.0-dev'
+    : '1.4.0'
 }
 
 export function workflowGenerationProtocolDescriptor(): WorkflowGenerationProtocolDescriptor {

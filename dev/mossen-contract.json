@@ -1,8 +1,8 @@
 {
   "$comment": "Mossen Distribution Contract v1 — machine-readable single source of truth for the public API surface that cli-harness and other integrators depend on. Edited only via PR; every PR that changes stable_surface must update this file in the same commit (wave_w442 smoke enforces this).",
   "contractVersion": "1.4.0",
-  "mossenVersion": "1.4.0-dev",
-  "mossenCommit": "main W494 candidate",
+  "mossenVersion": "1.4.0",
+  "mossenCommit": "v1.4.0",
   "lastUpdated": "2026-07-15",
   "$changelog": {
     "1.4.0": "W494 additive side-effect-free typed Workflow generation protocol: model-backed clarification/proposal/rejection, exact catalog grounding, bounded idempotency, and Business Asset v2 candidate materialization without publication or runtime writes.",
@@ -13,7 +13,8 @@
     "1.0.0": "Initial contract per Phase 1 W442. cli-harness R7 §5 sign-off; final GA tag locked at v1.0.0 after R10 sign-off."
   },
   "$mossenVersionHistory": {
-    "1.4.0-dev": "Unreleased W494 test candidate for the typed Workflow generation protocol. It is not an official release asset until separately tagged and published.",
+    "1.4.0": "Formal release of the W494 typed Workflow generation protocol. Five architecture binaries report 1.4.0 and are published as v1.4.0 assets.",
+    "1.4.0-dev": "Historical W494 test candidate for the typed Workflow generation protocol; superseded by the formal v1.4.0 release.",
     "1.3.1": "Formal patch release of W493 Published Run artifacts and typed retry lineage. Five architecture binaries report 1.3.1 and are published as v1.3.1 assets.",
     "1.3.0": "Formal release of W490 publication plus W491 Electron stdout completion and W492 S7 typed Enable / Published Run. Five architecture binaries report 1.3.0 and are published as v1.3.0 assets.",
     "1.2.4-dev": "W490 unreleased source candidate adds the typed Desktop Workflow Business Asset v2 publication protocol. This entry does not claim release assets, Desktop pinning, or Published Run support.",
