@@ -38,6 +38,13 @@ import {
   retryPublishedWorkflowRun,
   type PublishedWorkflowOperationResult,
 } from '../../commands/workflows/publishedRunProtocol.js'
+import {
+  generateWorkflowDraft,
+  MAX_WORKFLOW_GENERATION_INPUT_BYTES,
+  workflowGenerationError,
+  workflowGenerationProtocolDescriptor,
+  type WorkflowGenerationOperationErrorCode,
+} from '../../commands/workflows/generationProtocol.js'
 
 export type WorkflowsHandlerOptions = {
   json?: boolean
@@ -51,6 +58,16 @@ export type WorkflowsHandlerOptions = {
 }
 
 const MAX_WORKFLOW_PUBLICATION_INPUT_BYTES = 10 * 1024 * 1024
+
+class WorkflowGenerationTransportError extends Error {
+  constructor(
+    readonly code: WorkflowGenerationOperationErrorCode,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'WorkflowGenerationTransportError'
+  }
+}
 
 async function readWorkflowPublicationInput(
   options: WorkflowsHandlerOptions,
@@ -82,6 +99,48 @@ async function readWorkflowPublicationInput(
       `invalid workflow publication JSON: ${
         error instanceof Error ? error.message : String(error)
       }`,
+    )
+  }
+}
+
+async function readWorkflowGenerationInput(
+  options: WorkflowsHandlerOptions,
+): Promise<unknown> {
+  let text = options.inputText
+  if (text === undefined) {
+    if (!options.stdin) {
+      throw new WorkflowGenerationTransportError(
+        'invalid-request',
+        'typed workflow generation requires --stdin',
+      )
+    }
+    const chunks: Buffer[] = []
+    let size = 0
+    for await (const chunk of process.stdin) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      size += buffer.byteLength
+      if (size > MAX_WORKFLOW_GENERATION_INPUT_BYTES) {
+        throw new WorkflowGenerationTransportError(
+          'input-too-large',
+          `workflow generation input exceeds ${MAX_WORKFLOW_GENERATION_INPUT_BYTES} bytes`,
+        )
+      }
+      chunks.push(buffer)
+    }
+    text = Buffer.concat(chunks).toString('utf8')
+  }
+  if (!text.trim()) {
+    throw new WorkflowGenerationTransportError(
+      'invalid-request',
+      'workflow generation stdin was empty',
+    )
+  }
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    throw new WorkflowGenerationTransportError(
+      'invalid-request',
+      'workflow generation stdin was not one complete JSON object',
     )
   }
 }
@@ -155,6 +214,7 @@ export async function workflowsHandler(
   options: WorkflowsHandlerOptions = {},
 ): Promise<void> {
   const operations = [
+    'generate-draft',
     'validate-draft',
     'publish-draft',
     'enable-published',
@@ -166,6 +226,37 @@ export async function workflowsHandler(
   if (options.operation && !operations.includes(options.operation)) {
     console.error(`Unknown workflows operation: ${options.operation}`)
     process.exitCode = 1
+    return
+  }
+  if (options.operation === 'generate-draft') {
+    if (options.capabilities) {
+      await writeWorkflowStdout(
+        JSON.stringify(workflowGenerationProtocolDescriptor(), null, 2),
+      )
+      return
+    }
+    let output: unknown
+    let failed = false
+    try {
+      const input = await readWorkflowGenerationInput(options)
+      const outcome = await generateWorkflowDraft(input)
+      if ('error' in outcome) {
+        output = outcome.error
+        failed = true
+      } else {
+        output = outcome.result
+      }
+    } catch (error) {
+      output = workflowGenerationError(
+        error instanceof WorkflowGenerationTransportError
+          ? error.code
+          : 'internal-error',
+        error instanceof Error ? error.message : 'Workflow generation failed.',
+      )
+      failed = true
+    }
+    await writeWorkflowStdout(JSON.stringify(output, null, 2))
+    if (failed) process.exitCode = 1
     return
   }
   if (

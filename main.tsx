@@ -4586,7 +4586,7 @@ async function run(): Promise<CommanderCommand> {
       })
       process.exit(process.exitCode ?? 0)
     });
-  program.command('workflows [operation]').description('List workflow runs or use the typed workflow publication protocol').option('--json', 'Print workflow output as JSON.').option('--workbench', 'Print a Workbench workflow snapshot JSON object.').option('--capabilities', 'Print the typed workflow publication capability descriptor.').option('--stdin', 'Read a typed workflow operation request from stdin.').option('--session-id <uuid>', 'Read workflow runs for a specific session ID.').action(async (operation: string | undefined, options: {
+  program.command('workflows [operation]').description('List workflow runs or use typed workflow generation/publication protocols').option('--json', 'Print workflow output as JSON.').option('--workbench', 'Print a Workbench workflow snapshot JSON object.').option('--capabilities', 'Print the selected typed workflow capability descriptor.').option('--stdin', 'Read a typed workflow operation request from stdin.').option('--session-id <uuid>', 'Read workflow runs for a specific session ID.').action(async (operation: string | undefined, options: {
     json?: boolean;
     workbench?: boolean;
     capabilities?: boolean;
