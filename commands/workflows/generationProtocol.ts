@@ -17,7 +17,10 @@ export const WORKFLOW_GENERATION_PROTOCOL_VERSION = 1 as const
 export const MAX_WORKFLOW_GENERATION_INPUT_BYTES = 10 * 1024 * 1024
 export const MAX_WORKFLOW_GENERATION_CLARIFICATION_ROUNDS = 3
 export const MAX_WORKFLOW_GENERATION_QUESTIONS = 3
-export const DEFAULT_WORKFLOW_GENERATION_TIMEOUT_MS = 120_000
+export const DEFAULT_WORKFLOW_GENERATION_TIMEOUT_MS = 180_000
+export const MAX_WORKFLOW_GENERATION_MODEL_REPAIR_ATTEMPTS = 1
+
+const MAX_WORKFLOW_GENERATION_REPAIR_CONTEXT_CHARS = 32_768
 
 const SHA256_RE = /^[a-f0-9]{64}$/
 const SAFE_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/
@@ -191,6 +194,10 @@ export type WorkflowGenerationOperationErrorCode =
   | 'clarification-context-conflict'
   | 'generation-unavailable'
   | 'generation-timeout'
+  | 'model-output-max-tokens'
+  | 'model-output-empty'
+  | 'model-output-invalid-json'
+  | 'model-output-schema-invalid'
   | 'output-contract-invalid'
   | 'internal-error'
   | 'stdout-write-failed'
@@ -222,7 +229,8 @@ export type WorkflowGenerationProtocolDescriptor = {
     maxInputBytes: 10485760
     maxClarificationRounds: 3
     maxQuestionsPerRound: 3
-    timeoutMs: 120000
+    timeoutMs: 180000
+    maxModelOutputRepairAttempts: 1
   }
   requiredResultEvidence: [
     'requestId',
@@ -413,6 +421,26 @@ class InvalidModelOutput extends Error {
   }
 }
 
+type WorkflowGenerationModelOutputErrorCode = Extract<
+  WorkflowGenerationOperationErrorCode,
+  | 'model-output-max-tokens'
+  | 'model-output-empty'
+  | 'model-output-invalid-json'
+  | 'model-output-schema-invalid'
+>
+
+class WorkflowGenerationModelOutputError extends Error {
+  constructor(
+    readonly code: WorkflowGenerationModelOutputErrorCode,
+    message: string,
+    readonly repairable: boolean,
+    readonly rawText = '',
+  ) {
+    super(message)
+    this.name = 'WorkflowGenerationModelOutputError'
+  }
+}
+
 class BusinessGenerationRejection extends Error {
   constructor(
     readonly code:
@@ -488,7 +516,7 @@ function shortId(prefix: string, seed: string, size = 20): string {
 function runtimeVersion(): string {
   return typeof MACRO !== 'undefined' && MACRO.VERSION
     ? MACRO.VERSION
-    : '1.4.0'
+    : '1.4.1'
 }
 
 export function workflowGenerationProtocolDescriptor(): WorkflowGenerationProtocolDescriptor {
@@ -510,7 +538,8 @@ export function workflowGenerationProtocolDescriptor(): WorkflowGenerationProtoc
       maxInputBytes: 10485760,
       maxClarificationRounds: 3,
       maxQuestionsPerRound: 3,
-      timeoutMs: 120000,
+      timeoutMs: 180000,
+      maxModelOutputRepairAttempts: 1,
     },
     requiredResultEvidence: [
       'requestId',
@@ -1209,13 +1238,237 @@ function parseModelResult(
   }
 }
 
+function nullableModelSchema(schema: JsonRecord): JsonRecord {
+  return { anyOf: [schema, { type: 'null' }] }
+}
+
+function modelStringSchema(): JsonRecord {
+  return { type: 'string', minLength: 1 }
+}
+
+function modelStringArraySchema(): JsonRecord {
+  return { type: 'array', items: modelStringSchema() }
+}
+
+export function workflowGenerationModelOutputSchema(): JsonRecord {
+  const optionSchema: JsonRecord = {
+    type: 'object',
+    properties: {
+      id: modelStringSchema(),
+      label: modelStringSchema(),
+    },
+    required: ['id', 'label'],
+    additionalProperties: false,
+  }
+  const questionSchema: JsonRecord = {
+    type: 'object',
+    properties: {
+      id: modelStringSchema(),
+      path: modelStringSchema(),
+      prompt: modelStringSchema(),
+      reason: modelStringSchema(),
+      required: { type: 'boolean' },
+      answerType: { enum: [...ANSWER_TYPES] },
+      options: { type: 'array', items: optionSchema },
+    },
+    required: [
+      'id',
+      'path',
+      'prompt',
+      'reason',
+      'required',
+      'answerType',
+      'options',
+    ],
+    additionalProperties: false,
+  }
+  const assumptionSchema: JsonRecord = {
+    type: 'object',
+    properties: {
+      id: modelStringSchema(),
+      path: modelStringSchema(),
+      statement: modelStringSchema(),
+      confidence: { enum: ['low', 'medium', 'high'] },
+      requiresConfirmation: { type: 'boolean' },
+      sourceRefs: modelStringArraySchema(),
+    },
+    required: [
+      'id',
+      'path',
+      'statement',
+      'confidence',
+      'requiresConfirmation',
+      'sourceRefs',
+    ],
+    additionalProperties: false,
+  }
+  const warningSchema: JsonRecord = {
+    type: 'object',
+    properties: {
+      code: modelStringSchema(),
+      severity: { const: 'warning' },
+      path: modelStringSchema(),
+      message: modelStringSchema(),
+      requiresConfirmation: { type: 'boolean' },
+    },
+    required: [
+      'code',
+      'severity',
+      'path',
+      'message',
+      'requiresConfirmation',
+    ],
+    additionalProperties: false,
+  }
+  const roleSchema: JsonRecord = {
+    type: 'object',
+    properties: {
+      key: modelStringSchema(),
+      templateRoleId: nullableModelSchema(modelStringSchema()),
+      name: modelStringSchema(),
+      description: modelStringSchema(),
+      executorKind: { enum: ['human', 'mossen-agent'] },
+      responsibilities: modelStringArraySchema(),
+      requiredInputs: modelStringArraySchema(),
+      expectedOutputs: modelStringArraySchema(),
+      skillIds: modelStringArraySchema(),
+      capabilityIds: modelStringArraySchema(),
+      toolIds: modelStringArraySchema(),
+      systemInstruction: nullableModelSchema(modelStringSchema()),
+    },
+    required: [
+      'key',
+      'templateRoleId',
+      'name',
+      'description',
+      'executorKind',
+      'responsibilities',
+      'requiredInputs',
+      'expectedOutputs',
+      'skillIds',
+      'capabilityIds',
+      'toolIds',
+      'systemInstruction',
+    ],
+    additionalProperties: false,
+  }
+  const nullableString = () => nullableModelSchema(modelStringSchema())
+  const nullableInteger = (minimum = 0) =>
+    nullableModelSchema({ type: 'integer', minimum })
+  const stepSchema: JsonRecord = {
+    type: 'object',
+    properties: {
+      key: modelStringSchema(),
+      type: { enum: [...SUPPORTED_PLAN_NODE_TYPES] },
+      title: modelStringSchema(),
+      expectedOutcome: modelStringSchema(),
+      executorRoleKey: modelStringSchema(),
+      ownerRoleKey: nullableString(),
+      reviewerRoleKeys: modelStringArraySchema(),
+      approverRoleKeys: modelStringArraySchema(),
+      prompt: nullableString(),
+      operation: nullableString(),
+      value: nullableString(),
+      capabilityId: nullableString(),
+      message: nullableString(),
+      delayMs: nullableInteger(),
+      branchCount: nullableInteger(1),
+      concurrencyCap: nullableInteger(1),
+      iterationCap: nullableInteger(1),
+      variableName: nullableString(),
+      joinMode: nullableString(),
+    },
+    required: [
+      'key',
+      'type',
+      'title',
+      'expectedOutcome',
+      'executorRoleKey',
+      'ownerRoleKey',
+      'reviewerRoleKeys',
+      'approverRoleKeys',
+      'prompt',
+      'operation',
+      'value',
+      'capabilityId',
+      'message',
+      'delayMs',
+      'branchCount',
+      'concurrencyCap',
+      'iterationCap',
+      'variableName',
+      'joinMode',
+    ],
+    additionalProperties: false,
+  }
+  const proposalSchema: JsonRecord = {
+    type: 'object',
+    properties: {
+      name: modelStringSchema(),
+      description: modelStringSchema(),
+      goalStatement: modelStringSchema(),
+      expectedOutcome: modelStringSchema(),
+      successCriteria: {
+        ...modelStringArraySchema(),
+        minItems: 1,
+      },
+      roles: { type: 'array', minItems: 1, items: roleSchema },
+      steps: { type: 'array', minItems: 1, items: stepSchema },
+      assumptions: { type: 'array', items: assumptionSchema },
+      warnings: { type: 'array', items: warningSchema },
+    },
+    required: [
+      'name',
+      'description',
+      'goalStatement',
+      'expectedOutcome',
+      'successCriteria',
+      'roles',
+      'steps',
+      'assumptions',
+      'warnings',
+    ],
+    additionalProperties: false,
+  }
+  return {
+    type: 'object',
+    properties: {
+      status: { enum: ['needs_clarification', 'proposed', 'rejected'] },
+      questions: {
+        type: 'array',
+        maxItems: MAX_WORKFLOW_GENERATION_QUESTIONS,
+        items: questionSchema,
+      },
+      assumptions: { type: 'array', items: assumptionSchema },
+      warnings: { type: 'array', items: warningSchema },
+      proposal: nullableModelSchema(proposalSchema),
+      code: nullableModelSchema({ enum: [...BUSINESS_REJECTION_CODES] }),
+      reason: nullableModelSchema(modelStringSchema()),
+    },
+    required: [
+      'status',
+      'questions',
+      'assumptions',
+      'warnings',
+      'proposal',
+      'code',
+      'reason',
+    ],
+    additionalProperties: false,
+  }
+}
+
 function modelSystemPrompt(): string {
-  return `You are Mossen's typed Workflow generation planner. Return one JSON object only.
+  return `You are Mossen's typed Workflow generation planner. Return one JSON object only, matching the supplied JSON Schema exactly.
+
+Always include exactly these root fields: status, questions, assumptions, warnings, proposal, code, reason. Use [] for irrelevant arrays and null for irrelevant proposal/code/reason fields.
+
+Every array must contain only complete values of its declared item type. Never use null, strings, placeholder objects, or partial objects as array items. If you cannot provide every required field of an assumption or warning, return [] for that array. Prefer empty assumptions and warnings over speculative filler.
 
 You never publish, invoke, enable, schedule, send messages, access files, call tools, bind production resources, or claim validation. You receive a public redacted catalog. Every templateRoleId, skillId, capabilityId, providerId, and toolId in your response must exactly exist in that catalog.
 
 Choose exactly one status:
-- needs_clarification: 1-3 structured questions using the requested question contract. Do not repeat answered question IDs.
+- needs_clarification: 1-3 structured questions. Every question must contain non-empty id, path, prompt, and reason plus required, answerType, and options. answerType must be exactly one of short-text, long-text, single-choice, multi-choice, boolean, or number. Use single-choice with complete non-empty id/label options for a role-selection question. A valid role-selection shape is {"id":"approval-role","path":"brief.approvalRole","prompt":"Which role approves?","reason":"Approval ownership changes the workflow gate.","required":true,"answerType":"single-choice","options":[{"id":"operations-owner","label":"Operations owner"}]}. Do not repeat answered question IDs.
 - proposed: a proposal object with name, description, goalStatement, expectedOutcome, successCriteria, roles, steps, assumptions, warnings.
 - rejected: a stable business code and reason.
 
@@ -1226,34 +1479,153 @@ Proposal steps use keys and one of: mossen-call, text-transform, condition, wait
 If a human role is semantically required, keep executorKind human; Mossen will emit an unresolved assignee. Ask only when the missing business decision changes topology or responsibility. Inferred facts must appear in assumptions/warnings. Never return Markdown or fenced JSON.`
 }
 
+type GenerationModelResponse = Awaited<ReturnType<typeof sideQuery>>
+
+function validateModelValueForRepair(
+  value: unknown,
+  request: WorkflowGenerationRequest,
+): void {
+  const parsed = parseModelResult(value, request)
+  if (parsed.status !== 'proposed') return
+  try {
+    materializeProposal(
+      request,
+      parsed.proposal,
+      digest({ requestId: request.requestId, catalogDigest: request.catalog.digest }),
+      '2000-01-01T00:00:00.000Z',
+    )
+  } catch (error) {
+    if (error instanceof InvalidModelOutput) throw error
+    if (!(error instanceof BusinessGenerationRejection)) throw error
+  }
+}
+
+function parseGenerationModelResponse(
+  response: GenerationModelResponse,
+  request: WorkflowGenerationRequest,
+): unknown {
+  if (response.stop_reason === 'max_tokens') {
+    throw new WorkflowGenerationModelOutputError(
+      'model-output-max-tokens',
+      'Workflow generation model stopped at max_tokens before a complete result.',
+      false,
+    )
+  }
+  const text = extractTextContent(response.content, '\n').trim()
+  if (!text) {
+    throw new WorkflowGenerationModelOutputError(
+      'model-output-empty',
+      'Workflow generation model returned no JSON content.',
+      false,
+    )
+  }
+  let value: unknown
+  try {
+    value = JSON.parse(text) as unknown
+  } catch {
+    throw new WorkflowGenerationModelOutputError(
+      'model-output-invalid-json',
+      'Workflow generation model returned non-JSON text.',
+      true,
+      text,
+    )
+  }
+  try {
+    validateModelValueForRepair(value, request)
+  } catch (error) {
+    if (!(error instanceof InvalidModelOutput)) throw error
+    throw new WorkflowGenerationModelOutputError(
+      'model-output-schema-invalid',
+      `Workflow generation model output did not satisfy the typed schema: ${error.message}`,
+      true,
+      text,
+    )
+  }
+  return value
+}
+
+function modelUserPrompt(
+  request: WorkflowGenerationRequest,
+  repair?: WorkflowGenerationModelOutputError,
+): string {
+  const serializedRequest = stableWorkflowPublicationJson(request)
+  if (!repair) {
+    return `Generate the typed semantic plan for this request:\n${serializedRequest}`
+  }
+  const previousOutput = repair.rawText.slice(
+    0,
+    MAX_WORKFLOW_GENERATION_REPAIR_CONTEXT_CHARS,
+  )
+  const collectionRepairDirective = /(?:assumptions|warnings)\[\d+\]/.test(
+    repair.message,
+  )
+    ? 'Required correction: set every assumptions and warnings array at both the root and proposal levels to []. Do not preserve or replace any prior assumption/warning item.'
+    : ''
+  const questionRepairDirective = /questions\[\d+\]/.test(
+    repair.message,
+  )
+    ? 'Required correction: replace the entire questions array with complete question objects; do not preserve placeholder fields. Every item requires non-empty id, path, prompt, reason, required, answerType, and options. answerType must be exactly one of short-text, long-text, single-choice, multi-choice, boolean, or number. For role selection use single-choice. Valid example: {"id":"approval-role","path":"brief.approvalRole","prompt":"Which role approves?","reason":"Approval ownership changes the workflow gate.","required":true,"answerType":"single-choice","options":[{"id":"operations-owner","label":"Operations owner"}]}.'
+    : ''
+  return `Repair the previous Workflow generation response. The original request, requestId, idempotencyKey, catalog, and safety boundary are unchanged. Return one complete JSON object matching the supplied schema. Do not use Markdown, fenced JSON, tools, or lifecycle claims. Every array item must be a complete value of its declared type; never emit null, strings, placeholder objects, or partial objects inside arrays. Use [] when no complete assumption or warning is required.
+
+Validation failure: ${repair.code}: ${repair.message}
+${collectionRepairDirective}
+${questionRepairDirective}
+
+Original request:
+${serializedRequest}
+
+Previous invalid response:
+${previousOutput}`
+}
+
 async function defaultGenerationModel(
   request: WorkflowGenerationRequest,
   signal: AbortSignal,
 ): Promise<unknown> {
-  const response = await sideQuery({
-    model: getDefaultSonnetModel(),
-    system: modelSystemPrompt(),
-    messages: [
-      {
-        role: 'user',
-        content: `Generate the typed semantic plan for this request:\n${stableWorkflowPublicationJson(request)}`,
+  let repair: WorkflowGenerationModelOutputError | undefined
+  for (
+    let attempt = 0;
+    attempt <= MAX_WORKFLOW_GENERATION_MODEL_REPAIR_ATTEMPTS;
+    attempt += 1
+  ) {
+    const response = await sideQuery({
+      model: getDefaultSonnetModel(),
+      system: modelSystemPrompt(),
+      messages: [
+        {
+          role: 'user',
+          content: modelUserPrompt(request, repair),
+        },
+      ],
+      output_format: {
+        type: 'json_schema',
+        name: 'workflow_generation_plan',
+        schema: workflowGenerationModelOutputSchema(),
       },
-    ],
-    max_tokens: 8192,
-    maxRetries: 1,
-    signal,
-    skipSystemPromptPrefix: true,
-    temperature: 0,
-    thinking: false,
-    querySource: 'workflow_generation',
-  })
-  const text = extractTextContent(response.content, '\n').trim()
-  if (!text) throw new InvalidModelOutput('model returned no JSON content.')
-  try {
-    return JSON.parse(text) as unknown
-  } catch {
-    throw new InvalidModelOutput('model returned invalid JSON.')
+      max_tokens: 8192,
+      maxRetries: 1,
+      signal,
+      skipSystemPromptPrefix: true,
+      temperature: 0,
+      thinking: false,
+      querySource: 'workflow_generation',
+    })
+    try {
+      return parseGenerationModelResponse(response, request)
+    } catch (error) {
+      if (
+        error instanceof WorkflowGenerationModelOutputError &&
+        error.repairable &&
+        attempt < MAX_WORKFLOW_GENERATION_MODEL_REPAIR_ATTEMPTS
+      ) {
+        repair = error
+        continue
+      }
+      throw error
+    }
   }
+  throw new Error('Workflow generation repair loop exhausted unexpectedly.')
 }
 
 function catalogMaps(request: WorkflowGenerationRequest): {
@@ -2256,11 +2628,21 @@ export async function generateWorkflowDraft(
         ),
       }
     }
+    if (error instanceof WorkflowGenerationModelOutputError) {
+      return {
+        ok: false,
+        error: workflowGenerationError(
+          error.code,
+          error.message,
+          parsed.request.requestId,
+        ),
+      }
+    }
     if (error instanceof InvalidModelOutput) {
       return {
         ok: false,
         error: workflowGenerationError(
-          'output-contract-invalid',
+          'model-output-schema-invalid',
           error.message,
           parsed.request.requestId,
         ),
@@ -2324,7 +2706,9 @@ export async function generateWorkflowDraft(
       return {
         ok: false,
         error: workflowGenerationError(
-          'output-contract-invalid',
+          error instanceof InvalidModelOutput
+            ? 'model-output-schema-invalid'
+            : 'output-contract-invalid',
           error instanceof Error ? error.message : 'Model output was invalid.',
           parsed.request.requestId,
         ),

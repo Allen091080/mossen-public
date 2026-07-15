@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   generateWorkflowDraft,
+  MAX_WORKFLOW_GENERATION_MODEL_REPAIR_ATTEMPTS,
+  workflowGenerationModelOutputSchema,
   workflowGenerationProtocolDescriptor,
   type WorkflowGenerationModel,
 } from '../generationProtocol.js'
@@ -242,7 +244,8 @@ describe('workflow generation protocol', () => {
         maxInputBytes: 10485760,
         maxClarificationRounds: 3,
         maxQuestionsPerRound: 3,
-        timeoutMs: 120000,
+        timeoutMs: 180000,
+        maxModelOutputRepairAttempts: 1,
       },
       requiredResultEvidence: [
         'requestId',
@@ -251,6 +254,33 @@ describe('workflow generation protocol', () => {
         'mossenVersion',
       ],
     })
+  })
+
+  test('defines one strict root-object model schema and one repair attempt', () => {
+    const schema = workflowGenerationModelOutputSchema()
+    expect(schema).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: [
+        'status',
+        'questions',
+        'assumptions',
+        'warnings',
+        'proposal',
+        'code',
+        'reason',
+      ],
+    })
+    expect(
+      (schema.properties as Record<string, unknown>).status,
+    ).toEqual({ enum: ['needs_clarification', 'proposed', 'rejected'] })
+    const questions = (schema.properties as Record<string, unknown>)
+      .questions as Record<string, unknown>
+    const questionItems = questions.items as Record<string, unknown>
+    expect(
+      (questionItems.properties as Record<string, unknown>).path,
+    ).toEqual({ type: 'string', minLength: 1 })
+    expect(MAX_WORKFLOW_GENERATION_MODEL_REPAIR_ATTEMPTS).toBe(1)
   })
 
   test('returns typed clarification and exact replay without a second model call', async () => {
@@ -520,13 +550,13 @@ describe('workflow generation protocol', () => {
     expect(called).toBe(false)
   })
 
-  test('returns output-contract-invalid for malformed model JSON shape', async () => {
+  test('returns model-output-schema-invalid for malformed model JSON shape', async () => {
     const outcome = await generateWorkflowDraft(generationRequest(), {
       model: async () => ({ status: 'proposed', proposal: {} }),
     })
     expect(outcome).toMatchObject({
       ok: false,
-      error: { code: 'output-contract-invalid' },
+      error: { code: 'model-output-schema-invalid' },
     })
   })
 
@@ -548,7 +578,7 @@ describe('workflow generation protocol', () => {
     })
     expect(outcome).toMatchObject({
       ok: false,
-      error: { code: 'output-contract-invalid' },
+      error: { code: 'model-output-schema-invalid' },
     })
   })
 
@@ -561,7 +591,7 @@ describe('workflow generation protocol', () => {
     })
     expect(outcome).toMatchObject({
       ok: false,
-      error: { code: 'output-contract-invalid' },
+      error: { code: 'model-output-schema-invalid' },
     })
   })
 
