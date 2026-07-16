@@ -1,9 +1,9 @@
 {
   "$comment": "Mossen Distribution Contract v1 — machine-readable single source of truth for the public API surface that cli-harness and other integrators depend on. Edited only via PR; every PR that changes stable_surface must update this file in the same commit (wave_w442 smoke enforces this).",
   "contractVersion": "1.4.0",
-  "mossenVersion": "1.4.1",
-  "mossenCommit": "v1.4.1",
-  "lastUpdated": "2026-07-15",
+  "mossenVersion": "1.4.2",
+  "mossenCommit": "v1.4.2",
+  "lastUpdated": "2026-07-16",
   "$changelog": {
     "1.4.0": "W494 additive side-effect-free typed Workflow generation protocol: model-backed clarification/proposal/rejection, exact catalog grounding, bounded idempotency, and Business Asset v2 candidate materialization without publication or runtime writes.",
     "1.3.0": "W493 additive Published Run artifacts and typed retry lineage: safe structured artifact identities, explicit empty arrays, exact-identity idempotent retry, immutable retryOfRunId, and receipt/query/Workbench reconciliation.",
@@ -13,6 +13,7 @@
     "1.0.0": "Initial contract per Phase 1 W442. cli-harness R7 §5 sign-off; final GA tag locked at v1.0.0 after R10 sign-off."
   },
   "$mossenVersionHistory": {
+    "1.4.2": "Formal patch release for whole-array Workflow Proposal repair and a formal Electron-parent gate requiring three consecutive real glm-5.2 proposed results.",
     "1.4.1": "Formal patch release for Workflow generation structured output and one bounded invalid-JSON/schema repair attempt, with distinct typed model-output failures and real glm-5.2 Electron evidence.",
     "1.4.0": "Formal release of the W494 typed Workflow generation protocol. Five architecture binaries report 1.4.0 and are published as v1.4.0 assets.",
     "1.4.0-dev": "Historical W494 test candidate for the typed Workflow generation protocol; superseded by the formal v1.4.0 release.",
@@ -223,6 +224,10 @@
         "openai_compatible_transport": "response_format.json_schema with strict=true",
         "repairable_failures": ["model-output-invalid-json", "model-output-schema-invalid"],
         "nonrepairable_failures": ["model-output-max-tokens", "model-output-empty"],
+        "proposal_collection_repair": {
+          "role_failure": "Discard and rebuild the complete proposal.roles array and the dependent proposal.steps array.",
+          "step_failure": "Preserve complete roles, then discard and rebuild the complete proposal.steps array."
+        },
         "repair_semantics": "At most one internal repair call reuses the same request, idempotency identity, AbortSignal, total timeout, zero-tool boundary, and zero-business-side-effect boundary."
       },
       "required_result_evidence": ["requestId", "inputDigest", "catalogDigest", "mossenVersion"],

@@ -7,6 +7,7 @@ import {
   MAX_WORKFLOW_GENERATION_MODEL_REPAIR_ATTEMPTS,
   workflowGenerationModelOutputSchema,
   workflowGenerationProtocolDescriptor,
+  workflowGenerationRepairContext,
   type WorkflowGenerationModel,
 } from '../generationProtocol.js'
 import { workflowGenerationCachePath } from '../generationCache.js'
@@ -281,6 +282,50 @@ describe('workflow generation protocol', () => {
       (questionItems.properties as Record<string, unknown>).path,
     ).toEqual({ type: 'string', minLength: 1 })
     expect(MAX_WORKFLOW_GENERATION_MODEL_REPAIR_ATTEMPTS).toBe(1)
+  })
+
+  test('rebuilds malformed proposal role and step arrays as whole units', () => {
+    const raw = JSON.stringify({
+      status: 'proposed',
+      proposal: {
+        roles: [{ key: 'analyst', name: '' }],
+        steps: [{ key: 'draft', title: '' }],
+        assumptions: [],
+        warnings: [],
+      },
+    })
+    const roleRepair = workflowGenerationRepairContext(
+      'proposal.roles[0].name must be a non-empty string.',
+      raw,
+    )
+    expect(roleRepair.scope).toBe('proposal-roles-and-steps-arrays')
+    expect(roleRepair.directive).toContain(
+      'regenerate the entire proposal.roles array and the entire dependent proposal.steps array',
+    )
+    expect(JSON.parse(roleRepair.previousOutput)).toMatchObject({
+      proposal: { roles: [], steps: [] },
+    })
+
+    const stepRepair = workflowGenerationRepairContext(
+      'proposal.steps[0].title must be a non-empty string.',
+      raw,
+    )
+    expect(stepRepair.scope).toBe('proposal-steps-array')
+    expect(stepRepair.directive).toContain(
+      'regenerate the entire proposal.steps array',
+    )
+    expect(JSON.parse(stepRepair.previousOutput)).toMatchObject({
+      proposal: {
+        roles: [{ key: 'analyst', name: '' }],
+        steps: [],
+      },
+    })
+    expect(
+      workflowGenerationRepairContext(
+        'Step draft references unknown executor role analyst.',
+        raw,
+      ).scope,
+    ).toBe('proposal-steps-array')
   })
 
   test('returns typed clarification and exact replay without a second model call', async () => {

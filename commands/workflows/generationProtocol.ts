@@ -516,7 +516,7 @@ function shortId(prefix: string, seed: string, size = 20): string {
 function runtimeVersion(): string {
   return typeof MACRO !== 'undefined' && MACRO.VERSION
     ? MACRO.VERSION
-    : '1.4.1'
+    : '1.4.2'
 }
 
 export function workflowGenerationProtocolDescriptor(): WorkflowGenerationProtocolDescriptor {
@@ -1472,9 +1472,9 @@ Choose exactly one status:
 - proposed: a proposal object with name, description, goalStatement, expectedOutcome, successCriteria, roles, steps, assumptions, warnings.
 - rejected: a stable business code and reason.
 
-Proposal roles use keys and: optional templateRoleId, name, description, executorKind (human or mossen-agent), responsibilities, requiredInputs, expectedOutputs, skillIds, capabilityIds, toolIds, optional systemInstruction. Do not invent assigneeId, agentId, policy, host, root, secret, or target.
+Proposal roles are complete objects. Every role must contain exactly: key, templateRoleId (string or null), name, description, executorKind (human or mossen-agent), responsibilities, requiredInputs, expectedOutputs, skillIds, capabilityIds, toolIds, and systemInstruction (string or null). All required strings are non-empty. A complete untemplated role shape is {"key":"analyst","templateRoleId":null,"name":"Analyst","description":"Produces the draft","executorKind":"mossen-agent","responsibilities":["Produce draft"],"requiredInputs":["Source report"],"expectedOutputs":["Draft report"],"skillIds":[],"capabilityIds":[],"toolIds":[],"systemInstruction":null}. Use only catalog IDs and do not invent assigneeId, agentId, policy, host, root, secret, or target.
 
-Proposal steps use keys and one of: mossen-call, text-transform, condition, wait-delay, loop-foreach, fork-parallel, human-approval, set-variable, join, capability-action. Include title, expectedOutcome, executorRoleKey, optional ownerRoleKey, reviewerRoleKeys, approverRoleKeys, and only the type-specific safe fields. Do not include trigger-manual; Mossen inserts it. capability-action requires an exact catalog capabilityId and must be read/none side effect. External-write, file, HTTP-write, webhook, workflow-call, or scheduled requests must be clarified or rejected, never materialized.
+Proposal steps are complete objects. Every step must contain exactly: key, type, title, expectedOutcome, executorRoleKey, ownerRoleKey, reviewerRoleKeys, approverRoleKeys, prompt, operation, value, capabilityId, message, delayMs, branchCount, concurrencyCap, iterationCap, variableName, and joinMode. Use null for every unused nullable field; never omit it or use an empty-string placeholder. type is one of: mossen-call, text-transform, condition, wait-delay, loop-foreach, fork-parallel, human-approval, set-variable, join, capability-action. A complete mossen-call shape is {"key":"draft","type":"mossen-call","title":"Draft report","expectedOutcome":"A reviewable draft","executorRoleKey":"analyst","ownerRoleKey":"analyst","reviewerRoleKeys":[],"approverRoleKeys":[],"prompt":"Produce the report draft","operation":null,"value":null,"capabilityId":null,"message":null,"delayMs":null,"branchCount":null,"concurrencyCap":null,"iterationCap":null,"variableName":null,"joinMode":null}. Do not include trigger-manual; Mossen inserts it. capability-action requires an exact catalog capabilityId and must be read/none side effect. External-write, file, HTTP-write, webhook, workflow-call, or scheduled requests must be clarified or rejected, never materialized.
 
 If a human role is semantically required, keep executorKind human; Mossen will emit an unresolved assignee. Ask only when the missing business decision changes topology or responsibility. Inferred facts must appear in assumptions/warnings. Never return Markdown or fenced JSON.`
 }
@@ -1544,6 +1544,107 @@ function parseGenerationModelResponse(
   return value
 }
 
+export type WorkflowGenerationRepairScope =
+  | 'generic'
+  | 'assumption-warning-arrays'
+  | 'question-array'
+  | 'proposal-roles-and-steps-arrays'
+  | 'proposal-steps-array'
+
+export type WorkflowGenerationRepairContext = {
+  scope: WorkflowGenerationRepairScope
+  directive: string
+  previousOutput: string
+}
+
+function workflowGenerationRepairScope(
+  message: string,
+): WorkflowGenerationRepairScope {
+  if (
+    /proposal\.roles(?:\[| must)/i.test(message) ||
+    /proposal role keys/i.test(message)
+  ) {
+    return 'proposal-roles-and-steps-arrays'
+  }
+  if (
+    /proposal\.steps(?:\[| must)/i.test(message) ||
+    /proposal step keys/i.test(message) ||
+    /^Step\s.+\sreferences\s/i.test(message)
+  ) {
+    return 'proposal-steps-array'
+  }
+  if (/(?:assumptions|warnings)\[\d+\]/.test(message)) {
+    return 'assumption-warning-arrays'
+  }
+  if (/questions\[\d+\]/.test(message)) return 'question-array'
+  return 'generic'
+}
+
+export function workflowGenerationRepairContext(
+  message: string,
+  rawText: string,
+): WorkflowGenerationRepairContext {
+  const scope = workflowGenerationRepairScope(message)
+  let previousValue: unknown
+  try {
+    previousValue = JSON.parse(rawText) as unknown
+  } catch {
+    previousValue = undefined
+  }
+
+  if (isRecord(previousValue) && isRecord(previousValue.proposal)) {
+    const cloned = structuredClone(previousValue)
+    const proposal = cloned.proposal as JsonRecord
+    if (scope === 'proposal-roles-and-steps-arrays') {
+      proposal.roles = []
+      proposal.steps = []
+    } else if (scope === 'proposal-steps-array') {
+      proposal.steps = []
+    } else if (scope === 'assumption-warning-arrays') {
+      cloned.assumptions = []
+      cloned.warnings = []
+      proposal.assumptions = []
+      proposal.warnings = []
+    }
+    previousValue = cloned
+  }
+
+  const previousOutput = (
+    previousValue === undefined
+      ? rawText
+      : stableWorkflowPublicationJson(previousValue)
+  ).slice(0, MAX_WORKFLOW_GENERATION_REPAIR_CONTEXT_CHARS)
+
+  switch (scope) {
+    case 'proposal-roles-and-steps-arrays':
+      return {
+        scope,
+        previousOutput,
+        directive: 'Required correction: discard and regenerate the entire proposal.roles array and the entire dependent proposal.steps array from the original request and catalog. The previous response below intentionally contains roles=[] and steps=[]; do not reconstruct one field or preserve any prior role/step item. Every new role and step must include every strict-schema property, using null only for unused nullable fields, and every step role key must reference a newly generated role key.',
+      }
+    case 'proposal-steps-array':
+      return {
+        scope,
+        previousOutput,
+        directive: 'Required correction: discard and regenerate the entire proposal.steps array from the original request, catalog, and preserved complete roles. The previous response below intentionally contains steps=[]; do not reconstruct one field or preserve any prior step item. Every new step must include every strict-schema property, using null only for unused nullable fields, and every role key must reference a complete role in proposal.roles.',
+      }
+    case 'assumption-warning-arrays':
+      return {
+        scope,
+        previousOutput,
+        directive: 'Required correction: set every assumptions and warnings array at both the root and proposal levels to []. Do not preserve or replace any prior assumption/warning item.',
+      }
+    case 'question-array':
+      return {
+        scope,
+        previousOutput,
+        directive: 'Required correction: replace the entire questions array with complete question objects; do not preserve placeholder fields. Every item requires non-empty id, path, prompt, reason, required, answerType, and options. answerType must be exactly one of short-text, long-text, single-choice, multi-choice, boolean, or number. For role selection use single-choice. Valid example: {"id":"approval-role","path":"brief.approvalRole","prompt":"Which role approves?","reason":"Approval ownership changes the workflow gate.","required":true,"answerType":"single-choice","options":[{"id":"operations-owner","label":"Operations owner"}]}.',
+      }
+    default:
+      return { scope, previousOutput, directive: '' }
+  }
+}
+
 function modelUserPrompt(
   request: WorkflowGenerationRequest,
   repair?: WorkflowGenerationModelOutputError,
@@ -1552,31 +1653,21 @@ function modelUserPrompt(
   if (!repair) {
     return `Generate the typed semantic plan for this request:\n${serializedRequest}`
   }
-  const previousOutput = repair.rawText.slice(
-    0,
-    MAX_WORKFLOW_GENERATION_REPAIR_CONTEXT_CHARS,
-  )
-  const collectionRepairDirective = /(?:assumptions|warnings)\[\d+\]/.test(
+  const repairContext = workflowGenerationRepairContext(
     repair.message,
+    repair.rawText,
   )
-    ? 'Required correction: set every assumptions and warnings array at both the root and proposal levels to []. Do not preserve or replace any prior assumption/warning item.'
-    : ''
-  const questionRepairDirective = /questions\[\d+\]/.test(
-    repair.message,
-  )
-    ? 'Required correction: replace the entire questions array with complete question objects; do not preserve placeholder fields. Every item requires non-empty id, path, prompt, reason, required, answerType, and options. answerType must be exactly one of short-text, long-text, single-choice, multi-choice, boolean, or number. For role selection use single-choice. Valid example: {"id":"approval-role","path":"brief.approvalRole","prompt":"Which role approves?","reason":"Approval ownership changes the workflow gate.","required":true,"answerType":"single-choice","options":[{"id":"operations-owner","label":"Operations owner"}]}.'
-    : ''
   return `Repair the previous Workflow generation response. The original request, requestId, idempotencyKey, catalog, and safety boundary are unchanged. Return one complete JSON object matching the supplied schema. Do not use Markdown, fenced JSON, tools, or lifecycle claims. Every array item must be a complete value of its declared type; never emit null, strings, placeholder objects, or partial objects inside arrays. Use [] when no complete assumption or warning is required.
 
 Validation failure: ${repair.code}: ${repair.message}
-${collectionRepairDirective}
-${questionRepairDirective}
+Repair scope: ${repairContext.scope}
+${repairContext.directive}
 
 Original request:
 ${serializedRequest}
 
 Previous invalid response:
-${previousOutput}`
+${repairContext.previousOutput}`
 }
 
 async function defaultGenerationModel(

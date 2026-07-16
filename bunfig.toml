@@ -1,5 +1,5 @@
 [define]
-"MACRO.VERSION" = "\"1.4.1\""
+"MACRO.VERSION" = "\"1.4.2\""
 "MACRO.BUILD_TIME" = "\"2026-04-18T00:00:00.000Z\""
 "MACRO.PACKAGE_URL" = "\"@mossen/mossen-code\""
 "MACRO.NATIVE_PACKAGE_URL" = "\"@mossen/mossen-code\""
