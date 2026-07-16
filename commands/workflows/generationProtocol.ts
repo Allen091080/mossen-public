@@ -17,7 +17,9 @@ export const WORKFLOW_GENERATION_PROTOCOL_VERSION = 1 as const
 export const MAX_WORKFLOW_GENERATION_INPUT_BYTES = 10 * 1024 * 1024
 export const MAX_WORKFLOW_GENERATION_CLARIFICATION_ROUNDS = 3
 export const MAX_WORKFLOW_GENERATION_QUESTIONS = 3
-export const DEFAULT_WORKFLOW_GENERATION_TIMEOUT_MS = 180_000
+export const DEFAULT_WORKFLOW_GENERATION_TIMEOUT_MS = 370_000
+export const DEFAULT_WORKFLOW_GENERATION_INITIAL_MODEL_TIMEOUT_MS = 180_000
+export const DEFAULT_WORKFLOW_GENERATION_REPAIR_MODEL_TIMEOUT_MS = 180_000
 export const MAX_WORKFLOW_GENERATION_MODEL_REPAIR_ATTEMPTS = 1
 
 const MAX_WORKFLOW_GENERATION_REPAIR_CONTEXT_CHARS = 32_768
@@ -229,7 +231,9 @@ export type WorkflowGenerationProtocolDescriptor = {
     maxInputBytes: 10485760
     maxClarificationRounds: 3
     maxQuestionsPerRound: 3
-    timeoutMs: 180000
+    timeoutMs: 370000
+    initialModelTimeoutMs: 180000
+    repairModelTimeoutMs: 180000
     maxModelOutputRepairAttempts: 1
   }
   requiredResultEvidence: [
@@ -441,6 +445,61 @@ class WorkflowGenerationModelOutputError extends Error {
   }
 }
 
+export type WorkflowGenerationModelAttempt = 'initial' | 'repair'
+
+export class WorkflowGenerationModelAttemptTimeout extends Error {
+  constructor(
+    readonly attempt: WorkflowGenerationModelAttempt,
+    readonly timeoutMs: number,
+  ) {
+    super(`Workflow generation ${attempt} model attempt exceeded ${timeoutMs} ms.`)
+    this.name = 'WorkflowGenerationModelAttemptTimeout'
+  }
+}
+
+export async function runWorkflowGenerationModelAttempt<T>({
+  attempt,
+  parentSignal,
+  timeoutMs,
+  run,
+}: {
+  attempt: WorkflowGenerationModelAttempt
+  parentSignal: AbortSignal
+  timeoutMs: number
+  run: (signal: AbortSignal) => Promise<T>
+}): Promise<T> {
+  const controller = new AbortController()
+  let timedOut = false
+  const abortFromParent = () => controller.abort(parentSignal.reason)
+  if (parentSignal.aborted) {
+    abortFromParent()
+  } else {
+    parentSignal.addEventListener('abort', abortFromParent, { once: true })
+  }
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort(
+      new WorkflowGenerationModelAttemptTimeout(attempt, timeoutMs),
+    )
+  }, timeoutMs)
+  timer.unref?.()
+  try {
+    const value = await run(controller.signal)
+    if (timedOut) {
+      throw new WorkflowGenerationModelAttemptTimeout(attempt, timeoutMs)
+    }
+    return value
+  } catch (error) {
+    if (timedOut) {
+      throw new WorkflowGenerationModelAttemptTimeout(attempt, timeoutMs)
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+    parentSignal.removeEventListener('abort', abortFromParent)
+  }
+}
+
 class BusinessGenerationRejection extends Error {
   constructor(
     readonly code:
@@ -516,7 +575,7 @@ function shortId(prefix: string, seed: string, size = 20): string {
 function runtimeVersion(): string {
   return typeof MACRO !== 'undefined' && MACRO.VERSION
     ? MACRO.VERSION
-    : '1.4.2'
+    : '1.4.3'
 }
 
 export function workflowGenerationProtocolDescriptor(): WorkflowGenerationProtocolDescriptor {
@@ -538,7 +597,11 @@ export function workflowGenerationProtocolDescriptor(): WorkflowGenerationProtoc
       maxInputBytes: 10485760,
       maxClarificationRounds: 3,
       maxQuestionsPerRound: 3,
-      timeoutMs: 180000,
+      timeoutMs: DEFAULT_WORKFLOW_GENERATION_TIMEOUT_MS,
+      initialModelTimeoutMs:
+        DEFAULT_WORKFLOW_GENERATION_INITIAL_MODEL_TIMEOUT_MS,
+      repairModelTimeoutMs:
+        DEFAULT_WORKFLOW_GENERATION_REPAIR_MODEL_TIMEOUT_MS,
       maxModelOutputRepairAttempts: 1,
     },
     requiredResultEvidence: [
@@ -1680,27 +1743,38 @@ async function defaultGenerationModel(
     attempt <= MAX_WORKFLOW_GENERATION_MODEL_REPAIR_ATTEMPTS;
     attempt += 1
   ) {
-    const response = await sideQuery({
-      model: getDefaultSonnetModel(),
-      system: modelSystemPrompt(),
-      messages: [
-        {
-          role: 'user',
-          content: modelUserPrompt(request, repair),
-        },
-      ],
-      output_format: {
-        type: 'json_schema',
-        name: 'workflow_generation_plan',
-        schema: workflowGenerationModelOutputSchema(),
-      },
-      max_tokens: 8192,
-      maxRetries: 1,
-      signal,
-      skipSystemPromptPrefix: true,
-      temperature: 0,
-      thinking: false,
-      querySource: 'workflow_generation',
+    const modelAttempt = attempt === 0 ? 'initial' : 'repair'
+    const modelAttemptTimeoutMs =
+      modelAttempt === 'initial'
+        ? DEFAULT_WORKFLOW_GENERATION_INITIAL_MODEL_TIMEOUT_MS
+        : DEFAULT_WORKFLOW_GENERATION_REPAIR_MODEL_TIMEOUT_MS
+    const response = await runWorkflowGenerationModelAttempt({
+      attempt: modelAttempt,
+      parentSignal: signal,
+      timeoutMs: modelAttemptTimeoutMs,
+      run: attemptSignal =>
+        sideQuery({
+          model: getDefaultSonnetModel(),
+          system: modelSystemPrompt(),
+          messages: [
+            {
+              role: 'user',
+              content: modelUserPrompt(request, repair),
+            },
+          ],
+          output_format: {
+            type: 'json_schema',
+            name: 'workflow_generation_plan',
+            schema: workflowGenerationModelOutputSchema(),
+          },
+          max_tokens: 8192,
+          maxRetries: 1,
+          signal: attemptSignal,
+          skipSystemPromptPrefix: true,
+          temperature: 0,
+          thinking: false,
+          querySource: 'workflow_generation',
+        }),
     })
     try {
       return parseGenerationModelResponse(response, request)
@@ -2597,6 +2671,21 @@ function isAbortError(error: unknown): boolean {
   )
 }
 
+function workflowGenerationOperationTimeoutMs(explicit?: number): number {
+  if (explicit !== undefined) return explicit
+  if (process.env.MOSSEN_WORKFLOW_GENERATION_TEST_MODE !== '1') {
+    return DEFAULT_WORKFLOW_GENERATION_TIMEOUT_MS
+  }
+  const testTimeoutMs = Number(
+    process.env.MOSSEN_WORKFLOW_GENERATION_TEST_OPERATION_TIMEOUT_MS,
+  )
+  return Number.isInteger(testTimeoutMs) &&
+    testTimeoutMs > 0 &&
+    testTimeoutMs <= DEFAULT_WORKFLOW_GENERATION_TIMEOUT_MS
+    ? testTimeoutMs
+    : DEFAULT_WORKFLOW_GENERATION_TIMEOUT_MS
+}
+
 export async function generateWorkflowDraft(
   value: unknown,
   options: {
@@ -2694,7 +2783,7 @@ export async function generateWorkflowDraft(
   activeGenerationAbortController = controller
   installGenerationSignalHandler()
   let timedOut = false
-  const timeoutMs = options.timeoutMs ?? DEFAULT_WORKFLOW_GENERATION_TIMEOUT_MS
+  const timeoutMs = workflowGenerationOperationTimeoutMs(options.timeoutMs)
   const timer = setTimeout(() => {
     timedOut = true
     controller.abort()
@@ -2725,6 +2814,16 @@ export async function generateWorkflowDraft(
         error: workflowGenerationError(
           error.code,
           error.message,
+          parsed.request.requestId,
+        ),
+      }
+    }
+    if (error instanceof WorkflowGenerationModelAttemptTimeout) {
+      return {
+        ok: false,
+        error: workflowGenerationError(
+          'generation-timeout',
+          `${error.message} The total operation budget is ${timeoutMs} ms.`,
           parsed.request.requestId,
         ),
       }

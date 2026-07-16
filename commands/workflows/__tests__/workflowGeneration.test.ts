@@ -3,8 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
+  DEFAULT_WORKFLOW_GENERATION_INITIAL_MODEL_TIMEOUT_MS,
+  DEFAULT_WORKFLOW_GENERATION_REPAIR_MODEL_TIMEOUT_MS,
+  DEFAULT_WORKFLOW_GENERATION_TIMEOUT_MS,
   generateWorkflowDraft,
   MAX_WORKFLOW_GENERATION_MODEL_REPAIR_ATTEMPTS,
+  runWorkflowGenerationModelAttempt,
   workflowGenerationModelOutputSchema,
   workflowGenerationProtocolDescriptor,
   workflowGenerationRepairContext,
@@ -245,7 +249,9 @@ describe('workflow generation protocol', () => {
         maxInputBytes: 10485760,
         maxClarificationRounds: 3,
         maxQuestionsPerRound: 3,
-        timeoutMs: 180000,
+        timeoutMs: 370000,
+        initialModelTimeoutMs: 180000,
+        repairModelTimeoutMs: 180000,
         maxModelOutputRepairAttempts: 1,
       },
       requiredResultEvidence: [
@@ -282,6 +288,53 @@ describe('workflow generation protocol', () => {
       (questionItems.properties as Record<string, unknown>).path,
     ).toEqual({ type: 'string', minLength: 1 })
     expect(MAX_WORKFLOW_GENERATION_MODEL_REPAIR_ATTEMPTS).toBe(1)
+  })
+
+  test('allocates fresh bounded budgets to initial and repair model attempts', async () => {
+    expect(DEFAULT_WORKFLOW_GENERATION_TIMEOUT_MS).toBe(370000)
+    expect(DEFAULT_WORKFLOW_GENERATION_INITIAL_MODEL_TIMEOUT_MS).toBe(180000)
+    expect(DEFAULT_WORKFLOW_GENERATION_REPAIR_MODEL_TIMEOUT_MS).toBe(180000)
+    expect(DEFAULT_WORKFLOW_GENERATION_TIMEOUT_MS).toBeGreaterThan(
+      DEFAULT_WORKFLOW_GENERATION_INITIAL_MODEL_TIMEOUT_MS +
+        DEFAULT_WORKFLOW_GENERATION_REPAIR_MODEL_TIMEOUT_MS,
+    )
+
+    const parent = new AbortController()
+    const completed: string[] = []
+    for (const attempt of ['initial', 'repair'] as const) {
+      completed.push(
+        await runWorkflowGenerationModelAttempt({
+          attempt,
+          parentSignal: parent.signal,
+          timeoutMs: 100,
+          run: async () => {
+            await new Promise(resolve => setTimeout(resolve, 60))
+            return attempt
+          },
+        }),
+      )
+    }
+    expect(completed).toEqual(['initial', 'repair'])
+
+    await expect(
+      runWorkflowGenerationModelAttempt({
+        attempt: 'repair',
+        parentSignal: parent.signal,
+        timeoutMs: 5,
+        run: async signal =>
+          await new Promise((_resolve, reject) => {
+            signal.addEventListener(
+              'abort',
+              () => reject(new DOMException('aborted', 'AbortError')),
+              { once: true },
+            )
+          }),
+      }),
+    ).rejects.toMatchObject({
+      name: 'WorkflowGenerationModelAttemptTimeout',
+      attempt: 'repair',
+      timeoutMs: 5,
+    })
   })
 
   test('rebuilds malformed proposal role and step arrays as whole units', () => {
