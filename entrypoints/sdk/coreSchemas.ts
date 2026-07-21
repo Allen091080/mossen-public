@@ -1442,6 +1442,33 @@ export const SDKPermissionDenialSchema = lazySchema(() =>
   }),
 )
 
+export const AgentSkillPreloadEvidenceSchema = lazySchema(() =>
+  z
+    .object({
+      agentType: z.string(),
+      requestedSkillIds: z.array(z.string()),
+      resolvedSkillIds: z.array(z.string()),
+      preloadedSkillIds: z.array(z.string()),
+    })
+    .describe(
+      'Evidence that explicit AgentDefinition.skills were resolved and injected into the public main-thread Agent context before its first model turn.',
+    ),
+)
+
+export const AgentSkillPreloadFailureSchema = lazySchema(() =>
+  z.object({
+    skillId: z.string(),
+    reason: z.enum(['not_found', 'not_prompt', 'load_failed']),
+  }),
+)
+
+export const AgentSkillPreloadErrorEvidenceSchema = lazySchema(() =>
+  AgentSkillPreloadEvidenceSchema().extend({
+    failedSkillIds: z.array(z.string()),
+    failures: z.array(AgentSkillPreloadFailureSchema()),
+  }),
+)
+
 export const SDKResultSuccessSchema = lazySchema(() =>
   z.object({
     type: z.literal('result'),
@@ -1457,6 +1484,7 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     modelUsage: z.record(z.string(), ModelUsageSchema()),
     permission_denials: z.array(SDKPermissionDenialSchema()),
     structured_output: z.unknown().optional(),
+    agentSkillPreload: AgentSkillPreloadEvidenceSchema().optional(),
     fast_mode_state: FastModeStateSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -1482,6 +1510,8 @@ export const SDKResultErrorSchema = lazySchema(() =>
     modelUsage: z.record(z.string(), ModelUsageSchema()),
     permission_denials: z.array(SDKPermissionDenialSchema()),
     errors: z.array(z.string()),
+    errorCode: z.literal('agent_skill_preload_failed').optional(),
+    agentSkillPreload: AgentSkillPreloadErrorEvidenceSchema().optional(),
     fast_mode_state: FastModeStateSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -1513,6 +1543,7 @@ export const SDKSystemMessageSchema = lazySchema(() =>
     slash_commands: z.array(z.string()),
     output_style: z.string(),
     skills: z.array(z.string()),
+    agentSkillPreload: AgentSkillPreloadEvidenceSchema().optional(),
     plugins: z.array(
       z.object({
         name: z.string(),

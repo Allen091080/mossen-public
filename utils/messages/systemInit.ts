@@ -13,6 +13,7 @@ import {
   AGENT_TOOL_NAME,
   LEGACY_AGENT_TOOL_NAME,
 } from 'src/tools/AgentTool/constants.js'
+import type { AgentSkillPreloadEvidence } from 'src/tools/AgentTool/agentSkillPreload.js'
 import { getMossenApiKeyWithSource } from '../auth.js'
 import { getCwd } from '../cwd.js'
 import { getFastModeState } from '../fastMode.js'
@@ -125,6 +126,8 @@ export type SystemInitInputs = {
   // system prompt this turn. Optional — older callers don't need to pass it
   // and the wire field is omitted when undefined / empty.
   memoryFiles?: ReadonlyArray<MemoryFileLoadInfo>
+  /** Evidence for explicit main-thread AgentDefinition.skills preloading. */
+  agentSkillPreload?: AgentSkillPreloadEvidence
 }
 
 /**
@@ -187,6 +190,7 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
       path: plugin.path,
       source: plugin.source,
     })),
+    agentSkillPreload: inputs.agentSkillPreload,
     uuid: randomUUID(),
   }
   // Emit memory_files only when there's actual content to attribute, so the

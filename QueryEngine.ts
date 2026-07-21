@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import { randomUUID } from 'crypto'
 import last from 'lodash-es/last.js'
 import {
+  getMainThreadAgentType,
   getSessionId,
   isSessionPersistenceDisabled,
 } from 'src/bootstrap/state.js'
@@ -39,6 +40,12 @@ import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
+import {
+  AgentSkillPreloadError,
+  getAgentSkillPreloadStateKey,
+  preloadAgentSkills,
+  type AgentSkillPreloadState,
+} from './tools/AgentTool/agentSkillPreload.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import type { Message } from './types/message.js'
 import type { OrphanedPermission } from './types/textInputTypes.js'
@@ -157,6 +164,12 @@ export type QueryEngineConfig = {
   setSDKStatus?: (status: SDKStatus) => void
   abortController?: AbortController
   orphanedPermission?: OrphanedPermission
+  /**
+   * Mutable session-level state shared by ask() calls in bidirectional
+   * stream-json mode. QueryEngine instances created directly fall back to a
+   * private state object and therefore still preload at most once per engine.
+   */
+  mainThreadAgentSkillPreloadState?: AgentSkillPreloadState
   queryDeps?: QueryDeps
   /**
    * Snip-boundary handler: receives each yielded system message plus the
@@ -193,6 +206,7 @@ export class QueryEngine {
   private hasHandledOrphanedPermission = false
   private readFileState: FileStateCache
   private loadedNestedMemoryPaths = new Set<string>()
+  private mainThreadAgentSkillPreloadState: AgentSkillPreloadState
 
   constructor(config: QueryEngineConfig) {
     this.config = config
@@ -201,6 +215,8 @@ export class QueryEngine {
     this.permissionDenials = []
     this.readFileState = config.readFileCache
     this.totalUsage = EMPTY_USAGE
+    this.mainThreadAgentSkillPreloadState =
+      config.mainThreadAgentSkillPreloadState ?? {}
   }
 
   async *submitMessage(
@@ -391,6 +407,72 @@ export class QueryEngine {
       setSDKStatus,
     }
 
+    // Public main-thread Agents must honor AgentDefinition.skills before the
+    // first provider turn. This deliberately uses the same resolver/loader as
+    // delegated Agents but runs in strict mode: any missing, non-prompt, or
+    // unreadable skill returns typed evidence without issuing a model request.
+    const mainThreadAgentType = getMainThreadAgentType()
+    const mainThreadAgent = mainThreadAgentType
+      ? agents.find(agent => agent.agentType === mainThreadAgentType)
+      : undefined
+    if (mainThreadAgent) {
+      const preloadKey = getAgentSkillPreloadStateKey(mainThreadAgent)
+      if (this.mainThreadAgentSkillPreloadState.key !== preloadKey) {
+        try {
+          const { messages: preloadMessages, evidence } =
+            await preloadAgentSkills({
+              agentDefinition: mainThreadAgent,
+              toolUseContext: processUserInputContext,
+              strict: true,
+            })
+          this.mutableMessages.push(...preloadMessages)
+          this.mainThreadAgentSkillPreloadState.key = preloadKey
+          this.mainThreadAgentSkillPreloadState.evidence = evidence
+        } catch (error) {
+          const preloadError =
+            error instanceof AgentSkillPreloadError
+              ? error
+              : new AgentSkillPreloadError(mainThreadAgent.agentType, {
+                  agentType: mainThreadAgent.agentType,
+                  requestedSkillIds: [...(mainThreadAgent.skills ?? [])],
+                  resolvedSkillIds: [],
+                  preloadedSkillIds: [],
+                  failedSkillIds: [...(mainThreadAgent.skills ?? [])],
+                  failures: (mainThreadAgent.skills ?? []).map(skillId => ({
+                    skillId,
+                    reason: 'load_failed' as const,
+                  })),
+                })
+          yield {
+            type: 'result',
+            subtype: 'error_during_execution',
+            duration_ms: Date.now() - startTime,
+            duration_api_ms: getTotalAPIDuration(),
+            is_error: true,
+            num_turns: 0,
+            stop_reason: null,
+            session_id: getSessionId(),
+            total_cost_usd: getTotalCost(),
+            usage: this.totalUsage,
+            modelUsage: getModelUsage(),
+            permission_denials: this.permissionDenials,
+            fast_mode_state: getFastModeState(
+              initialMainLoopModel,
+              initialAppState.fastMode,
+            ),
+            uuid: randomUUID(),
+            errors: [preloadError.message],
+            errorCode: preloadError.code,
+            agentSkillPreload: preloadError.evidence,
+          }
+          return
+        }
+      }
+    } else {
+      this.mainThreadAgentSkillPreloadState.key = undefined
+      this.mainThreadAgentSkillPreloadState.evidence = undefined
+    }
+
     // Handle orphaned permission (only once per engine lifetime)
     if (orphanedPermission && !this.hasHandledOrphanedPermission) {
       this.hasHandledOrphanedPermission = true
@@ -547,6 +629,7 @@ export class QueryEngine {
       plugins: enabledPlugins,
       fastMode: initialAppState.fastMode,
       memoryFiles,
+      agentSkillPreload: this.mainThreadAgentSkillPreloadState.evidence,
     })
 
     // Record when system message is yielded for headless latency tracking
@@ -628,6 +711,7 @@ export class QueryEngine {
         usage: this.totalUsage,
         modelUsage: getModelUsage(),
         permission_denials: this.permissionDenials,
+        agentSkillPreload: this.mainThreadAgentSkillPreloadState.evidence,
         fast_mode_state: getFastModeState(
           mainLoopModel,
           initialAppState.fastMode,
@@ -1164,6 +1248,7 @@ export class QueryEngine {
       modelUsage: getModelUsage(),
       permission_denials: this.permissionDenials,
       structured_output: structuredOutputFromTool,
+      agentSkillPreload: this.mainThreadAgentSkillPreloadState.evidence,
       fast_mode_state: getFastModeState(
         mainLoopModel,
         initialAppState.fastMode,
@@ -1231,6 +1316,7 @@ export async function* ask({
   agents = [],
   setSDKStatus,
   orphanedPermission,
+  mainThreadAgentSkillPreloadState,
 }: {
   commands: Command[]
   prompt: string | Array<ContentBlockParam>
@@ -1262,6 +1348,7 @@ export async function* ask({
   agents?: AgentDefinition[]
   setSDKStatus?: (status: SDKStatus) => void
   orphanedPermission?: OrphanedPermission
+  mainThreadAgentSkillPreloadState?: AgentSkillPreloadState
 }): AsyncGenerator<SDKMessage, void, unknown> {
   const engine = new QueryEngine({
     cwd,
@@ -1290,6 +1377,7 @@ export async function* ask({
     setSDKStatus,
     abortController,
     orphanedPermission,
+    mainThreadAgentSkillPreloadState,
     ...(feature('HISTORY_SNIP')
       ? {
           snipReplay: (yielded: Message, store: Message[]) => {

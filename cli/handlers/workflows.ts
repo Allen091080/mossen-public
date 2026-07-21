@@ -32,6 +32,7 @@ import { publishWorkflowDraft } from '../../commands/workflows/publicationRegist
 import { writeToStdoutAndWait } from '../../utils/process.js'
 import {
   cancelPublishedWorkflowRun,
+  decidePublishedWorkflowRun,
   enablePublishedWorkflow,
   invokePublishedWorkflow,
   queryPublishedWorkflowRun,
@@ -222,6 +223,7 @@ export async function workflowsHandler(
     'retry-published-run',
     'query-published-run',
     'cancel-published-run',
+    'decide-published-run',
   ]
   if (options.operation && !operations.includes(options.operation)) {
     console.error(`Unknown workflows operation: ${options.operation}`)
@@ -264,7 +266,8 @@ export async function workflowsHandler(
     options.operation === 'run-published' ||
     options.operation === 'retry-published-run' ||
     options.operation === 'query-published-run' ||
-    options.operation === 'cancel-published-run'
+    options.operation === 'cancel-published-run' ||
+    options.operation === 'decide-published-run'
   ) {
     try {
       const input = await readWorkflowPublicationInput(options)
@@ -277,7 +280,9 @@ export async function workflowsHandler(
               ? await retryPublishedWorkflowRun(input)
             : options.operation === 'query-published-run'
               ? queryPublishedWorkflowRun(input)
-              : await cancelPublishedWorkflowRun(input)
+              : options.operation === 'cancel-published-run'
+                ? await cancelPublishedWorkflowRun(input)
+                : await decidePublishedWorkflowRun(input)
       await printPublishedWorkflowOperation(result)
     } catch (error) {
       await printWorkflowPublicationProtocolError(error)

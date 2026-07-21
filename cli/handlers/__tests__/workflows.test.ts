@@ -337,6 +337,49 @@ describe('workflowRunToJson', () => {
 })
 
 describe('workflow CLI handlers', () => {
+  test('routes decide-published-run and keeps malformed stdin on stdout JSON', async () => {
+    const priorStdout = process.stdout
+    const priorConsole = globalThis.console
+    const priorExitCode = process.exitCode
+    const logs: string[] = []
+    const errors: string[] = []
+    try {
+      const stdout = captureStream(logs)
+      Object.defineProperty(process, 'stdout', {
+        value: stdout,
+        configurable: true,
+      })
+      globalThis.console = new Console({
+        stdout,
+        stderr: captureStream(errors),
+      }) as unknown as typeof globalThis.console
+      process.exitCode = undefined
+
+      await workflowsHandler({
+        operation: 'decide-published-run',
+        json: true,
+        stdin: true,
+        inputText: '{ malformed',
+      })
+
+      expect(errors).toEqual([])
+      expect(JSON.parse(logs.join(''))).toMatchObject({
+        version: 1,
+        surface: 'workflow-publication-error',
+        status: 'failed',
+        code: 'invalid_input',
+      })
+      expect(process.exitCode).toBe(1)
+    } finally {
+      Object.defineProperty(process, 'stdout', {
+        value: priorStdout,
+        configurable: true,
+      })
+      globalThis.console = priorConsole
+      process.exitCode = priorExitCode ?? 0
+    }
+  })
+
   test('can read workflow runs from an explicit session id', async () => {
     const priorSession = getSessionId()
     const priorConfigDir = process.env.MOSSEN_CONFIG_DIR

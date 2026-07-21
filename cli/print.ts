@@ -41,6 +41,7 @@ import {
   isBuiltInAgent,
   parseAgentsFromJson,
 } from 'src/tools/AgentTool/loadAgentsDir.js'
+import type { AgentSkillPreloadState } from 'src/tools/AgentTool/agentSkillPreload.js'
 import type { Message, NormalizedUserMessage } from 'src/types/message.js'
 import type { QueuedCommand } from 'src/types/textInputTypes.js'
 import {
@@ -1353,6 +1354,10 @@ function runHeadlessStreaming(
   // include Assistant, User, Attachment, and Progress messages.
   // TODO: Clean up this code to avoid passing around a mutable array.
   const mutableMessages: Message[] = initialMessages
+  // QueryEngine is recreated for each queued stream-json turn. Keep this
+  // mutable state beside the shared transcript so one selected Agent's skills
+  // are injected exactly once for the session instead of once per ask().
+  const mainThreadAgentSkillPreloadState: AgentSkillPreloadState = {}
 
   // Seed the readFileState cache from the transcript (content the model saw,
   // with message timestamps) so getChangedFiles can detect external edits.
@@ -2371,6 +2376,7 @@ function runHeadlessStreaming(
                   'elicitationId' in params ? params.elicitationId : undefined,
                 ),
               agents: currentAgents,
+              mainThreadAgentSkillPreloadState,
               orphanedPermission: cmd.orphanedPermission,
               setSDKStatus: status => {
                 output.enqueue({

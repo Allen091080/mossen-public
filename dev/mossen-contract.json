@@ -1,10 +1,12 @@
 {
   "$comment": "Mossen Distribution Contract v1 — machine-readable single source of truth for the public API surface that cli-harness and other integrators depend on. Edited only via PR; every PR that changes stable_surface must update this file in the same commit (wave_w442 smoke enforces this).",
-  "contractVersion": "1.4.0",
-  "mossenVersion": "1.4.3",
-  "mossenCommit": "v1.4.3",
-  "lastUpdated": "2026-07-16",
+  "contractVersion": "1.6.0",
+  "mossenVersion": "1.6.0",
+  "mossenCommit": "v1.6.0-local",
+  "lastUpdated": "2026-07-21",
   "$changelog": {
+    "1.6.0": "W499 additive strict Published Run runtime projections, occurrence-stable waits, idempotent atomic decision/resume, actual Mossen Agent Skill/Tool execution evidence, revision serialization, and write-ahead unknown-outcome protection.",
+    "1.5.0": "W498 additive main-thread Agent Skill preload evidence plus typed fail-closed startup errors; explicit project Agent Skills remain available under --bare without ambient Skill discovery or tool widening.",
     "1.4.0": "W494 additive side-effect-free typed Workflow generation protocol: model-backed clarification/proposal/rejection, exact catalog grounding, bounded idempotency, and Business Asset v2 candidate materialization without publication or runtime writes.",
     "1.3.0": "W493 additive Published Run artifacts and typed retry lineage: safe structured artifact identities, explicit empty arrays, exact-identity idempotent retry, immutable retryOfRunId, and receipt/query/Workbench reconciliation.",
     "1.2.0": "W492 additive typed Workflow enable/invoke/query/cancel protocol with exact publication identity, idempotent authoritative runId, step evidence, approval/permission waits, cancellation receipts, and Workbench run reconciliation.",
@@ -13,6 +15,8 @@
     "1.0.0": "Initial contract per Phase 1 W442. cli-harness R7 §5 sign-off; final GA tag locked at v1.0.0 after R10 sign-off."
   },
   "$mossenVersionHistory": {
+    "1.6.0": "Local formal R12 compatibility build: public Published Runs can freeze Mossen Agent execution grants, accept exact approval/permission decisions, resume across repeated Tool waits, and reconcile immutable runtime evidence without replaying uncertain side effects.",
+    "1.5.0": "Local formal R11 compatibility build: public main-thread --agents + --agent preloads AgentDefinition.skills before the first model turn in print and stream-json modes, emits typed evidence, and fails closed before provider access.",
     "1.4.3": "Formal R6 timeout-capacity patch: a 370000 ms operation deadline, independent bounded 180000 ms initial/repair model budgets, complete typed timeout stdout, and Desktop-sized real glm-5.2 Electron evidence.",
     "1.4.2": "Formal patch release for whole-array Workflow Proposal repair and a formal Electron-parent gate requiring three consecutive real glm-5.2 proposed results.",
     "1.4.1": "Formal patch release for Workflow generation structured output and one bounded invalid-JSON/schema repair attempt, with distinct typed model-output failures and real glm-5.2 Electron evidence.",
@@ -83,6 +87,19 @@
         },
         "emit_sites":  "QueryEngine.ts — 8 push-sites on the in-flight result accumulator",
         "consumer_note": "cli-harness Memory pane / permission audit log iterates this array after stream completion to surface denied operations to the user. R8 §2 confirms this is the correct integration point."
+      },
+      "result_agent_skill_preload_failure": {
+        "location": "result.agentSkillPreload",
+        "when": "result.errorCode=agent_skill_preload_failed",
+        "fields": ["agentType", "requestedSkillIds", "resolvedSkillIds", "preloadedSkillIds", "failedSkillIds", "failures"],
+        "provider_request_count": 0,
+        "since": "1.5.0"
+      },
+      "result_agent_skill_preload_success": {
+        "location": "result.agentSkillPreload",
+        "when": "result.subtype=success and a main-thread Agent is selected",
+        "fields": ["agentType", "requestedSkillIds", "resolvedSkillIds", "preloadedSkillIds"],
+        "since": "1.5.0"
       }
     },
 
@@ -97,6 +114,7 @@
       "tools":              { "type": "string[]", "since": "1.0.0" },
       "agents":             { "type": "string[]", "since": "1.0.0" },
       "skills":             { "type": "string[]", "since": "1.0.0" },
+      "agentSkillPreload":  { "type": "{ agentType: string, requestedSkillIds: string[], resolvedSkillIds: string[], preloadedSkillIds: string[] }?", "since": "1.5.0", "optional": true },
       "plugins":            { "type": "{ name: string, path: string, source?: string }[]", "since": "1.0.0" },
       "model":              { "type": "string", "since": "1.0.0" },
       "permissionMode":     { "type": "PermissionMode (already camel)", "since": "1.0.0" },
@@ -127,7 +145,7 @@
     },
 
     "workflow_publication_protocol": {
-      "$comment": "W490 / cli-harness R4 2026-07-10 addendum. This is a typed CLI JSON boundary; Desktop must not import Mossen source or write the registry.",
+      "$comment": "W490-W499 / cli-harness R4-R12 addenda. This is a typed CLI JSON boundary; Desktop must not import Mossen source or write the registry.",
       "version": 1,
       "surface": "workflow-publication-protocol",
       "transport": "stdin-json/stdout-json",
@@ -179,10 +197,17 @@
           "args": ["workflows", "cancel-published-run", "--stdin", "--json"],
           "output": "workflow-run-cancel-receipt/v1",
           "idempotent": true
+        },
+        "decide": {
+          "args": ["workflows", "decide-published-run", "--stdin", "--json"],
+          "input": "workflow-published-run-decision-request/v1",
+          "output": "workflow-published-run-decision-receipt/v1",
+          "idempotent": true,
+          "atomic_resume": true
         }
       },
       "required_evidence": ["assetId", "assetVersion", "sourceDigest", "receiptId"],
-      "required_run_evidence": ["runId", "retryOfRunId", "steps", "evidence", "artifacts", "actionReceipt", "waits", "finalResult"],
+      "required_run_evidence": ["runId", "retryOfRunId", "steps", "evidence", "artifacts", "actionReceipt", "waits", "pendingWaits", "decisions", "executionAttempts", "runtimeProjections", "finalResult"],
       "registry_owner": "mossen",
       "registry_path": "$MOSSEN_HOME/workflow-publication/registry-v1.json",
       "runtime_registry_path": "$MOSSEN_HOME/workflow-publication/runtime-v1.json",
@@ -193,7 +218,18 @@
         "states": ["running", "waiting_approval", "waiting_permission", "completed", "failed", "cancelled"],
         "retryable_states": ["failed", "cancelled"],
         "artifacts": "Every run returns artifacts[]. Artifact URIs use the mossen-artifact scheme and never expose local filesystem paths.",
-        "authority_boundary": "Deterministic no-side-effect nodes execute in Mossen. Human and external capability nodes wait for explicit approval/permission and are never auto-completed."
+        "authority_boundary": "Legacy requests retain node-ID waits. Strict R12 requests execute deterministic nodes, human approval, and Mossen-backed mossen-call only; every provider or Tool boundary requires the exact frozen authority and unsupported executors fail before a run exists.",
+        "decision_resume": {
+          "available": true,
+          "wait_kinds": ["approval", "permission"],
+          "permission_outcomes": ["allow_once", "deny"],
+          "approval_outcomes": ["approve", "reject"],
+          "stable_wait_identity": true,
+          "immutable_decision_evidence": true,
+          "runtime_execution_evidence": true,
+          "atomic_resume": true,
+          "supported_node_types": ["trigger-manual", "trigger-webhook", "trigger-file-watch", "join", "text-transform", "condition", "set-variable", "wait-delay", "human-approval", "mossen-call"]
+        }
       }
     },
 

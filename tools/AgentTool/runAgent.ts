@@ -3,8 +3,6 @@ import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getProjectRoot } from '../../bootstrap/state.js'
-import { getCommand, getSkillToolCommands, hasCommand } from '../../commands.js'
 import {
   DEFAULT_AGENT_PROMPT,
   enhanceSystemPromptWithEnvDetails,
@@ -26,7 +24,6 @@ import type {
 } from '../../services/mcp/types.js'
 import type { Tool, Tools, ToolUseContext } from '../../Tool.js'
 import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTasks.js'
-import type { Command } from '../../types/command.js'
 import type { AgentId } from '../../types/ids.js'
 import type {
   AssistantMessage,
@@ -53,10 +50,7 @@ import {
 import { registerFrontmatterHooks } from '../../utils/hooks/registerFrontmatterHooks.js'
 import { clearSessionHooks } from '../../utils/hooks/sessionHooks.js'
 import { executeSubagentStartHooks } from '../../utils/hooks.js'
-import {
-  createAssistantMessage,
-  createUserMessage,
-} from '../../utils/messages.js'
+import { createAssistantMessage } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
 import type { ModelAlias } from '../../utils/model/aliases.js'
 import {
@@ -76,6 +70,7 @@ import {
 import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
+import { preloadAgentSkills } from './agentSkillPreload.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
 
 /**
@@ -569,72 +564,14 @@ export async function* runAgent({
   // Preload skills from agent frontmatter
   const skillsToPreload = agentDefinition.skills ?? []
   if (skillsToPreload.length > 0) {
-    const allSkills = await getSkillToolCommands(getProjectRoot())
-
-    // Filter valid skills and warn about missing ones
-    const validSkills: Array<{
-      skillName: string
-      skill: (typeof allSkills)[0] & { type: 'prompt' }
-    }> = []
-
-    for (const skillName of skillsToPreload) {
-      // Resolve the skill name, trying multiple strategies:
-      // 1. Exact match (hasCommand checks name, userFacingName, aliases)
-      // 2. Fully-qualified with agent's plugin prefix (e.g., "my-skill" → "plugin:my-skill")
-      // 3. Suffix match on ":skillName" for plugin-namespaced skills
-      const resolvedName = resolveSkillName(
-        skillName,
-        allSkills,
-        agentDefinition,
-      )
-      if (!resolvedName) {
-        logForDebugging(
-          `[Agent: ${agentDefinition.agentType}] Warning: Skill '${skillName}' specified in frontmatter was not found`,
-          { level: 'warn' },
-        )
-        continue
-      }
-
-      const skill = getCommand(resolvedName, allSkills)
-      if (skill.type !== 'prompt') {
-        logForDebugging(
-          `[Agent: ${agentDefinition.agentType}] Warning: Skill '${skillName}' is not a prompt-based skill`,
-          { level: 'warn' },
-        )
-        continue
-      }
-      validSkills.push({ skillName, skill })
-    }
-
-    // Load all skill contents concurrently and add to initial messages
-    const { formatSkillLoadingMetadata } = await import(
-      '../../utils/processUserInput/processSlashCommand.js'
-    )
-    const loaded = await Promise.all(
-      validSkills.map(async ({ skillName, skill }) => ({
-        skillName,
-        skill,
-        content: await skill.getPromptForCommand('', toolUseContext),
-      })),
-    )
-    for (const { skillName, skill, content } of loaded) {
-      logForDebugging(
-        `[Agent: ${agentDefinition.agentType}] Preloaded skill '${skillName}'`,
-      )
-
-      // Add command-message metadata so the UI shows which skill is loading
-      const metadata = formatSkillLoadingMetadata(
-        skillName,
-        skill.progressMessage,
-      )
-
-      initialMessages.push(
-        createUserMessage({
-          content: [{ type: 'text', text: metadata }, ...content],
-          isMeta: true,
-        }),
-      )
-    }
+    const { messages: skillMessages } = await preloadAgentSkills({
+      agentDefinition,
+      toolUseContext,
+      // Delegated Agents retain the historical warning-and-skip behavior for
+      // missing/non-prompt skills. Public main-thread Agents use strict mode.
+      strict: false,
+    })
+    initialMessages.push(...skillMessages)
   }
 
   // Initialize agent-specific MCP servers (additive to parent's servers)
@@ -926,45 +863,4 @@ async function getAgentSystemPrompt(
       enabledToolNames,
     )
   }
-}
-
-/**
- * Resolve a skill name from agent frontmatter to a registered command name.
- *
- * Plugin skills are registered with namespaced names (e.g., "my-plugin:my-skill")
- * but agents reference them with bare names (e.g., "my-skill"). This function
- * tries multiple resolution strategies:
- *
- * 1. Exact match via hasCommand (name, userFacingName, aliases)
- * 2. Prefix with agent's plugin name (e.g., "my-skill" → "my-plugin:my-skill")
- * 3. Suffix match — find any command whose name ends with ":skillName"
- */
-function resolveSkillName(
-  skillName: string,
-  allSkills: Command[],
-  agentDefinition: AgentDefinition,
-): string | null {
-  // 1. Direct match
-  if (hasCommand(skillName, allSkills)) {
-    return skillName
-  }
-
-  // 2. Try prefixing with the agent's plugin name
-  // Plugin agents have agentType like "pluginName:agentName"
-  const pluginPrefix = agentDefinition.agentType.split(':')[0]
-  if (pluginPrefix) {
-    const qualifiedName = `${pluginPrefix}:${skillName}`
-    if (hasCommand(qualifiedName, allSkills)) {
-      return qualifiedName
-    }
-  }
-
-  // 3. Suffix match — find a skill whose name ends with ":skillName"
-  const suffix = `:${skillName}`
-  const match = allSkills.find(cmd => cmd.name.endsWith(suffix))
-  if (match) {
-    return match.name
-  }
-
-  return null
 }

@@ -106,6 +106,14 @@ export type WorkflowPublicationProtocolDescriptor = {
       output: 'workflow-run-cancel-receipt/v1'
       idempotent: true
     }
+    decide: {
+      available: true
+      args: ['workflows', 'decide-published-run', '--stdin', '--json']
+      input: 'workflow-published-run-decision-request/v1'
+      output: 'workflow-published-run-decision-receipt/v1'
+      idempotent: true
+      atomicResume: true
+    }
   }
   requiredEvidence: ['assetId', 'assetVersion', 'sourceDigest', 'receiptId']
   requiredRunEvidence: [
@@ -116,6 +124,10 @@ export type WorkflowPublicationProtocolDescriptor = {
     'artifacts',
     'actionReceipt',
     'waits',
+    'pendingWaits',
+    'decisions',
+    'executionAttempts',
+    'runtimeProjections',
     'finalResult',
   ]
   execution: {
@@ -131,6 +143,28 @@ export type WorkflowPublicationProtocolDescriptor = {
         'failed',
         'cancelled',
       ]
+      decisionResume: {
+        available: true
+        waitKinds: ['approval', 'permission']
+        permissionOutcomes: ['allow_once', 'deny']
+        approvalOutcomes: ['approve', 'reject']
+        stableWaitIdentity: true
+        immutableDecisionEvidence: true
+        runtimeExecutionEvidence: true
+        atomicResume: true
+        supportedNodeTypes: [
+          'trigger-manual',
+          'trigger-webhook',
+          'trigger-file-watch',
+          'join',
+          'text-transform',
+          'condition',
+          'set-variable',
+          'wait-delay',
+          'human-approval',
+          'mossen-call',
+        ]
+      }
     }
   }
 }
@@ -236,6 +270,14 @@ export function workflowPublicationProtocolDescriptor(): WorkflowPublicationProt
         output: 'workflow-run-cancel-receipt/v1',
         idempotent: true,
       },
+      decide: {
+        available: true,
+        args: ['workflows', 'decide-published-run', '--stdin', '--json'],
+        input: 'workflow-published-run-decision-request/v1',
+        output: 'workflow-published-run-decision-receipt/v1',
+        idempotent: true,
+        atomicResume: true,
+      },
     },
     requiredEvidence: ['assetId', 'assetVersion', 'sourceDigest', 'receiptId'],
     requiredRunEvidence: [
@@ -246,6 +288,10 @@ export function workflowPublicationProtocolDescriptor(): WorkflowPublicationProt
       'artifacts',
       'actionReceipt',
       'waits',
+      'pendingWaits',
+      'decisions',
+      'executionAttempts',
+      'runtimeProjections',
       'finalResult',
     ],
     execution: {
@@ -261,6 +307,28 @@ export function workflowPublicationProtocolDescriptor(): WorkflowPublicationProt
           'failed',
           'cancelled',
         ],
+        decisionResume: {
+          available: true,
+          waitKinds: ['approval', 'permission'],
+          permissionOutcomes: ['allow_once', 'deny'],
+          approvalOutcomes: ['approve', 'reject'],
+          stableWaitIdentity: true,
+          immutableDecisionEvidence: true,
+          runtimeExecutionEvidence: true,
+          atomicResume: true,
+          supportedNodeTypes: [
+            'trigger-manual',
+            'trigger-webhook',
+            'trigger-file-watch',
+            'join',
+            'text-transform',
+            'condition',
+            'set-variable',
+            'wait-delay',
+            'human-approval',
+            'mossen-call',
+          ],
+        },
       },
     },
   }

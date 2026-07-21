@@ -408,6 +408,59 @@ export function createSkillCommand({
  * Loads skills from a /skills/ directory path.
  * Only supports directory format: skill-name/SKILL.md
  */
+async function loadSkillFromSkillsDir(
+  basePath: string,
+  skillName: string,
+  source: SettingSource,
+): Promise<SkillWithPath | null> {
+  const fs = getFsImplementation()
+  const skillDirPath = join(basePath, skillName)
+  const skillFilePath = join(skillDirPath, 'SKILL.md')
+
+  try {
+    let content: string
+    try {
+      content = await fs.readFile(skillFilePath, { encoding: 'utf-8' })
+    } catch (e: unknown) {
+      // SKILL.md doesn't exist, skip this entry. Log non-ENOENT errors
+      // (EACCES/EPERM/EIO) so permission/IO problems are diagnosable.
+      if (!isENOENT(e)) {
+        logForDebugging(`[skills] failed to read ${skillFilePath}: ${e}`, {
+          level: 'warn',
+        })
+      }
+      return null
+    }
+
+    const { frontmatter, content: markdownContent } = parseFrontmatter(
+      content,
+      skillFilePath,
+    )
+    const parsed = parseSkillFrontmatterFields(
+      frontmatter,
+      markdownContent,
+      skillName,
+    )
+    const paths = parseSkillPaths(frontmatter)
+
+    return {
+      skill: createSkillCommand({
+        ...parsed,
+        skillName,
+        markdownContent,
+        source,
+        baseDir: skillDirPath,
+        loadedFrom: 'skills',
+        paths,
+      }),
+      filePath: skillFilePath,
+    }
+  } catch (error) {
+    logError(error)
+    return null
+  }
+}
+
 async function loadSkillsFromSkillsDir(
   basePath: string,
   source: SettingSource,
@@ -431,48 +484,7 @@ async function loadSkillsFromSkillsDir(
           return null
         }
 
-        const skillDirPath = join(basePath, entry.name)
-        const skillFilePath = join(skillDirPath, 'SKILL.md')
-
-        let content: string
-        try {
-          content = await fs.readFile(skillFilePath, { encoding: 'utf-8' })
-        } catch (e: unknown) {
-          // SKILL.md doesn't exist, skip this entry. Log non-ENOENT errors
-          // (EACCES/EPERM/EIO) so permission/IO problems are diagnosable.
-          if (!isENOENT(e)) {
-            logForDebugging(`[skills] failed to read ${skillFilePath}: ${e}`, {
-              level: 'warn',
-            })
-          }
-          return null
-        }
-
-        const { frontmatter, content: markdownContent } = parseFrontmatter(
-          content,
-          skillFilePath,
-        )
-
-        const skillName = entry.name
-        const parsed = parseSkillFrontmatterFields(
-          frontmatter,
-          markdownContent,
-          skillName,
-        )
-        const paths = parseSkillPaths(frontmatter)
-
-        return {
-          skill: createSkillCommand({
-            ...parsed,
-            skillName,
-            markdownContent,
-            source,
-            baseDir: skillDirPath,
-            loadedFrom: 'skills',
-            paths,
-          }),
-          filePath: skillFilePath,
-        }
+        return loadSkillFromSkillsDir(basePath, entry.name, source)
       } catch (error) {
         logError(error)
         return null
@@ -481,6 +493,61 @@ async function loadSkillsFromSkillsDir(
   )
 
   return results.filter((r): r is SkillWithPath => r !== null)
+}
+
+/**
+ * Load only explicitly requested project Skill IDs without walking a Skill
+ * directory. This is the narrow exception used by main-thread Agents under
+ * --bare: the caller supplied the capability IDs, so resolving their exact
+ * project-owned SKILL.md files does not re-enable ambient Skill discovery,
+ * user/global Skills, plugins, or connectors.
+ */
+export async function loadExplicitProjectSkillCommands(
+  cwd: string,
+  requestedSkillIds: readonly string[],
+): Promise<Command[]> {
+  if (
+    requestedSkillIds.length === 0 ||
+    isRestrictedToPluginOnly('skills') ||
+    !isSettingSourceEnabled('projectSettings')
+  ) {
+    return []
+  }
+
+  const safeSkillIds = [...new Set(requestedSkillIds)].filter(
+    skillId =>
+      skillId.length > 0 &&
+      skillId !== '.' &&
+      skillId !== '..' &&
+      !skillId.includes('/') &&
+      !skillId.includes('\\') &&
+      !skillId.includes('\0'),
+  )
+  if (safeSkillIds.length === 0) return []
+
+  const exactCwdSkillsDir = join(getPrimaryScopedConfigDir(cwd), 'skills')
+  const projectSkillsDirs = [
+    ...new Set([
+      exactCwdSkillsDir,
+      ...getProjectDirsUpToHome('skills', cwd),
+    ]),
+  ]
+  const loaded = await Promise.all(
+    projectSkillsDirs.flatMap(basePath =>
+      safeSkillIds.map(skillId =>
+        loadSkillFromSkillsDir(basePath, skillId, 'projectSettings'),
+      ),
+    ),
+  )
+
+  const commands: Command[] = []
+  const seenNames = new Set<string>()
+  for (const entry of loaded) {
+    if (!entry || seenNames.has(entry.skill.name)) continue
+    seenNames.add(entry.skill.name)
+    commands.push(entry.skill)
+  }
+  return commands
 }
 
 // --- Legacy /commands/ loader ---

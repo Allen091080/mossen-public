@@ -467,7 +467,9 @@ function runtimeActionReceipt(
         ? 'workflow.asset.runPublished'
         : receipt.action === 'retry'
           ? 'workflow.run.retryPublished'
-        : 'workflow.run.cancelPublished'
+          : receipt.action === 'decide'
+            ? 'workflow.run.decidePublished'
+            : 'workflow.run.cancelPublished'
   return {
     version: 1,
     receiptId: receipt.receiptId,
@@ -482,7 +484,9 @@ function runtimeActionReceipt(
           ? 'run-published'
           : receipt.action === 'retry'
             ? 'retry-published-run'
-          : 'cancel-published-run'
+            : receipt.action === 'decide'
+              ? 'decide-published-run'
+              : 'cancel-published-run'
     } --stdin --json`,
     runId: receipt.runId,
     workflowName: receipt.workflowName,
@@ -500,6 +504,13 @@ function runtimeActionReceipt(
       : {}),
     ...(receipt.artifactIds !== undefined
       ? { artifactIds: receipt.artifactIds }
+      : {}),
+    ...(receipt.runRevision !== undefined
+      ? { runRevision: receipt.runRevision }
+      : {}),
+    ...(receipt.waitId !== undefined ? { waitId: receipt.waitId } : {}),
+    ...(receipt.decisionId !== undefined
+      ? { decisionId: receipt.decisionId }
       : {}),
   }
 }

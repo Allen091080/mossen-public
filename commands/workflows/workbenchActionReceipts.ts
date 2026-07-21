@@ -37,6 +37,9 @@ export type WorkbenchWorkflowActionReceipt = {
   sourceDigest?: string
   retryOfRunId?: string | null
   artifactIds?: string[]
+  runRevision?: number | null
+  waitId?: string | null
+  decisionId?: string | null
 }
 
 export function workbenchActionReceiptsPath(): string {
@@ -150,6 +153,21 @@ function parseReceipt(value: unknown): WorkbenchWorkflowActionReceipt | null {
     candidate.artifactIds.every(item => typeof item === 'string')
       ? { artifactIds: candidate.artifactIds }
       : {}),
+    ...(Number.isInteger(candidate.runRevision)
+      ? { runRevision: Number(candidate.runRevision) }
+      : candidate.runRevision === null
+        ? { runRevision: null }
+        : {}),
+    ...(typeof candidate.waitId === 'string'
+      ? { waitId: candidate.waitId }
+      : candidate.waitId === null
+        ? { waitId: null }
+        : {}),
+    ...(typeof candidate.decisionId === 'string'
+      ? { decisionId: candidate.decisionId }
+      : candidate.decisionId === null
+        ? { decisionId: null }
+        : {}),
   }
 }
 
